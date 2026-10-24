@@ -1,0 +1,9 @@
+# Copy to application-local.properties in this directory.
+# Run Maven or the application with backend/ as the working directory.
+# This example contains no real credentials.
+spring.datasource.username=root
+spring.datasource.password=replace_with_your_mysql_password
+
+# Leave these empty when Redis does not require authentication.
+spring.data.redis.username=
+spring.data.redis.password=
