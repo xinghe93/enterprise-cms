@@ -1,0 +1,57 @@
+# Java / Maven
+**/target/
+*.class
+.apt_generated/
+
+# Frontend dependencies, build output and caches
+node_modules/
+/frontend/dist/
+/frontend/build/
+/frontend/coverage/
+/frontend/.vite/
+/frontend/.cache/
+*.tsbuildinfo
+
+# Local environment variables (keep example files)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs and JVM crash reports
+logs/
+*.log
+hs_err_pid*
+replay_pid*
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Eclipse / Spring Tool Suite
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache/
+
+# VS Code
+.vscode/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# Operating system and editor temporary files
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
