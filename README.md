@@ -2,7 +2,7 @@
 
 面向企业内部员工的知识与内容管理平台，规划覆盖人员与组织、角色权限、文章分类、审核发布和操作审计。
 
-当前处于项目初始化阶段：已创建 Spring Boot 后端骨架并配置基础依赖，业务接口、数据库脚本和前端应用尚未实现。
+当前处于项目初始化阶段：已有 Spring Boot 后端骨架、MySQL/Redis 连接配置和 12 张核心表的建表脚本；业务接口和前端应用尚未实现。
 
 ## 技术栈
 
@@ -20,10 +20,12 @@
 enterprise-cms/
 ├── backend/       # Spring Boot 后端
 │   ├── .mvn/      # Maven Wrapper 配置
+│   ├── config/    # 本地连接配置示例，真实密码文件由 Git 忽略
 │   ├── src/main/  # 应用源码与配置
 │   ├── src/test/  # 测试源码
 │   └── pom.xml    # 依赖与构建配置
 ├── docs/          # 项目设计文档
+├── database/      # 编号数据库脚本
 ├── .gitignore     # 仓库统一忽略规则
 └── README.md
 ```
@@ -34,35 +36,47 @@ enterprise-cms/
 
 - 安装 JDK 25，并确认 `java -version` 使用正确版本。
 - 首次执行 Maven Wrapper 需要联网下载 Maven 和项目依赖，无需单独安装 Maven。
-- 后端已引入 MyBatis-Plus 和 MySQL 驱动，启动应用和运行完整上下文测试前需要配置数据源。
-- 使用缓存功能时需要可连接的 Redis 服务。
+- 准备 MySQL 8.4 和 Redis。本地开发可以直接使用已有 Docker 容器。
+- 当前开发环境使用 `mysql8`（`127.0.0.1:3306`）和 `redis`（`127.0.0.1:6379`）；其他成员可按自己的地址调整配置。
 
-## 后端启动
+## 数据库初始化
 
-在仓库根目录执行以下命令，进入后端目录：
+在数据库工具中连接 MySQL，执行 [database/001_init.sql](database/001_init.sql)。脚本创建 `enterprise_cms` 数据库和设计文档中的 12 张核心表。
+
+macOS/Linux 下，如果容器名为 `mysql8` 且创建容器时设置了 `MYSQL_ROOT_PASSWORD`，也可以在仓库根目录执行：
+
+```bash
+docker exec -i mysql8 sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --user=root --default-character-set=utf8mb4' < database/001_init.sql
+```
+
+脚本包含外键、唯一约束、查询索引、文章状态和逻辑删除字段；初始业务表为空，未创建默认登录账号。主键使用自增 `BIGINT UNSIGNED`，关联表使用复合主键，时间字段使用 `DATETIME(3)`，字符集为 `utf8mb4`。
+
+重复执行不会删除现有表或数据，也不会升级已存在的表结构。后续表结构变更使用新的编号脚本，例如 `002_add_article_field.sql`；部门和分类的循环父子关系、文章审核状态流转等业务规则由后续业务代码校验。
+
+## 本地连接配置与启动
+
+在仓库根目录执行：
 
 ```bash
 cd backend
+cp config/application-local.properties.example config/application-local.properties
 ```
 
-通过环境变量配置本地 MySQL 数据源。以下为 macOS/Linux 示例，请将数据库、用户名和密码替换为本机配置，并提前创建对应数据库：
+编辑 `config/application-local.properties`，填写自己的 MySQL 用户名和密码。Redis 无认证时，用户名和密码留空；有认证时填写对应配置。真实配置文件已被 Git 忽略，位于源码目录之外，不会打进应用 JAR。
+
+默认连接 `127.0.0.1:3306/enterprise_cms` 和 `127.0.0.1:6379`。如果地址不同，可在本地文件中补充 `spring.datasource.url`、`spring.data.redis.host` 和 `spring.data.redis.port`。
+
+在 `backend/` 目录启动：
 
 ```bash
-export SPRING_DATASOURCE_URL='jdbc:mysql://localhost:3306/enterprise_cms?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai'
-export SPRING_DATASOURCE_USERNAME='your_username'
-read -r -s SPRING_DATASOURCE_PASSWORD
-export SPRING_DATASOURCE_PASSWORD
-
 ./mvnw spring-boot:run
 ```
 
-执行 `read` 后输入数据库密码并按回车，终端不会回显密码。也可以在 IDE 的运行配置中设置上述环境变量。
+Windows 用户可以手动复制并编辑配置文件，再在 `backend/` 目录的 PowerShell 中使用 `.\mvnw.cmd spring-boot:run`。在 IDE 中运行时，也将工作目录设置为 `backend/`。
 
-Windows 用户可在 IDE 的运行配置中设置相同环境变量，并在 IDE 中启动应用；也可在已配置好环境变量的 PowerShell 中执行 `.\mvnw.cmd spring-boot:run`，构建和测试命令同样将 `./mvnw` 替换为 `.\mvnw.cmd`。
+也支持通过 `SPRING_DATASOURCE_URL`、`SPRING_DATASOURCE_USERNAME`、`SPRING_DATASOURCE_PASSWORD`、`SPRING_DATA_REDIS_HOST`、`SPRING_DATA_REDIS_PORT`、`SPRING_DATA_REDIS_USERNAME`、`SPRING_DATA_REDIS_PASSWORD` 和 `SPRING_DATA_REDIS_DATABASE` 环境变量覆盖配置。
 
-Redis 可通过 `SPRING_DATA_REDIS_HOST`、`SPRING_DATA_REDIS_PORT` 和 `SPRING_DATA_REDIS_PASSWORD` 配置。
-
-默认 HTTP 端口为 `8080`。当前尚未实现业务接口，访问根路径返回 404 属于预期行为。
+默认 HTTP 端口为 `8080`。当前尚未实现业务接口，访问根路径返回 404 属于预期行为。建表脚本需要手动导入，应用不会自动执行 SQL 初始化。
 
 ## 构建与测试
 
@@ -76,17 +90,16 @@ Redis 可通过 `SPRING_DATA_REDIS_HOST`、`SPRING_DATA_REDIS_PORT` 和 `SPRING_
 ./mvnw test
 ```
 
-`BackendApplicationTests` 使用完整的 Spring Boot 应用上下文，需要先按上述方式配置数据源。当前尚无数据库建表或初始化脚本。
-
-当前骨架的测试尚未执行 SQL，仅验证上下文加载。在 macOS/Linux 下也可以临时提供 JDBC URL 完成构建：
+默认测试仅检查应用上下文加载。完成建表和连接配置后，可启用真实数据服务测试，验证 JDBC 连接、12 张核心表和 Redis PING：
 
 ```bash
-SPRING_DATASOURCE_URL='jdbc:mysql://localhost:3306/enterprise_cms' ./mvnw verify
+# macOS/Linux，在 backend/ 目录执行
+CMS_DATA_INTEGRATION_TESTS=true ./mvnw verify
 ```
 
-此检查不验证 MySQL 或 Redis 的实际连通性；后续增加数据库操作后，需要准备对应服务和测试数据。
+PowerShell 中先执行 `$env:CMS_DATA_INTEGRATION_TESTS='true'`，再运行 `.\mvnw.cmd verify`。
 
-本地环境文件 `.env` 和 `.env.*` 已被 Git 忽略，示例文件 `.env.example` 可以提交。Spring Boot 默认不会自动加载 `.env` 文件，请使用环境变量或 IDE 运行配置提供连接信息。
+本地环境文件 `.env` 和 `.env.*` 同样被 Git 忽略，但 Spring Boot 默认不会自动加载它们。本项目使用上述 `config/application-local.properties` 或环境变量提供连接信息。
 
 ## 项目文档
 
