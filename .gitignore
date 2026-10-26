@@ -18,9 +18,6 @@ node_modules/
 !.env.example
 !.env.*.example
 
-# Local database credentials
-/backend/config/application-local.properties
-
 # Logs and JVM crash reports
 logs/
 *.log

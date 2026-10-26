@@ -1,8 +1,6 @@
 spring:
   application:
     name: backend
-  config:
-    import: optional:file:./config/application-local.properties
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/enterprise_cms}
     username: ${SPRING_DATASOURCE_USERNAME:root}
