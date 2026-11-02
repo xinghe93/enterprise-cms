@@ -17,3 +17,13 @@ spring:
       database: ${SPRING_DATA_REDIS_DATABASE:0}
       connect-timeout: 3s
       timeout: 3s
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-value: 1
+      logic-not-delete-value: 0
