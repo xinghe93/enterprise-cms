@@ -1,0 +1,167 @@
+:root {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  color: #223b38;
+  background: #f6f7f3;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --ink: #223b38;
+  --muted: #737d77;
+  --line: #e3e8df;
+  --green: #153f3b;
+  --el-color-primary: #24675a;
+  --el-color-primary-light-3: #5f948a;
+  --el-color-primary-light-5: #92b3a9;
+  --el-color-primary-light-7: #c3d6ce;
+  --el-color-primary-light-8: #d7e4dc;
+  --el-color-primary-light-9: #edf3ed;
+  --el-color-primary-dark-2: #194e43;
+  --el-border-radius-base: 7px;
+  --el-font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { font: inherit; }
+a { color: inherit; text-decoration: none; }
+button, a { touch-action: manipulation; }
+button { cursor: pointer; }
+button:focus-visible, a:focus-visible { outline: 3px solid #a1b85c; outline-offset: 4px; }
+h1, h2, h3, p { margin: 0; }
+svg { flex-shrink: 0; vertical-align: middle; }
+.app-shell { min-height: 100vh; }
+.skip-link { position: fixed; top: -80px; left: 18px; padding: 12px 20px; background: white; z-index: 100; border-radius: 5px; }
+.skip-link:focus { top: 12px; }
+.sidebar { width: 244px; position: fixed; inset: 0 auto 0 0; display: flex; flex-direction: column; background: var(--green); color: #dce7df; z-index: 30; padding: 32px 17px 20px; overflow-y: auto; }
+.brand { display: flex; align-items: center; gap: 11px; padding: 0 9px 33px; font-family: "Avenir Next", "Trebuchet MS", sans-serif; font-size: 17px; font-weight: 600; letter-spacing: -.4px; }
+.brand-mark { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 37px; height: 39px; border-radius: 9px; background: #e7edbb; color: var(--green); font-size: 28px; font-weight: 600; }
+.brand-mark span { font-size: 20px; margin-left: 1px; }
+.brand-cms { font-weight: 400; color: #a9bfac; }
+.brand small { display: block; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-weight: 400; font-size: 10px; letter-spacing: 1.5px; margin-top: 6px; color: #a3bbb0; }
+.nav-group { margin-bottom: 23px; }
+.nav-group-title { margin: 0 14px 9px; color: #91aca0; font-size: 10px; letter-spacing: 2px; }
+.nav-link { display: flex; align-items: center; gap: 13px; min-height: 42px; border-radius: 6px; margin: 3px 0; padding: 0 13px; font-size: 13px; color: #bdcfc5; transition: background .16s, color .16s; }
+.nav-link:hover { background: #ffffff0c; color: white; }
+.nav-link.is-active { background: #e7edbb; color: #234d40; font-weight: 600; }
+.nav-active-dot { display: none; margin-left: auto; height: 5px; width: 5px; border-radius: 50%; background: #47714b; }
+.is-active .nav-active-dot { display: inline-block; }
+.sidebar-note { margin-top: auto; padding: 21px 9px 2px; border-top: 1px solid #ffffff16; font-size: 10px; color: #a1b9ac; display: flex; align-items: center; gap: 9px; }
+.status-dot { height: 5px; width: 5px; background: #c4d59f; border-radius: 50%; flex-shrink: 0; }
+.main-shell { margin-left: 244px; min-height: 100vh; display: flex; flex-direction: column; }
+.topbar { height: 80px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 44px; border-bottom: 1px solid var(--line); background: #fafbf8; }
+.breadcrumb { display: flex; align-items: center; gap: 14px; font-size: 12px; }
+.breadcrumb-root { color: #89918a; font-family: "Avenir Next", sans-serif; }
+.breadcrumb-divider { color: #c7cfc3; }
+.account-link { display: flex; align-items: center; gap: 9px; color: #748175; font-size: 12px; }
+.account-avatar { height: 31px; width: 31px; background: #ebeee7; border: 1px solid #e0e5da; display: grid; place-items: center; border-radius: 50%; }
+.icon-button { border: 0; color: var(--green); padding: 8px; background: transparent; display: grid; place-items: center; }
+.menu-toggle { display: none; }
+.nav-close { color: #dce7df; position: absolute; right: 6px; top: 5px; padding: 5px; }
+.nav-backdrop { display: none; }
+.page-content { flex: 1; width: 100%; max-width: 1440px; margin: 0 auto; padding: 38px 44px 28px; }
+.page-content:focus { outline: none; }
+.workspace-hero { min-height: 315px; overflow: hidden; position: relative; display: flex; justify-content: space-between; align-items: center; border: 1px solid #e1e7d9; border-radius: 12px; background: #edf1e5; padding: 35px 42px; }
+.eyebrow { font-family: "Avenir Next", "Trebuchet MS", sans-serif; font-size: 9px; letter-spacing: 2.1px; font-weight: 600; color: #81927f; }
+.hero-copy { position: relative; z-index: 1; }
+.hero-copy h1 { font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; font-weight: 600; font-size: clamp(33px, 3.2vw, 45px); letter-spacing: 3px; line-height: 1.4; margin: 13px 0 12px; }
+.hero-description { color: #6e7e6d; font-size: 12px; line-height: 1.9; }
+.hero-link { display: inline-flex; align-items: center; gap: 21px; padding-bottom: 5px; border-bottom: 1px solid #94a88c; margin-top: 21px; font-size: 12px; font-weight: 600; }
+.hero-link:hover { gap: 28px; }
+.knowledge-art { width: 260px; height: 270px; margin-right: 5%; flex-shrink: 0; position: relative; }
+.art-orbit { position: absolute; width: 258px; height: 258px; border: 1px solid #cfd9c1; border-radius: 50%; left: 8px; top: 2px; }
+.art-orbit::before { content: ''; position: absolute; inset: 19px; border: 1px dashed #d4ddc8; border-radius: 50%; }
+.art-sheet { position: absolute; height: 205px; width: 161px; border-radius: 4px; left: 52px; top: 24px; }
+.art-sheet-back { background: #b8c9a8; transform: rotate(-15deg) translate(-20px, 8px); border: 1px solid #a5b797; }
+.art-sheet-front { background: #fafbf6; transform: rotate(8deg); padding: 23px; border: 1px solid #e1e6d8; box-shadow: 12px 15px 25px #364e2b0d; }
+.sheet-symbol { font-family: "Avenir Next", sans-serif; font-weight: 500; font-size: 32px; color: #31574a; }
+.sheet-line { height: 3px; width: 87px; display: block; margin-top: 9px; background: #d1dbca; }
+.sheet-line.line-wide { width: 104px; margin-top: 16px; }
+.sheet-line.line-short { width: 59px; }
+.sheet-grid { display: flex; gap: 5px; margin-top: 15px; }
+.sheet-grid span { width: 22px; height: 23px; background: #e5ebdc; }
+.sheet-grid span:nth-child(2) { background: #c3d0b6; }
+.sheet-grid span:nth-child(3) { background: #6b8b6c; }
+.sheet-foot { display: block; font-size: 5px; font-family: "Avenir Next", sans-serif; letter-spacing: 1px; color: #87977b; margin-top: 15px; }
+.art-caption { position: absolute; bottom: 0; left: 37px; font-size: 7px; letter-spacing: 2.4px; font-family: "Avenir Next", sans-serif; color: #93a087; }
+.workspace-modules { margin-top: 34px; }
+.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 19px; }
+.section-heading h2 { font-size: 20px; font-weight: 600; letter-spacing: 1px; margin-top: 7px; }
+.section-heading .el-tag { --el-tag-bg-color: transparent; --el-tag-border-color: #dce3d4; --el-tag-text-color: #7c8a72; font-size: 10px; }
+.area-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.area-card { border: 1px solid var(--line); background: #fdfefa; border-radius: 10px; padding: 23px 23px 12px; transition: border-color .2s; }
+.area-card:hover { border-color: #aabc9f; }
+.area-top { display: flex; align-items: center; justify-content: space-between; }
+.area-icon { color: #456d59; background: #f0f3e9; width: 43px; height: 43px; border-radius: 9px; display: grid; place-items: center; }
+.area-number { color: #bdc8b8; font-family: "Avenir Next", sans-serif; font-size: 12px; }
+.area-card h3 { margin: 20px 0 9px; font-size: 16px; font-weight: 600; }
+.area-card > p { font-size: 11px; color: #87907f; line-height: 1.8; min-height: 40px; }
+.area-links { margin-top: 16px; }
+.area-links a { display: flex; align-items: center; justify-content: space-between; min-height: 37px; border-top: 1px solid #edf0e8; color: #566b58; font-size: 12px; }
+.area-links a:hover { color: #194e43; }
+.area-links a svg { color: #a0b096; transition: transform .15s; }
+.area-links a:hover svg { transform: translateX(3px); }
+.workspace-note { display: flex; align-items: center; gap: 10px; color: #8c9886; margin-top: 27px; }
+.workspace-note p { font-size: 11px; line-height: 1.8; }
+.workspace-note > span { margin-left: auto; font-size: 9px; letter-spacing: 1px; white-space: nowrap; }
+.app-footer { padding: 20px 44px; display: flex; justify-content: space-between; gap: 15px; font-size: 9px; letter-spacing: .6px; color: #a2ad9b; }
+.app-footer span:first-child { font-family: "Avenir Next", sans-serif; }
+.page-heading { margin: 5px 0 28px; }
+.page-heading h1 { font-size: 28px; letter-spacing: 1px; margin: 12px 0; font-weight: 600; }
+.page-heading > p:last-child { font-size: 13px; color: var(--muted); line-height: 1.8; }
+.empty-panel { display: flex; flex-direction: column; align-items: center; text-align: center; justify-content: center; min-height: 400px; padding: 48px 24px; border: 1px solid var(--line); border-radius: 12px; background: #fdfefa; }
+.empty-illustration { width: 96px; height: 105px; border-radius: 40px 40px 15px 15px; border: 1px solid #d9e2cc; background: #eff3e6; display: grid; place-items: center; color: #78966b; margin-bottom: 24px; transform: rotate(-5deg); }
+.empty-illustration svg { transform: rotate(5deg); }
+.empty-panel h1, .empty-panel h2 { margin-top: 18px; font-size: 23px; font-weight: 500; }
+.empty-panel p { font-size: 13px; line-height: 1.9; color: #87907f; margin: 13px 0 23px; }
+.standalone-panel { min-height: 520px; }
+.empty-panel .error-number { font-family: "Songti SC", Georgia, serif; font-size: 95px; line-height: 1; color: #98ad81; margin: 0; }
+
+@media (min-width: 1450px) { .workspace-hero { min-height: 360px; } .knowledge-art { margin-right: 10%; } }
+@media (max-width: 1150px) {
+  .sidebar { width: 216px; padding-inline: 12px; }
+  .main-shell { margin-left: 216px; }
+  .brand { font-size: 15px; gap: 9px; padding-inline: 6px; }
+  .brand-mark { width: 32px; font-size: 25px; }
+  .topbar { padding-inline: 28px; }
+  .page-content { padding-inline: 28px; }
+  .workspace-hero { padding-inline: 28px; }
+  .knowledge-art { transform: scale(.85); margin-right: -20px; width: 230px; }
+  .area-card { padding: 20px 17px 10px; }
+  .workspace-note > span { display: none; }
+}
+@media (max-width: 860px) {
+  .area-grid { grid-template-columns: 1fr; }
+  .area-card { padding: 22px; }
+  .area-card > p { min-height: auto; }
+  .area-card h3 { margin-top: 14px; }
+  .knowledge-art { width: 180px; transform: scale(.7); margin-left: -35px; margin-right: 0; }
+}
+@media (max-width: 640px) {
+  .sidebar { width: 244px; transform: translateX(-100%); transition: transform .2s; box-shadow: 12px 0 40px #153f3b20; }
+  .sidebar.is-open { transform: translateX(0); }
+  .main-shell { margin-left: 0; }
+  .nav-backdrop { display: block; position: fixed; inset: 0; background: #102f2960; border: 0; z-index: 20; }
+  .menu-toggle { display: grid; margin-left: -8px; }
+  .topbar { height: 65px; padding-inline: 20px; }
+  .breadcrumb { gap: 10px; }
+  .breadcrumb-root, .breadcrumb-divider { display: none; }
+  .page-content { padding: 23px 20px; }
+  .workspace-hero { padding: 28px 25px; min-height: 315px; }
+  .hero-copy h1 { font-size: 35px; }
+  .knowledge-art { position: absolute; right: -70px; top: 41px; opacity: .35; transform: scale(.8); }
+  .hero-copy { max-width: 100%; }
+  .hero-copy .eyebrow { font-size: 8px; letter-spacing: 1.7px; }
+  .hero-description { color: #65775f; }
+  .workspace-modules { margin-top: 28px; }
+  .section-heading .eyebrow { font-size: 7px; letter-spacing: 1.2px; }
+  .section-heading h2 { font-size: 19px; }
+  .section-heading .el-tag { font-size: 9px; }
+  .app-footer { padding: 14px 20px 23px; font-size: 8px; }
+  .standalone-panel { min-height: 430px; }
+  .empty-panel { min-height: 360px; }
+  .empty-panel h1, .empty-panel h2 { font-size: 20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
