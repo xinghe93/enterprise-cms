@@ -1,0 +1,60 @@
+package com.xinghe.cms.log.dto;
+
+import java.time.LocalDateTime;
+
+import com.xinghe.cms.common.exception.BusinessException;
+import com.xinghe.cms.common.request.PageQuery;
+import com.xinghe.cms.common.response.ResultCode;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Pattern;
+import lombok.Getter;
+import lombok.Setter;
+import org.springframework.format.annotation.DateTimeFormat;
+
+/**
+ * 操作日志分页查询条件；条件之间为 AND，省略表示不筛选。
+ * 分页参数（current/size）继承自 {@link PageQuery}。
+ */
+@Getter
+@Setter
+public class OperationLogQuery extends PageQuery {
+
+    /** 操作人 ID，精确匹配；合法但不存在时返回空分页。 */
+    @Min(value = 1, message = "用户 ID 必须大于零")
+    private Long userId;
+
+    /** 操作编码，去首尾空白后精确匹配；空串不筛选。 */
+    private String operation;
+
+    /** 执行结果，只接受 SUCCESS / FAILURE。 */
+    @Pattern(regexp = "SUCCESS|FAILURE", message = "结果只能是 SUCCESS 或 FAILURE")
+    private String result;
+
+    /** 记录时间起点，包含边界。 */
+    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    private LocalDateTime createdFrom;
+
+    /** 记录时间终点，不包含边界；同时提供时起点必须早于终点。 */
+    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    private LocalDateTime createdTo;
+
+    /**
+     * 去首尾空白后的操作编码；null 或空白都视为不筛选。
+     */
+    public String normalizedOperation() {
+        if (operation == null) {
+            return null;
+        }
+        String trimmed = operation.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    /**
+     * 校验左闭右开时间区间：创建时间起点必须早于终点。
+     */
+    public void validateTimeRange() {
+        if (createdFrom != null && createdTo != null && !createdFrom.isBefore(createdTo)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "起始时间必须早于结束时间");
+        }
+    }
+}
