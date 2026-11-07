@@ -7,7 +7,7 @@ import com.xinghe.cms.common.response.ResultCode;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 日志查询条件与分页、时间区间规则，不启动 Spring 容器。
@@ -56,9 +56,10 @@ class OperationLogQueryTests {
         query.setCreatedFrom(sameTime);
         query.setCreatedTo(sameTime);
 
-        BusinessException exception = catchThrowableOfType(query::validateTimeRange, BusinessException.class);
-
-        assertThat(exception.getResultCode()).isEqualTo(ResultCode.BAD_REQUEST);
-        assertThat(exception.getMessage()).isEqualTo("起始时间必须早于结束时间");
+        assertThatThrownBy(query::validateTimeRange)
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("起始时间必须早于结束时间")
+                .satisfies(exception -> assertThat(((BusinessException) exception).getResultCode())
+                        .isEqualTo(ResultCode.BAD_REQUEST));
     }
 }
