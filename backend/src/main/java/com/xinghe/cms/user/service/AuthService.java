@@ -6,6 +6,7 @@ import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.security.PasswordHasher;
 import com.xinghe.cms.user.dto.LoginRequest;
 import com.xinghe.cms.user.mapper.UserAuthMapper;
+import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
 import com.xinghe.cms.user.mapper.row.RoleBriefRow;
 import com.xinghe.cms.user.mapper.row.UserCredentialsRow;
 import com.xinghe.cms.user.mapper.row.UserProfileRow;
@@ -33,6 +34,15 @@ public class AuthService {
     private static final DateTimeFormatter BUSINESS_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS");
 
+    /**
+     * 恒定耗时校验用的占位哈希：格式合法、迭代次数与盐/摘要长度和真实哈希一致，
+     * 但不对应任何账号，也不可能与真实密码匹配。账号不存在或停用时同样跑满一次
+     * PBKDF2，避免攻击者通过响应时间差枚举账号。全零摘要不是任何凭据。
+     */
+    private static final String TIMING_GUARD_HASH =
+            "pbkdf2-sha256$210000$AAAAAAAAAAAAAAAAAAAAAA$"
+                    + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
     private final UserAuthMapper userMapper;
     private final PasswordHasher passwordHasher;
     private final AuthSessionService sessions;
@@ -44,17 +54,41 @@ public class AuthService {
         this.sessions = sessions;
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * 登录。此处不开启只读事务：会话签发是 Redis 写，不受 JDBC 事务管理，
+     * 放在 readOnly 事务内只会造成语义误导。所有数据库读取都在签发前完成，
+     * 任一步失败都会直接抛出异常，不会留下孤儿 Token。
+     *
+     * <p>并发停用防线（契约 3.1「禁止按旧的启用快照建立可用会话」）：
+     * 先记录当前会话纪元，再复查账号状态，最后带着这个纪元签发。
+     * 停用按契约先在数据库事务里提交 status=0、提交后才刷新会话纪元，因此
+     * ① 停用提交发生在取纪元之前时，复查状态会看到已停用；
+     * ② 停用提交发生在复查之后时，刷新纪元要么让签发时的纪元比对失败，
+     *    要么在签发后立刻把新 Token 的旧纪元作废。
+     * 两条路径都不会留下「重新启用后仍可用」的 Token。</p>
+     */
     public LoginResultVO login(LoginRequest request) {
         String username = request.username().trim();
         UserCredentialsRow credentials = userMapper.findCredentialsByUsername(username);
-        if (credentials == null || !Integer.valueOf(1).equals(credentials.status())
-                || !passwordHasher.matches(request.password(), credentials.passwordHash())) {
+        boolean enabled = credentials != null && Integer.valueOf(1).equals(credentials.status());
+        String expectedHash = enabled ? credentials.passwordHash() : TIMING_GUARD_HASH;
+        boolean passwordMatched = passwordHasher.matches(request.password(), expectedHash);
+        if (!enabled || !passwordMatched) {
             throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);
         }
-        // 先完成全部数据库读取，再签发会话，避免数据库失败时留下孤儿 Token。
-        UserVO user = toUserVO(credentials.id());
-        String token = sessions.issue(credentials.id());
+        Long userId = credentials.id();
+        String expectedEpoch = sessions.currentEpoch(userId);
+        CurrentUserStatusRow status = userMapper.findStatusById(userId);
+        if (status == null || status.status() == null || status.status() != 1) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);
+        }
+        UserVO user = toUserVO(userId);
+        String token = sessions.issue(userId, expectedEpoch);
+        if (token == null) {
+            // 登录期间纪元已变化：不能换用新纪元重试，否则会签出在账号
+            // 重新启用后仍然可用的 Token。统一按登录失败处理，不泄露原因。
+            throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);
+        }
         return new LoginResultVO(token, "Bearer", AuthSessionService.TTL_SECONDS, user);
     }
 

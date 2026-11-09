@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
@@ -26,8 +27,15 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * 后续由 B 的权限 AOP 校验功能权限）。过滤器不走 Controller Advice，因此按现有
  * {@code ApiResponse} 契约自行写出统一 JSON 错误体，不依赖 MVC 的序列化器。</p>
  *
- * <p>检测到账号停用时，除返回 401 外主动递增该用户 generation，使其余旧会话立即失效。
- * Redis/数据库故障返回 500，不放行、不吞异常。</p>
+ * <p>路径判断用容器解码后的 {@code servletPath}（与 MVC 映射输入一致），
+ * 不用未解码的 {@code requestURI}，否则 /%61pi/... 这类编码变体会绕过前缀判断；
+ * /api/ 前缀判断大小写不敏感，避免 /API/... 变体被当成非 API 请求放行。
+ * PUBLIC 端点只有 login 一个，必须大小写敏感的精确匹配，不用 startsWith / contains。
+ * 契约中全部业务接口都位于 /api/ 下，其余静态资源不属于本过滤器职责。</p>
+ *
+ * <p>检测到账号停用时，除返回 401 外主动刷新该用户会话纪元，使其余旧会话立即失效。
+ * 账号启停接口也须在数据库事务提交后调用 {@code revokeAllForUser}，不得先刷新
+ * Redis 再提交数据库。Redis/数据库故障返回 500，不放行、不吞异常。</p>
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -35,6 +43,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(BearerTokenAuthenticationFilter.class);
     private static final String BEARER_PREFIX = "Bearer ";
+    private static final String API_PREFIX = "/api/";
     private static final String LOGIN_PATH = "/api/auth/login";
 
     private final AuthSessionService sessions;
@@ -48,7 +57,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
-        return !path.startsWith("/api/") || LOGIN_PATH.equals(path);
+        boolean apiRequest = path.toLowerCase(Locale.ROOT).startsWith(API_PREFIX);
+        return !apiRequest || LOGIN_PATH.equals(path);
     }
 
     @Override
@@ -65,6 +75,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                 writeError(response, ResultCode.UNAUTHORIZED);
                 return;
             }
+            // 每请求重查账号状态是契约要求：停用与权限变更必须即时生效，不能缓存放行。
             CurrentUserStatusRow status = userMapper.findStatusById(userId);
             if (status == null || status.status() == null || status.status() != 1) {
                 sessions.revokeAllForUser(userId);
@@ -75,8 +86,12 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                     new CurrentUser(userId, status.username(), status.departmentId()));
             request.setAttribute(CurrentUserProvider.TOKEN_ATTRIBUTE, token);
         } catch (Exception exception) {
+            // 契约要求 Redis/DB 故障不得放行；连同编程错误一并拒绝并记录完整堆栈，
+            // 不是静默吞异常。返回统一 500 信封，不暴露内部细节。
             log.error("认证依赖故障，拒绝本次请求", exception);
-            writeError(response, ResultCode.INTERNAL_SERVER_ERROR);
+            if (!response.isCommitted()) {
+                writeError(response, ResultCode.INTERNAL_SERVER_ERROR);
+            }
             return;
         }
         chain.doFilter(request, response);

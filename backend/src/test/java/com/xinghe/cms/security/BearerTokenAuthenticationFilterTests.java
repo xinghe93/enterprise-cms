@@ -6,10 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import tools.jackson.databind.json.JsonMapper;
 import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.user.mapper.UserAuthMapper;
 import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +19,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import tools.jackson.databind.json.JsonMapper;
 
 @ExtendWith(MockitoExtension.class)
 class BearerTokenAuthenticationFilterTests {
@@ -58,6 +59,29 @@ class BearerTokenAuthenticationFilterTests {
         assertTrue(continued.get());
         assertEquals(200, response.getStatus());
         assertNull(request.getAttribute(CurrentUserProvider.REQUEST_ATTRIBUTE));
+    }
+
+    @Test
+    void loginPathVariantsAreNeverTreatedAsPublic() throws Exception {
+        for (String path : List.of("/api/auth/login/", "/api/auth/login/extra",
+                "/API/auth/login", "/api/auth/login;x=1")) {
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            AtomicBoolean continued = new AtomicBoolean(false);
+            filter.doFilter(request(path, null), response, (req, res) -> continued.set(true));
+            assertEquals(401, response.getStatus(), path + " 不得被当作 PUBLIC 端点放行");
+            assertTrue(!continued.get(), path);
+        }
+    }
+
+    @Test
+    void encodedApiPathIsStillProtected() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/%61pi/auth/me");
+        request.setServletPath("/api/auth/me");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean continued = new AtomicBoolean(false);
+        filter.doFilter(request, response, (req, res) -> continued.set(true));
+        assertEquals(401, response.getStatus(), "编码变体不得绕过 /api/ 前缀判断");
+        assertTrue(!continued.get());
     }
 
     @Test

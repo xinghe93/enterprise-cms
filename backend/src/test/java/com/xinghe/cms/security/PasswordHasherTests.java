@@ -45,4 +45,14 @@ class PasswordHasherTests {
         String unicode = "口令🔐Pässwörd";
         assertTrue(hasher.matches(unicode, hasher.hash(unicode)));
     }
+
+    @Test
+    void oversizedIterationCountIsRejectedBeforeDoingExpensiveWork() {
+        String encoded = hasher.hash("pw");
+        assertFalse(hasher.matches("pw", encoded.replace("$210000$", "$999999999$")),
+                "库中哈希被篡改成超大迭代次数时不得触发 CPU 拒绝服务");
+        String[] parts = encoded.split("\\$", -1);
+        assertFalse(hasher.matches("pw", parts[0] + "$" + parts[1] + "$" + parts[2] + "$AAAA"),
+                "摘要长度不符合 256 位格式时必须拒绝");
+    }
 }

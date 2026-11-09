@@ -18,7 +18,9 @@ import org.springframework.stereotype.Component;
  * {@code pbkdf2-sha256$<iterations>$<base64url(salt)>$<base64url(hash)>}，
  * 长度远小于 sys_user.password_hash 的 VARCHAR(255)。</p>
  *
- * <p>校验使用常量时间比较；编码格式异常只返回 false，不泄露账号是否存在。</p>
+ * <p>校验使用常量时间比较；编码格式异常只返回 false，不泄露账号是否存在。
+ * 迭代次数与摘要长度按本系统生成格式设上限/定值校验：password_hash 若被篡改成超大
+ * 迭代次数，登录时会造成 CPU 拒绝服务，因此不允许按外部数据任意放缩计算量。</p>
  */
 @Component
 public class PasswordHasher {
@@ -26,8 +28,10 @@ public class PasswordHasher {
     private static final String ALGORITHM = "PBKDF2WithHmacSHA256";
     private static final String FORMAT_PREFIX = "pbkdf2-sha256";
     private static final int ITERATIONS = 210_000;
+    private static final int MAX_ITERATIONS = 1_000_000;
     private static final int SALT_LENGTH = 16;
     private static final int KEY_LENGTH = 256;
+    private static final int DIGEST_LENGTH = KEY_LENGTH / 8;
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Base64.Encoder ENCODER = Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
@@ -55,7 +59,8 @@ public class PasswordHasher {
             int iterations = Integer.parseInt(parts[1]);
             byte[] salt = DECODER.decode(parts[2]);
             byte[] expected = DECODER.decode(parts[3]);
-            if (iterations <= 0 || salt.length != SALT_LENGTH || expected.length == 0) {
+            if (iterations <= 0 || iterations > MAX_ITERATIONS
+                    || salt.length != SALT_LENGTH || expected.length != DIGEST_LENGTH) {
                 return false;
             }
             byte[] actual = derive(password.toCharArray(), salt, iterations, expected.length * 8);
