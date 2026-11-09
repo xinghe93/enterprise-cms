@@ -1,0 +1,33 @@
+
+name: DeepSeek Commit Review
+
+on:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  commit-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 使用默认分支中的审查脚本，避免执行提交分支中的脚本
+      - name: Checkout trusted scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Review commits with DeepSeek
+        env:
+          REVIEW_MODE: commit
+          GITHUB_TOKEN: ${{ github.token }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: deepseek-flash
+        run: python .github/scripts/deepseek_review.py
