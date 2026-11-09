@@ -7,6 +7,7 @@ import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.ResultCode;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -24,18 +25,25 @@ public class OperationLogQuery extends PageQuery {
     private Long userId;
 
     /** 操作编码，去首尾空白后精确匹配；空串不筛选。 */
+    @Size(max = 100, message = "操作类型长度不能超过 100")
     private String operation;
 
     /** 执行结果，只接受 SUCCESS / FAILURE。 */
     @Pattern(regexp = "SUCCESS|FAILURE", message = "结果只能是 SUCCESS 或 FAILURE")
     private String result;
 
-    /** 记录时间起点，包含边界。 */
-    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    /**
+     * 记录时间起点，包含边界。
+     * 只接受本地时间（yyyy-MM-dd'T'HH:mm:ss[.SSS]），带 Z 或时区偏移一律 400。
+     */
+    @DateTimeFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss[.SSS]")
     private LocalDateTime createdFrom;
 
-    /** 记录时间终点，不包含边界；同时提供时起点必须早于终点。 */
-    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    /**
+     * 记录时间终点，不包含边界；同时提供时起点必须早于终点。
+     * 只接受本地时间（yyyy-MM-dd'T'HH:mm:ss[.SSS]），带 Z 或时区偏移一律 400。
+     */
+    @DateTimeFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss[.SSS]")
     private LocalDateTime createdTo;
 
     /**

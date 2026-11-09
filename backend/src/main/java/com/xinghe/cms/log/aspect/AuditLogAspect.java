@@ -22,13 +22,16 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 /**
  * 审计切面：环绕 {@link AuditLog} 标注的方法，记录操作编码、请求路径、HTTP 方法、结果与耗时。
  *
- * <p>结果以事务最终状态为准，避免留下假的 SUCCESS：</p>
+ * <p>结果以"方法是否正常返回 + 事务最终状态"共同判定，避免留下假的 SUCCESS：</p>
  * <ul>
  *   <li>调用方存在事务时，只注册一个事务同步器，在 {@code afterCompletion} 按状态写日志：
- *       COMMITTED → SUCCESS，其余（回滚）→ FAILURE；两种结果都用独立新事务提交，
- *       不受业务事务回滚影响，也不会与业务事务共用连接而互相拖累；</li>
+ *       方法正常返回且 COMMITTED → SUCCESS；方法抛出异常或事务回滚 → FAILURE。
+ *       两种结果都用独立新事务提交，不受业务事务回滚影响，也不会与业务事务共用连接而互相拖累；</li>
  *   <li>调用方没有事务时，方法返回后直接写 SUCCESS、抛出后直接写 FAILURE。</li>
  * </ul>
+ *
+ * <p>即使方法抛出的异常被外层捕获、外层事务随后提交，本次操作也只记 FAILURE；
+ * 只有"没有异常 + 事务提交"才算成功。</p>
  *
  * <p>耗时只统计方法执行时间（事务提交等待不计入）。切面不采集请求体、查询参数、密码、
  * Token 或认证头，也不吞原业务异常。</p>
@@ -50,11 +53,16 @@ public class AuditLogAspect {
     public Object record(ProceedingJoinPoint joinPoint, AuditLog auditLog) throws Throwable {
         long startNanos = System.nanoTime();
         OperationLog entry = buildEntry(auditLog.operation());
+        // 记录本次被审计方法是否抛出异常：外层即使捕获并提交了事务，也只能记 FAILURE。
+        boolean[] thrown = {false};
 
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            registerCompletion(entry);
+            registerCompletion(entry, thrown);
             try {
                 return joinPoint.proceed();
+            } catch (Throwable throwable) {
+                thrown[0] = true;
+                throw throwable;
             } finally {
                 // 只统计方法耗时；同步器回调发生在事务完成后，仍使用这个值。
                 entry.setDurationMs(elapsedMillis(startNanos));
@@ -77,13 +85,14 @@ public class AuditLogAspect {
     }
 
     /**
-     * 事务内只注册一个同步器：结果由事务最终状态决定，写入走独立新事务。
+     * 事务内只注册一个同步器：方法正常返回且事务提交才算 SUCCESS，写入走独立新事务。
      */
-    private void registerCompletion(OperationLog entry) {
+    private void registerCompletion(OperationLog entry, boolean[] thrown) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCompletion(int status) {
-                entry.setResult(status == TransactionSynchronization.STATUS_COMMITTED ? SUCCESS : FAILURE);
+                boolean committed = status == TransactionSynchronization.STATUS_COMMITTED;
+                entry.setResult(committed && !thrown[0] ? SUCCESS : FAILURE);
                 safeWriteInNewTransaction(entry);
             }
         });

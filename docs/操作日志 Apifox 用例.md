@@ -1,6 +1,6 @@
 # 操作日志模块 Apifox 测试用例（D 模块）
 
-**状态（2026-11-09 第二轮）：** 查询接口 18 条用例可在当前分支直接执行（L-01～L-16 为查询契约，L-17/L-18 为未知查询参数 400）；审计切面 6 条用例依赖真实写接口（审核/发布等）合入后执行，已标注。权限注解尚未合入（B 的权限数据层已随 PR #21 进入 dev），所有用例暂不需要 Token；B 交付注解后按第 0.4 节调整。
+**状态（2026-11-09 第三轮，C7）：** 查询接口 25 条用例可在当前分支直接执行（L-01～L-16 为查询契约，L-17～L-25 为未知参数/限长/时间格式/十六进制/组合筛选等边界）；审计切面 6 条用例依赖真实写接口（审核/发布等）合入后执行，已标注。权限注解尚未合入（B 的权限数据层已随 PR #21 进入 dev），所有用例暂不需要 Token；B 交付注解后按第 0.4 节调整。
 
 - 接口说明：见 [操作日志说明](操作日志说明.md)
 - 契约依据：[接口与协作约定 V1.0](<接口与协作约定 V1.0.md>) 第 3.5、8 节；[OpenAPI](api/enterprise-cms.openapi.json)
@@ -88,6 +88,13 @@ DELETE FROM sys_user WHERE id = 990101;
 | L-16 | 边界 | GET /api/admin/logs | 越界页 records=[] 且 total 真实 |
 | L-17 | 错误参数 | GET /api/admin/logs | 未知查询参数（列表） |
 | L-18 | 错误参数 | GET /api/admin/logs/{id} | 未知查询参数（详情） |
+| L-19 | 错误参数 | GET /api/admin/logs/{id} | 详情接口拒绝列表专用参数（size） |
+| L-20 | 边界 | GET /api/admin/logs | operation 超过 100 字符 |
+| L-21 | 错误参数 | GET /api/admin/logs | 时间带时区（Z）格式 |
+| L-22 | 错误参数 | GET /api/admin/logs | userId 十六进制写法 |
+| L-23 | 错误参数 | GET /api/admin/logs/{id} | 详情 ID 十六进制写法 |
+| L-24 | 正常 | GET /api/admin/logs | 毫秒精度时间可接受 |
+| L-25 | 正常 | GET /api/admin/logs | userId + result 组合筛选 |
 | A-01～A-06 | 审计 | 写接口 + 日志查询 | 见第 3 节，待业务接口合入 |
 
 ## 2. 查询接口用例
@@ -114,6 +121,13 @@ DELETE FROM sys_user WHERE id = 990101;
 | L-16 | `GET /api/admin/logs?current=99` | 200；`records=[]`；`data.total=3`；`data.current=99`（越界页不报错，总数保留真实值） |
 | L-17 | `GET /api/admin/logs?foo=bar` | 400；`code=400`；`message="未知的查询参数：foo"`；`data=null`；Service 不应被调用 |
 | L-18 | `GET /api/admin/logs/990001?token=x` | 400；`code=400`；`message="未知的查询参数：token"`；`data=null` |
+| L-19 | `GET /api/admin/logs/990001?size=10` | 400；`code=400`；`message="未知的查询参数：size"`；`data=null`（详情接口不接受任何查询参数） |
+| L-20 | `GET /api/admin/logs?operation=<101 个 a>` | 400；`code=400`；`message="操作类型长度不能超过 100"`；`data=null`；Service 不应被调用 |
+| L-21 | `GET /api/admin/logs?createdFrom=2026-11-08T10:00:00Z` | 400；`code=400`；`message="请求参数错误"`；`data=null`（只接受本地时间，带 Z/偏移一律 400） |
+| L-22 | `GET /api/admin/logs?userId=0x1` | 400；`code=400`；`message="请求参数错误"`；`data=null` |
+| L-23 | `GET /api/admin/logs/0x1` | 400；`code=400`；`message="请求参数错误"`；`data=null` |
+| L-24 | `GET /api/admin/logs?createdFrom=2026-11-08T10:00:00.000&createdTo=2026-11-08T11:00:00` | 200；`data.total=2`（毫秒精度可接受） |
+| L-25 | `GET /api/admin/logs?userId=990101&result=SUCCESS` | 200；`data.total=1`；`records[0].id="990001"` |
 
 补充：`/api/admin/logs?operation=%20%20%20`（三个空格）应返回 200 且不筛选（total=3），用于验证空白操作名归一化，可与 L-05 合并为一个场景步骤。
 
@@ -164,11 +178,11 @@ pm.test("时间毫秒精度", () => {
 
 ## 5. 执行方式与留证
 
-1. **手动执行：** 在 Apifox 按 L-01～L-18 顺序执行，保存请求/响应截图；错误用例至少截一张完整响应体。
-2. **场景运行：** 把 L-01～L-18 加入"操作日志回归"测试场景，一条命令跑完，保存运行报告截图。
-3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（38 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
+1. **手动执行：** 在 Apifox 按 L-01～L-25 顺序执行，保存请求/响应截图；错误用例至少截一张完整响应体。
+2. **场景运行：** 把 L-01～L-25 加入"操作日志回归"测试场景，一条命令跑完，保存运行报告截图。
+3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（46 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
 4. **回归时机：** 修改查询参数、错误提示、VO 字段、权限注解后必须重跑 L 组用例；接入业务写接口后补跑 A 组用例。
-5. **自动化替代：** 本地已提供 `backend/target/run_e2e.ps1`，导入种子后自动启动 jar、执行 L-01～L-18 并清理数据，可作为 Apifox 之外的回归手段（脚本须以 UTF-8 带 BOM 保存，Windows PowerShell 5.1 才能正确解析中文）。
+5. **自动化替代：** 本地已提供 `课程设计/项目指导/scripts/run_e2e.ps1`，导入种子后自动启动 jar、执行 L-01～L-25 并清理数据，可作为 Apifox 之外的回归手段（脚本须以 UTF-8 带 BOM 保存，Windows PowerShell 5.1 才能正确解析中文；`docker exec mysql` 导入种子需加 `--default-character-set=utf8mb4`）。
 
 ## 6. 已知偏差
 
@@ -176,11 +190,13 @@ pm.test("时间毫秒精度", () => {
 | --- | --- | --- |
 | 权限注解未接入（B 的权限数据层已合入） | 未登录也能查日志；普通员工可读全局审计数据 | 待 B 交付 `@RequirePermission` 后补 401/403 用例并验收 |
 | 审计事务分支未在真实业务事务验证 | 仅测试桩 + 手工同步环境覆盖 | 业务写接口合入后执行 A-01～A-06 |
-| 完整构建受宿主机 Mockito attach 限制 | B 的两个 Mockito 测试类 13 项在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 101 项全过；环境问题需组长/B 统一处理 |
+| 完整构建受宿主机 Mockito attach 限制 | B 的两个 Mockito 测试类 13 项在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 109 项全过（本模块 46 项）；环境问题需组长/B 统一处理 |
 
-## 7. 本次执行记录（2026-11-09 第二轮）
+## 7. 本次执行记录（2026-11-09 第三轮，C7）
 
 - 环境：Docker 容器 `mysql8`（MySQL 8.4，已含 `database/002_seed_permission_baseline.sql` 权限基线）+ 后端 jar（JDK 25，`TZ=Asia/Shanghai`，`SPRING_DATASOURCE_PASSWORD` 环境变量注入），监听 8080。
-- 自动化脚本 `backend/target/run_e2e.ps1` 导入第 1 节种子后按 L-01～L-18 顺序执行，**18/18 PASS**：默认倒序、userId/result/operation/时间筛选、5 类参数 400 提示语逐字匹配、详情关联 `日志演示用户`、空 userId、404/400、越界页、未知参数（列表与详情）400。
-- 脚本结束后 `cleanup` 删除种子日志与演示用户（复查剩余 0 条），`Stop-Process` 停止后端并释放 8080。
-- 执行前核对：`100` 示例已统一为种子用户 `990101`；未知参数行为已与契约 8.1 对齐，原"未知参数返回 200"偏差关闭。
+- 自动化脚本 `课程设计/项目指导/scripts/run_e2e.ps1` 导入第 0.3 节种子后按 L-01～L-25 顺序执行，**25/25 PASS**；前两轮 18 条全部保留通过，新增 7 条（L-19～L-25）覆盖详情拒绝列表参数、operation 限长、Z 时间、十六进制 userId/详情 ID、毫秒时间、组合筛选。
+- 第三轮代码修正：审计结果改为"方法正常返回 + 事务提交"双条件（`AuditLogAspect` 用 `boolean[] thrown` 记录异常，异常后外层提交也记 FAILURE）；`OperationLogQuery` 增加 operation `@Size(max=100)`、时间改 `@DateTimeFormat(pattern="yyyy-MM-dd'T'HH:mm:ss[.SSS]")`；`OperationLogController` 白名单按接口区分（列表 7 个 / 详情 0 个），`userId`/`current`/`size` 只接受十进制，详情 ID 改为 1–18 位十进制字符串解析。
+- 首跑 23/25 的两个失败均为验证脚本自身问题：种子中文字符集乱码（`docker exec mysql` 缺 `--default-character-set=utf8mb4`，显示为 `æ—¥å¿—æ¼”ç¤ºç”¨æˆ·`）与 L-25 期望值写错（应为 1）；修复脚本后 25/25。
+- 脚本结束后 `cleanup` 删除种子日志与演示用户（复查 remaining_logs=0、remaining_user=0），`Stop-Process` 停止后端并释放 8080。
+- 构建：`mvn -B clean verify` 排除 B 的两个 Mockito 类后 **109 项全过**（本模块 46 项）。

@@ -152,6 +152,22 @@ class AuditLogAspectTests {
     }
 
     @Test
+    void committedTransactionAfterThrownMethodStillRecordsFailure() {
+        beginTransactionSync();
+        IllegalStateException failure = new IllegalStateException("业务失败");
+
+        assertThatThrownBy(() -> aspect.record(StubProceedingJoinPoint.throwing(failure), auditLog))
+                .isSameAs(failure);
+
+        // 模拟外层捕获异常后继续提交了其他工作：事务状态是 COMMITTED，但本次操作失败。
+        completeTransaction(TransactionSynchronization.STATUS_COMMITTED);
+
+        assertThat(writer.written).isEmpty();
+        assertThat(writer.writtenInNewTransaction).hasSize(1);
+        assertThat(writer.writtenInNewTransaction.get(0).getResult()).isEqualTo("FAILURE");
+    }
+
+    @Test
     void transactionPathRegistersOnlyOneSynchronization() throws Throwable {
         beginTransactionSync();
 

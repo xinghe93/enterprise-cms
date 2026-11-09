@@ -157,6 +157,63 @@ class OperationLogControllerTests {
         assertError(result, 400, "未知的查询参数：aa、zz");
     }
 
+    @Test
+    void rejectsListOnlyParameterOnDetailEndpoint() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs/7").param("size", "10")).andReturn();
+
+        assertError(result, 400, "未知的查询参数：size");
+    }
+
+    @Test
+    void rejectsOversizedOperationBeforeServiceIsCalled() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs").param("operation", "a".repeat(101))).andReturn();
+
+        assertError(result, 400, "操作类型长度不能超过 100");
+        assertThat(stubService.pageCalled).isFalse();
+    }
+
+    @Test
+    void acceptsOperationOfMaximumLength() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs").param("operation", "a".repeat(100))).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.pageCalled).isTrue();
+    }
+
+    @Test
+    void rejectsTimeWithTimezoneOffsetBeforeServiceIsCalled() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs")
+                .param("createdFrom", "2026-11-08T10:00:00Z")).andReturn();
+
+        assertError(result, 400, "请求参数错误");
+        assertThat(stubService.pageCalled).isFalse();
+    }
+
+    @Test
+    void rejectsNonDecimalNumericParameter() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs").param("userId", "0x1")).andReturn();
+
+        assertError(result, 400, "请求参数错误");
+        assertThat(stubService.pageCalled).isFalse();
+    }
+
+    @Test
+    void rejectsHexadecimalDetailId() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs/0x1")).andReturn();
+
+        assertError(result, 400, "请求参数错误");
+    }
+
+    @Test
+    void acceptsLocalTimeWithOptionalMilliseconds() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs")
+                .param("createdFrom", "2026-11-08T10:00:00.120")
+                .param("createdTo", "2026-11-08T11:00:00")).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.pageCalled).isTrue();
+    }
+
     private OperationLogVO sampleLog(Long id) {
         OperationLogVO vo = new OperationLogVO();
         vo.setId(id);
