@@ -21,8 +21,17 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * 审计切面：环绕 {@link AuditLog} 标注的方法，记录操作编码、请求路径、HTTP 方法、结果与耗时。
- * 成功日志在事务提交后写入；业务回滚时用新事务记录 FAILURE，避免留下假的 SUCCESS。
- * 切面不采集请求体、查询参数、密码、Token 或认证头，也不吞原业务异常。
+ *
+ * <p>结果以事务最终状态为准，避免留下假的 SUCCESS：</p>
+ * <ul>
+ *   <li>调用方存在事务时，只注册一个事务同步器，在 {@code afterCompletion} 按状态写日志：
+ *       COMMITTED → SUCCESS，其余（回滚）→ FAILURE；两种结果都用独立新事务提交，
+ *       不受业务事务回滚影响，也不会与业务事务共用连接而互相拖累；</li>
+ *   <li>调用方没有事务时，方法返回后直接写 SUCCESS、抛出后直接写 FAILURE。</li>
+ * </ul>
+ *
+ * <p>耗时只统计方法执行时间（事务提交等待不计入）。切面不采集请求体、查询参数、密码、
+ * Token 或认证头，也不吞原业务异常。</p>
  */
 @Aspect
 @Component
@@ -40,53 +49,54 @@ public class AuditLogAspect {
     @Around("@annotation(auditLog)")
     public Object record(ProceedingJoinPoint joinPoint, AuditLog auditLog) throws Throwable {
         long startNanos = System.nanoTime();
+        OperationLog entry = buildEntry(auditLog.operation());
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            registerCompletion(entry);
+            try {
+                return joinPoint.proceed();
+            } finally {
+                // 只统计方法耗时；同步器回调发生在事务完成后，仍使用这个值。
+                entry.setDurationMs(elapsedMillis(startNanos));
+            }
+        }
+
         try {
             Object result = joinPoint.proceed();
-            submit(buildEntry(auditLog.operation(), SUCCESS, elapsedMillis(startNanos)), true);
+            entry.setDurationMs(elapsedMillis(startNanos));
+            entry.setResult(SUCCESS);
+            safeWrite(entry);
             return result;
         } catch (Throwable throwable) {
-            submit(buildEntry(auditLog.operation(), FAILURE, elapsedMillis(startNanos)), false);
+            entry.setDurationMs(elapsedMillis(startNanos));
+            entry.setResult(FAILURE);
+            safeWrite(entry);
             // 审计不能吞业务异常：原样抛出，由全局异常处理生成响应。
             throw throwable;
         }
     }
 
-    private OperationLog buildEntry(String operation, String result, long durationMs) {
+    /**
+     * 事务内只注册一个同步器：结果由事务最终状态决定，写入走独立新事务。
+     */
+    private void registerCompletion(OperationLog entry) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                entry.setResult(status == TransactionSynchronization.STATUS_COMMITTED ? SUCCESS : FAILURE);
+                safeWriteInNewTransaction(entry);
+            }
+        });
+    }
+
+    private OperationLog buildEntry(String operation) {
         HttpServletRequest request = currentRequest();
         OperationLog entry = new OperationLog();
         entry.setUserId(resolveUserId());
         entry.setOperation(operation);
         entry.setRequestUri(request == null ? UNKNOWN : request.getRequestURI());
         entry.setHttpMethod(request == null ? UNKNOWN : request.getMethod());
-        entry.setResult(result);
-        entry.setDurationMs(durationMs);
         return entry;
-    }
-
-    private void submit(OperationLog entry, boolean success) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            safeWrite(entry);
-            return;
-        }
-        if (success) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    safeWrite(entry);
-                }
-            });
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCompletion(int status) {
-                if (status == TransactionSynchronization.STATUS_COMMITTED) {
-                    safeWrite(entry);
-                } else {
-                    safeWriteInNewTransaction(entry);
-                }
-            }
-        });
     }
 
     private void safeWrite(OperationLog entry) {
@@ -101,7 +111,7 @@ public class AuditLogAspect {
         try {
             auditLogWriter.writeInNewTransaction(entry);
         } catch (Exception exception) {
-            log.error("业务回滚后写入操作审计日志失败：operation={}", entry.getOperation(), exception);
+            log.error("事务完成后写入操作审计日志失败：operation={}", entry.getOperation(), exception);
         }
     }
 

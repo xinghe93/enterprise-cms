@@ -50,6 +50,22 @@ public class OperationLogQuery extends PageQuery {
     }
 
     /**
+     * 复制查询条件并把 operation 归一化为去首尾空白后的值，返回新对象。
+     * 查询层不就地修改调用方传入的对象，避免同一条件被复用时行为漂移。
+     */
+    public OperationLogQuery copyWithNormalizedOperation() {
+        OperationLogQuery copy = new OperationLogQuery();
+        copy.setUserId(userId);
+        copy.setOperation(normalizedOperation());
+        copy.setResult(result);
+        copy.setCreatedFrom(createdFrom);
+        copy.setCreatedTo(createdTo);
+        copy.setCurrent(getCurrent());
+        copy.setSize(getSize());
+        return copy;
+    }
+
+    /**
      * 校验左闭右开时间区间：创建时间起点必须早于终点。
      */
     public void validateTimeRange() {

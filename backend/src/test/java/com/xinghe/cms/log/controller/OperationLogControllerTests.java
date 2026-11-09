@@ -39,6 +39,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @Import(OperationLogControllerTests.TestConfig.class)
 class OperationLogControllerTests {
 
+    /** 统一响应固定四个字段：code / message / data / timestamp（见 docs 统一响应格式）。 */
+    private static final int UNIFIED_RESPONSE_FIELD_COUNT = 4;
+
     @Autowired
     private WebApplicationContext context;
 
@@ -126,10 +129,32 @@ class OperationLogControllerTests {
 
         assertThat(result.getResponse().getStatus()).isEqualTo(400);
         assertThat(result.getResponse().getContentType()).startsWith(MediaType.APPLICATION_JSON_VALUE);
-        JsonNode body = body(result);
-        assertThat(body.size()).isEqualTo(4);
-        assertThat(body.get("code").asInt()).isEqualTo(400);
-        assertThat(body.get("data").isNull()).isTrue();
+        assertUnifiedErrorBody(body(result), 400);
+    }
+
+    @Test
+    void rejectsUnknownQueryParameterBeforeServiceIsCalled() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs").param("foo", "bar")).andReturn();
+
+        assertError(result, 400, "未知的查询参数：foo");
+        assertThat(stubService.pageCalled).isFalse();
+    }
+
+    @Test
+    void rejectsUnknownQueryParametersOnDetailEndpoint() throws Exception {
+        stubService.detailResult = sampleLog(7L);
+
+        MvcResult result = mockMvc.perform(get("/api/admin/logs/7").param("token", "secret")).andReturn();
+
+        assertError(result, 400, "未知的查询参数：token");
+    }
+
+    @Test
+    void rejectsMultipleUnknownQueryParametersInStableOrder() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs")
+                .param("zz", "1").param("aa", "2").param("current", "1")).andReturn();
+
+        assertError(result, 400, "未知的查询参数：aa、zz");
     }
 
     private OperationLogVO sampleLog(Long id) {
@@ -154,11 +179,20 @@ class OperationLogControllerTests {
         assertThat(result.getResponse().getStatus()).isEqualTo(status);
         assertThat(result.getResponse().getContentType()).startsWith(MediaType.APPLICATION_JSON_VALUE);
         JsonNode json = body(result);
-        assertThat(json.size()).isEqualTo(4);
-        assertThat(json.get("code").asInt()).isEqualTo(status);
+        assertUnifiedErrorBody(json, status);
         assertThat(json.get("message").asString()).isEqualTo(message);
-        assertThat(json.get("data").isNull()).isTrue();
         assertThat(json.get("timestamp").asString()).endsWith("Z");
+    }
+
+    /**
+     * 统一错误响应结构：四个固定字段，data 为 null，timestamp 为 UTC。
+     */
+    private void assertUnifiedErrorBody(JsonNode json, int status) {
+        assertThat(json.size()).isEqualTo(UNIFIED_RESPONSE_FIELD_COUNT);
+        assertThat(json.get("code").asInt()).isEqualTo(status);
+        assertThat(json.get("data").isNull()).isTrue();
+        assertThat(json.get("message").isTextual()).isTrue();
+        assertThat(json.get("timestamp").isTextual()).isTrue();
     }
 
     @TestConfiguration(proxyBeanMethods = false)

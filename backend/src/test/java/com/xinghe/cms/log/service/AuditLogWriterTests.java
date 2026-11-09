@@ -15,6 +15,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 审计写入组件测试：用 JDK 动态代理代替 Mapper（本机 JDK 25 下 Mockito 不可用），不连接 MySQL。
+ * 说明：这里直接 new 实现类，绕过了 Spring 事务代理，只验证两个方法都把实体交给 {@code Mapper.insert}；
+ * {@code writeInNewTransaction} 的 REQUIRES_NEW 事务语义由 Spring 的 {@code @Transactional} 代理提供，
+ * 由集成环境保证，单元测试不重复断言框架行为。
  */
 class AuditLogWriterTests {
 
@@ -50,7 +53,7 @@ class AuditLogWriterTests {
     }
 
     @Test
-    void writeInNewTransactionAlsoInsertsEntity() {
+    void writeInNewTransactionDelegatesInsertToMapper() {
         OperationLog entry = sampleEntry();
 
         writer.writeInNewTransaction(entry);

@@ -27,12 +27,12 @@ public class OperationLogServiceImpl implements OperationLogService {
         if (query == null) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "查询条件不能为空");
         }
-        query.validateTimeRange();
-        // 去首尾空白后为空表示不筛选，交给 XML 的 if 判断。
-        query.setOperation(query.normalizedOperation());
+        // 复制条件再归一化，不修改调用方对象；空白操作编码表示不筛选，交给 XML 的 if 判断。
+        OperationLogQuery criteria = query.copyWithNormalizedOperation();
+        criteria.validateTimeRange();
 
-        Page<OperationLogVO> page = query.toPage();
-        operationLogMapper.selectLogPage(page, query);
+        Page<OperationLogVO> page = criteria.toPage();
+        operationLogMapper.selectLogPage(page, criteria);
         return PageResult.from(page);
     }
 

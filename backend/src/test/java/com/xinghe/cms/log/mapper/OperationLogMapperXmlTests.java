@@ -48,4 +48,15 @@ class OperationLogMapperXmlTests {
         assertThat(json.get("userId").asString()).isEqualTo("9");
         assertThat(json.get("createdAt").asString()).isEqualTo("2026-11-02T16:00:00.120");
     }
+
+    @Test
+    void serializesNullBusinessIdsAndCreatedAtAsNull() {
+        OperationLogVO vo = new OperationLogVO();
+
+        JsonNode json = jsonMapper.readTree(jsonMapper.writeValueAsString(vo));
+
+        assertThat(json.get("id").isNull()).isTrue();
+        assertThat(json.get("userId").isNull()).isTrue();
+        assertThat(json.get("createdAt").isNull()).isTrue();
+    }
 }

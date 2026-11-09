@@ -4,6 +4,7 @@ import java.lang.reflect.Proxy;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -23,11 +24,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 日志查询 Service 的规则测试：不启动 Spring、不连接 MySQL。
  * 用 JDK 动态代理代替 Mapper（本机 JDK 25 下 Mockito 无法自附加）。
+ * 断言同时覆盖"是否查询了 Mapper"与"传给 Mapper 的条件对象"，不依赖调用顺序。
  */
 class OperationLogServiceTests {
 
     private final AtomicReference<OperationLogQuery> capturedQuery = new AtomicReference<>();
     private final AtomicBoolean detailMapperCalled = new AtomicBoolean(false);
+    private final AtomicInteger pageMapperCalls = new AtomicInteger();
 
     private OperationLogServiceImpl service;
 
@@ -38,15 +41,16 @@ class OperationLogServiceTests {
                 new Class<?>[]{OperationLogMapper.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "selectLogPage" -> {
-                        Page<OperationLogVO> page = (Page<OperationLogVO>) args[0];
-                        capturedQuery.set((OperationLogQuery) args[1]);
+                        pageMapperCalls.incrementAndGet();
+                        Page<OperationLogVO> page = requirePage(args[0]);
+                        capturedQuery.set(requireQuery(args[1]));
                         page.setRecords(List.of(sampleLog(1L)));
                         page.setTotal(1);
                         yield page;
                     }
                     case "selectLogDetail" -> {
                         detailMapperCalled.set(true);
-                        Long id = (Long) args[0];
+                        Long id = requireLong(args[0]);
                         yield id == 99L ? null : sampleLog(id);
                     }
                     default -> defaultValue(method.getReturnType());
@@ -64,7 +68,21 @@ class OperationLogServiceTests {
         assertThat(result.total()).isEqualTo(1);
         assertThat(result.current()).isEqualTo(1);
         assertThat(result.size()).isEqualTo(10);
-        assertThat(capturedQuery.get()).isSameAs(query);
+        assertThat(pageMapperCalls).hasValue(1);
+        // 查询层使用复制后的条件对象，不复用调用方实例。
+        assertThat(capturedQuery.get()).isNotSameAs(query);
+    }
+
+    @Test
+    void pageDoesNotMutateCallerQuery() {
+        OperationLogQuery query = new OperationLogQuery();
+        query.setOperation("   article.approve   ");
+
+        service.page(query);
+
+        assertThat(query.getOperation()).isEqualTo("   article.approve   ");
+        assertThat(capturedQuery.get()).isNotSameAs(query);
+        assertThat(capturedQuery.get().getOperation()).isEqualTo("article.approve");
     }
 
     @Test
@@ -99,6 +117,7 @@ class OperationLogServiceTests {
                 .hasMessage("起始时间必须早于结束时间")
                 .satisfies(exception -> assertThat(((BusinessException) exception).getResultCode())
                         .isEqualTo(ResultCode.BAD_REQUEST));
+        assertThat(pageMapperCalls).hasValue(0);
         assertThat(capturedQuery.get()).isNull();
     }
 
@@ -127,6 +146,31 @@ class OperationLogServiceTests {
                 .satisfies(exception -> assertThat(((BusinessException) exception).getResultCode())
                         .isEqualTo(ResultCode.BAD_REQUEST));
         assertThat(detailMapperCalled).isFalse();
+    }
+
+    private static OperationLogQuery requireQuery(Object argument) {
+        if (argument instanceof OperationLogQuery query) {
+            return query;
+        }
+        throw new IllegalStateException("selectLogPage 的第二个参数应为 OperationLogQuery，实际为 "
+                + (argument == null ? "null" : argument.getClass().getName()));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Page<OperationLogVO> requirePage(Object argument) {
+        if (argument instanceof Page<?> page) {
+            return (Page<OperationLogVO>) page;
+        }
+        throw new IllegalStateException("selectLogPage 的第一个参数应为 Page，实际为 "
+                + (argument == null ? "null" : argument.getClass().getName()));
+    }
+
+    private static Long requireLong(Object argument) {
+        if (argument instanceof Long id) {
+            return id;
+        }
+        throw new IllegalStateException("selectLogDetail 的参数应为 Long，实际为 "
+                + (argument == null ? "null" : argument.getClass().getName()));
     }
 
     private OperationLogVO sampleLog(Long id) {
