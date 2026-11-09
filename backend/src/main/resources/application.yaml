@@ -1,6 +1,12 @@
 spring:
   application:
     name: backend
+  jackson:
+    deserialization:
+      # 契约 8.1：未知 JSON 字段必须返回 400。Jackson 3 中类上的
+      # @JsonIgnoreProperties(ignoreUnknown = false) 不能覆盖全局忽略设置，
+      # 必须在全局开启严格检查，否则 extra 字段会进入登录服务并返回 200。
+      fail-on-unknown-properties: true
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/enterprise_cms}
     username: ${SPRING_DATASOURCE_USERNAME:root}
