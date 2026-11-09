@@ -23,10 +23,12 @@ const rules = {
 
 async function submit() {
   if (submitting.value) return
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
+  // 先置位再 await，防止回车与表单 submit 在校验期间并发触发两次登录请求。
   submitting.value = true
   try {
+    // Element Plus 的 validate() 在校验不通过时 reject，按框架约定转为 false。
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid) return
     const result = await authApi.login(form.value.username, form.value.password)
     session.setToken(result.accessToken)
     // LoginResult.user 与 GET /auth/me 返回的是同一个 User 契约，无需重复请求。
@@ -34,7 +36,8 @@ async function submit() {
     form.value.password = ''
     await router.push('/workspace')
   } catch {
-    // 公共层已统一提示错误，组件只负责结束加载状态，不重复 ElMessage。
+    // api/index.js 的 onError 已统一用 ElMessage 提示（含 401「用户名或密码错误」），
+    // 组件只负责结束加载状态，不重复弹窗、不吞掉请求异常本身。
   } finally {
     submitting.value = false
   }
@@ -77,7 +80,7 @@ async function signOut() {
           <ElInput v-model="form.username" autocomplete="username" maxlength="64" placeholder="请输入登录账号" />
         </ElFormItem>
         <ElFormItem label="密码" prop="password">
-          <ElInput v-model="form.password" type="password" show-password autocomplete="current-password" maxlength="128" placeholder="请输入密码" @keyup.enter="submit" />
+          <ElInput v-model="form.password" type="password" show-password autocomplete="current-password" maxlength="128" placeholder="请输入密码" />
         </ElFormItem>
         <ElButton type="primary" native-type="submit" :loading="submitting" class="login-submit">登录</ElButton>
       </ElForm>
