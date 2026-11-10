@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.user.mapper.UserAuthMapper">
+
+    <!-- 构造参数顺序与对应 record 的组件顺序严格一致。 -->
+    <resultMap id="credentialsMap" type="com.xinghe.cms.user.mapper.row.UserCredentialsRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="username" javaType="java.lang.String"/>
+            <arg column="password_hash" javaType="java.lang.String"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="statusMap" type="com.xinghe.cms.user.mapper.row.CurrentUserStatusRow">
+        <constructor>
+            <arg column="username" javaType="java.lang.String"/>
+            <arg column="department_id" javaType="java.lang.Long"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="profileMap" type="com.xinghe.cms.user.mapper.row.UserProfileRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="username" javaType="java.lang.String"/>
+            <arg column="real_name" javaType="java.lang.String"/>
+            <arg column="department_id" javaType="java.lang.Long"/>
+            <arg column="dept_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="roleBriefMap" type="com.xinghe.cms.user.mapper.row.RoleBriefRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="role_code" javaType="java.lang.String"/>
+            <arg column="role_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+        </constructor>
+    </resultMap>
+
+    <select id="findCredentialsByUsername" resultMap="credentialsMap">
+        SELECT id, username, password_hash, status
+        FROM sys_user
+        WHERE username = #{username}
+    </select>
+
+    <select id="findStatusById" resultMap="statusMap">
+        SELECT username, department_id, status
+        FROM sys_user
+        WHERE id = #{userId}
+    </select>
+
+    <select id="findProfileById" resultMap="profileMap">
+        SELECT u.id, u.username, u.real_name, u.department_id, d.dept_name,
+               u.status, u.created_at, u.updated_at
+        FROM sys_user u
+        LEFT JOIN sys_department d ON d.id = u.department_id
+        WHERE u.id = #{userId}
+    </select>
+
+    <select id="findRolesByUserId" resultMap="roleBriefMap">
+        SELECT r.id, r.role_code, r.role_name, r.status
+        FROM sys_user_role ur
+        JOIN sys_role r ON r.id = ur.role_id
+        WHERE ur.user_id = #{userId}
+        ORDER BY r.id ASC
+    </select>
+
+</mapper>
