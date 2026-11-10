@@ -33,8 +33,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * PUBLIC 端点只有 login 一个，必须大小写敏感的精确匹配，不用 startsWith / contains。
  * 契约中全部业务接口都位于 /api/ 下，其余静态资源不属于本过滤器职责。</p>
  *
- * <p>检测到账号停用时，除返回 401 外主动刷新该用户会话纪元，使其余旧会话立即失效。
- * 账号启停接口也须在数据库事务提交后调用 {@code revokeAllForUser}，不得先刷新
+ * <p>检测到账号停用时，除返回 401 外按「本次请求校验旧 Token 时确认的纪元」条件刷新
+ * 该用户会话纪元：只有 Redis 当前纪元仍是那个观察值时才轮换。这样延迟的旧请求
+ * （读到停用状态后暂停，期间账号完成停用撤销、重新启用并重新登录）恢复后不会
+ * 无条件撤销，从而作废重新启用后签发的新 Token。旧请求本身仍返回 401。</p>
+ *
+ * <p>账号启停接口仍须在数据库事务提交后调用 {@code revokeAllForUser}，不得先刷新
  * Redis 再提交数据库。Redis/数据库故障返回 500，不放行、不吞异常。</p>
  */
 @Component
@@ -70,20 +74,23 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                 writeError(response, ResultCode.UNAUTHORIZED);
                 return;
             }
-            Long userId = sessions.resolve(token);
-            if (userId == null) {
+            // 记下校验旧 Token 时确认的纪元，供停用路径做条件撤销。
+            AuthSessionService.SessionIdentity identity = sessions.resolveIdentity(token);
+            if (identity == null) {
                 writeError(response, ResultCode.UNAUTHORIZED);
                 return;
             }
             // 每请求重查账号状态是契约要求：停用与权限变更必须即时生效，不能缓存放行。
-            CurrentUserStatusRow status = userMapper.findStatusById(userId);
+            CurrentUserStatusRow status = userMapper.findStatusById(identity.userId());
             if (status == null || status.status() == null || status.status() != 1) {
-                sessions.revokeAllForUser(userId);
+                // 只有观察到的纪元仍是当前纪元时才允许轮换；期间已撤销并重新登录的场景
+                // 纪元已变，本次不撤销，避免作废新会话。旧请求一律返回 401。
+                sessions.revokeAllForUserIfEpoch(identity.userId(), identity.epoch());
                 writeError(response, ResultCode.UNAUTHORIZED);
                 return;
             }
             request.setAttribute(CurrentUserProvider.REQUEST_ATTRIBUTE,
-                    new CurrentUser(userId, status.username(), status.departmentId()));
+                    new CurrentUser(identity.userId(), status.username(), status.departmentId()));
             request.setAttribute(CurrentUserProvider.TOKEN_ATTRIBUTE, token);
         } catch (Exception exception) {
             // 契约要求 Redis/DB 故障不得放行；连同编程错误一并拒绝并记录完整堆栈，

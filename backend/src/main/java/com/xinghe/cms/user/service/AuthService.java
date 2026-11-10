@@ -17,7 +17,6 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -60,17 +59,22 @@ public class AuthService {
      * 放在 readOnly 事务内只会造成语义误导。所有数据库读取都在签发前完成，
      * 任一步失败都会直接抛出异常，不会留下孤儿 Token。
      *
-     * <p>并发停用防线（契约 3.1「禁止按旧的启用快照建立可用会话」）：
-     * 先记录当前会话纪元，再复查账号状态，最后带着这个纪元签发。
-     * 停用按契约先在数据库事务里提交 status=0、提交后才刷新会话纪元，因此
-     * ① 停用提交发生在取纪元之前时，复查状态会看到已停用；
-     * ② 停用提交发生在复查之后时，纪元比对与写入会话在同一段 Lua 内完成：
-     *    要么比对失败直接拒绝，要么新 Token 也随即带上已作废的旧纪元。
-     * 两条路径都不会留下「重新启用后仍可用」的 Token。</p>
+     * <p>登录顺序（密码校验通过后才碰会话状态）：
+     * ① {@code ensureEpoch} 原子取得或初始化一个<strong>确定的非空纪元</strong>；
+     * ② 复查账号状态；③ 带上该纪元原子签发。</p>
      *
-     * <p>首次登录时该用户还没有纪元键，{@code currentEpoch} 返回空，
-     * 由签发脚本现场生成随机纪元并落库；此后若纪元键丢失，校验一律失败，
-     * 不会被当成「初始版本」而让已撤销的旧 Token 复活。</p>
+     * <p>并发首次登录：① 用单段 Lua 完成「读取或创建」，多个并发请求拿到的是同一个
+     * 纪元，随后各自签发独立 Token，不会出现「都读到空纪元、只有第一个能成功」而让
+     * 正确的账号密码返回 401。</p>
+     *
+     * <p>并发停用防线（契约 3.1「禁止按旧的启用快照建立可用会话」）：停用按契约先在
+     * 数据库事务里提交 status=0、提交后才刷新会话纪元，因此
+     * ① 停用提交发生在取得纪元之前时，复查状态会看到已停用；
+     * ② 停用提交发生在复查之后时，签发脚本按已取得的旧纪元比对必然失败并返回 null。
+     * 两条路径都不会留下「重新启用后仍可用」的 Token，也不换用新纪元重试。</p>
+     *
+     * <p>纪元键在取得之后丢失时，签发脚本读不到纪元直接拒绝，不会按「首次登录」重建，
+     * 已撤销的旧 Token 也不会复活。</p>
      */
     public LoginResultVO login(LoginRequest request) {
         String username = request.username().trim();
@@ -82,7 +86,8 @@ public class AuthService {
             throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);
         }
         Long userId = credentials.id();
-        Optional<String> expectedEpoch = sessions.currentEpoch(userId);
+        // 密码校验通过后、复查状态前：原子取得或初始化同一个随机纪元。
+        String expectedEpoch = sessions.ensureEpoch(userId);
         CurrentUserStatusRow status = userMapper.findStatusById(userId);
         if (status == null || status.status() == null || status.status() != 1) {
             throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);
@@ -90,7 +95,7 @@ public class AuthService {
         UserVO user = toUserVO(userId);
         String token = sessions.issue(userId, expectedEpoch);
         if (token == null) {
-            // 登录期间纪元已变化：不能换用新纪元重试，否则会签出在账号
+            // 复查之后发生撤销（或纪元键丢失）：不能换用新纪元重试，否则会签出在账号
             // 重新启用后仍然可用的 Token。统一按登录失败处理，不泄露原因。
             throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);
         }
