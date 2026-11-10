@@ -88,6 +88,17 @@ SYSTEM_PROMPT = """
 # GitHub REST API
 # ============================================================
 
+class GitHubAPIError(RuntimeError):
+    """保留 GitHub HTTP 状态码和响应正文，便于按错误类型降级处理。"""
+
+    def __init__(self, status_code, detail):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(
+            f"GitHub API 请求失败：HTTP {status_code}，{detail[:2000]}"
+        )
+
+
 def github_request(method, path, payload=None):
     url = f"{GITHUB_API_URL}{path}"
 
@@ -134,10 +145,7 @@ def github_request(method, path, payload=None):
             errors="replace"
         )
 
-        raise RuntimeError(
-            f"GitHub API 请求失败：HTTP {error.code}，"
-            f"{detail[:2000]}"
-        ) from error
+        raise GitHubAPIError(error.code, detail) from error
 
     except urllib.error.URLError as error:
         raise RuntimeError(
@@ -613,7 +621,8 @@ def normalize_findings(raw_findings, allowed_files):
         if isinstance(line, str) and line.isdigit():
             line = int(line)
 
-        if not isinstance(line, int) or line <= 0:
+        # bool 是 int 的子类，不能把 True/False 当作有效行号。
+        if isinstance(line, bool) or not isinstance(line, int) or line <= 0:
             continue
 
         severity_raw = str(
@@ -825,40 +834,41 @@ def render_inline_comment(finding):
 # ============================================================
 
 def parse_added_lines(patch):
+    """
+    提取 Diff 中真实新增行的绝对行号。
+
+    只对新增行和上下文行推进新文件行号；
+    删除行和 Diff 元数据不推进新文件行号。
+    """
 
     added_lines = set()
     new_line = None
 
     for raw_line in patch.splitlines():
-
         if raw_line.startswith("@@"):
-
             match = HUNK_HEADER_RE.match(raw_line)
+            new_line = int(match.group(3)) if match else None
+            continue
 
-            if match:
-                new_line = int(match.group(3))
-
+        if new_line is None:
             continue
 
         if raw_line.startswith("+++"):
             continue
 
         if raw_line.startswith("+"):
-
-            if new_line is not None:
-                added_lines.add(new_line)
-                new_line += 1
-
-            continue
-
-        if raw_line.startswith("-"):
-            continue
-
-        if raw_line.startswith("\\"):
-            continue
-
-        if new_line is not None:
+            added_lines.add(new_line)
             new_line += 1
+            continue
+
+        if raw_line.startswith("-") or raw_line.startswith("\\"):
+            continue
+
+        if raw_line.startswith(" "):
+            new_line += 1
+            continue
+
+        # 未识别的 Diff 元数据不应改变新文件行号。
 
     return added_lines
 
@@ -1084,10 +1094,36 @@ def review_pull_request():
         )
         return
 
+    # DeepSeek 审查可能耗时较长。发布前重新读取 PR head，
+    # 防止审查期间 PR 又有新提交，导致评论对应到过期 Diff。
+    latest_pull = github_request(
+        "GET",
+        f"/repos/{GITHUB_REPOSITORY}"
+        f"/pulls/{number}"
+    )
+    latest_head_sha = latest_pull.get("head", {}).get("sha")
+
+    if latest_head_sha != head_sha:
+        latest_short_sha = (
+            latest_head_sha[:7] if latest_head_sha else "未知"
+        )
+        print(
+            "PR 在审查过程中产生了新 Commit，"
+            f"本次结果对应 {head_sha[:7]}，"
+            f"最新版本为 {latest_short_sha}。"
+            "为避免发布过期评论，本次跳过发布；"
+            "请让最新 Commit 触发一次新的 Review。"
+        )
+        return
+
     added_line_map = build_added_line_map(files)
 
     inline_comments = []
     inline_seen = set()
+
+    skipped_missing_file = 0
+    skipped_non_added_line = 0
+    skipped_duplicate = 0
 
     for finding in review["findings"]:
 
@@ -1097,16 +1133,20 @@ def review_pull_request():
         path = finding["file"]
         line = finding["line"]
 
-        # 只对 Diff 中真实存在的新增代码行发表评论。
+        # 只对 PR 文件列表中、且 Diff 存在新增行的文件发表评论。
         if path not in added_line_map:
+            skipped_missing_file += 1
             continue
 
+        # 只允许评论真实新增的行，不评论上下文行或删除行。
         if line not in added_line_map[path]:
+            skipped_non_added_line += 1
             continue
 
         key = (path, line)
 
         if key in inline_seen:
+            skipped_duplicate += 1
             continue
 
         inline_seen.add(key)
@@ -1117,6 +1157,20 @@ def review_pull_request():
             "side": "RIGHT",
             "body": render_inline_comment(finding)
         })
+
+    print(
+        "行级评论校验完成："
+        f"准备发布 {len(inline_comments)} 条，"
+        f"文件不匹配跳过 {skipped_missing_file} 条，"
+        f"非新增行跳过 {skipped_non_added_line} 条，"
+        f"重复位置跳过 {skipped_duplicate} 条。"
+    )
+
+    for comment in inline_comments:
+        print(
+            f"行级评论候选位置："
+            f"{comment['path']}:{comment['line']}"
+        )
 
     body = render_review(
         review,
@@ -1134,17 +1188,82 @@ def review_pull_request():
     if inline_comments:
         review_payload["comments"] = inline_comments
 
-    github_request(
-        "POST",
-        f"/repos/{GITHUB_REPOSITORY}"
-        f"/pulls/{number}/reviews",
-        review_payload
-    )
+    published_inline_count = len(inline_comments)
+
+    try:
+        github_request(
+            "POST",
+            f"/repos/{GITHUB_REPOSITORY}"
+            f"/pulls/{number}/reviews",
+            review_payload
+        )
+
+    except GitHubAPIError as error:
+        error_text = (error.detail or "").lower()
+
+        # 一个无效 path 可能导致整批行级评论被 GitHub 拒绝。
+        # 此时自动重试为不带行级评论的完整 Review，保留全部审查结论。
+        is_path_resolution_error = (
+            error.status_code == 422
+            and "path could not be resolved" in error_text
+        )
+
+        if not inline_comments or not is_path_resolution_error:
+            raise
+
+        print(
+            "GitHub 拒绝了本次行级评论（HTTP 422："
+            "Path could not be resolved）。"
+            "正在自动降级为普通 PR Review，保留完整问题详情……"
+        )
+
+        fallback_body = render_review(
+            review,
+            f"PR #{number}：{title}",
+            marker,
+            details=True
+        )
+
+        fallback_note = (
+            "> **行级评论发布说明：** GitHub 无法将本次部分行级评论"
+            "定位到当前 PR Diff，因此本次改为发布完整审查报告。"
+            "审查发现、文件路径、行号和修改建议均已保留。"
+        )
+
+        if marker in fallback_body:
+            fallback_body = fallback_body.replace(
+                marker,
+                f"{fallback_note}\n\n{marker}",
+                1
+            )
+        else:
+            fallback_body = f"{fallback_body}\n\n{fallback_note}"
+
+        fallback_payload = {
+            "commit_id": head_sha,
+            "body": fallback_body,
+            "event": "COMMENT"
+        }
+
+        # 第二次请求不携带 comments，避免同一批无效路径再次导致 422。
+        github_request(
+            "POST",
+            f"/repos/{GITHUB_REPOSITORY}"
+            f"/pulls/{number}/reviews",
+            fallback_payload
+        )
+
+        published_inline_count = 0
+
+        print(
+            "已成功发布完整 PR Review 正文；"
+            "本次未发布行级评论。"
+        )
 
     print(
         f"PR #{number} Review 完成："
         f"发现 {len(review['findings'])} 个问题，"
-        f"发布 {len(inline_comments)} 条行级评论。"
+        f"发布 {published_inline_count} 条行级评论。"
     )
 
 
