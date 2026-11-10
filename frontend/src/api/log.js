@@ -60,6 +60,18 @@ export function buildLogQuery({ userId, operation, result, timeRange, current, s
   return query
 }
 
+/** 日志 ID 只接受 1-18 位十进制正整数（与后端详情接口规则一致）。 */
+export function isValidLogId(value) {
+  return normalizePositiveInt(value) !== null
+}
+
+/** 后端返回的 total 可能是 undefined/null/字符串/NaN，统一收敛为非负整数。 */
+export function normalizeTotal(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return Math.trunc(parsed)
+}
+
 /** 把后端返回的 2026-11-08T10:00:00.000 显示为 2026-11-08 10:00:00；空值显示 —。 */
 export function formatLogTime(value) {
   if (typeof value !== 'string' || !value.trim()) return '—'
@@ -73,8 +85,11 @@ export async function listLogs(query) {
   return api.get('/admin/logs', { params: buildLogQuery(query) })
 }
 
-/** 查询单条日志详情。详情接口不接受任何查询参数。 */
+/** 查询单条日志详情。详情接口不接受任何查询参数；ID 非法时直接拒绝，避免请求 /admin/logs/undefined。 */
 export async function getLog(id) {
+  if (!isValidLogId(id)) {
+    throw new TypeError('无效的日志 ID')
+  }
   const api = await apiClient()
-  return api.get(`/admin/logs/${encodeURIComponent(String(id))}`)
+  return api.get(`/admin/logs/${normalizePositiveInt(id)}`)
 }

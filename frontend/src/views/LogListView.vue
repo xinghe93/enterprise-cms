@@ -1,8 +1,9 @@
 <script setup>
-// TODO 权限：B 交付 @RequirePermission 与后端权限校验后，按 session.permissionCodes 的
-// log:list / log:read 控制菜单入口与"详情"按钮是否可见；当前先保持页面可访问，便于联调验收。
+// 权限：B 交付 @RequirePermission 与后端权限校验后，登录接口会下发 permissionCodes；
+// 在此之前 permissionCodes 为空，页面按"未下发即放行"的渐进策略可正常联调。
 import { computed, onMounted, ref } from 'vue'
 import {
+  ElAlert,
   ElButton,
   ElDatePicker,
   ElDrawer,
@@ -17,9 +18,16 @@ import {
   ElTag,
 } from 'element-plus'
 import 'element-plus/dist/index.css'
-import { formatLogTime, getLog, listLogs } from '../api/log.js'
+import { formatLogTime, getLog, isValidLogId, listLogs, normalizeTotal } from '../api/log.js'
+import { useSessionStore } from '../stores/session.js'
 
 const vLoading = ElLoading.directive
+
+const session = useSessionStore()
+
+const permissionsKnown = computed(() => Array.isArray(session.permissionCodes) && session.permissionCodes.length > 0)
+const canListLogs = computed(() => !permissionsKnown.value || session.hasPermission('log:list'))
+const canReadLog = computed(() => !permissionsKnown.value || session.hasPermission('log:read'))
 
 const filters = ref({ userId: '', operation: '', result: '', timeRange: null })
 const rows = ref([])
@@ -28,10 +36,13 @@ const current = ref(1)
 const size = ref(10)
 const loading = ref(false)
 const lastLoadedAt = ref('')
+const loadError = ref('')
 
 const drawerVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref(null)
+const detailError = ref('')
+let detailRequestSeq = 0
 
 const detailItems = computed(() => {
   if (!detail.value) return []
@@ -60,14 +71,24 @@ function onUserIdInput(value) {
 }
 
 async function fetchLogs() {
+  if (!canListLogs.value) {
+    rows.value = []
+    total.value = 0
+    loadError.value = '当前账号没有日志查询权限（log:list），请联系管理员。'
+    return
+  }
   loading.value = true
+  loadError.value = ''
   try {
     const data = await listLogs({ ...filters.value, current: current.value, size: size.value })
     rows.value = Array.isArray(data?.records) ? data.records : []
-    total.value = Number(data?.total ?? 0)
+    total.value = normalizeTotal(data?.total)
     lastLoadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-  } catch {
-    // 失败提示由全局 ElMessage 统一处理，页面不重复弹窗。
+  } catch (error) {
+    // 全局 ElMessage 已提示一次错误；页面再给出可重试的显式状态，并清理旧数据避免误导。
+    rows.value = []
+    total.value = 0
+    loadError.value = error?.message ? `日志加载失败：${error.message}` : '日志加载失败，请稍后重试。'
   } finally {
     loading.value = false
   }
@@ -96,16 +117,29 @@ function handleSizeChange(newSize) {
 }
 
 async function openDetail(row) {
+  if (!canReadLog.value) {
+    detailError.value = '当前账号没有日志详情权限（log:read）。'
+    return
+  }
+  if (!isValidLogId(row?.id)) {
+    detailError.value = '日志 ID 无效，无法查看详情。'
+    return
+  }
+  const requestSeq = ++detailRequestSeq
   detail.value = row
+  detailError.value = ''
   drawerVisible.value = true
   detailLoading.value = true
   try {
     const data = await getLog(row.id)
-    if (data) detail.value = data
-  } catch {
-    // 详情失败时保留列表行数据展示，错误提示由全局 ElMessage 处理。
+    // 只接受最后一次点击的响应，避免快速切换行时旧响应覆盖新详情。
+    if (requestSeq === detailRequestSeq && data) detail.value = data
+  } catch (error) {
+    if (requestSeq === detailRequestSeq) {
+      detailError.value = error?.message ? `日志详情加载失败：${error.message}` : '日志详情加载失败，请稍后重试。'
+    }
   } finally {
-    detailLoading.value = false
+    if (requestSeq === detailRequestSeq) detailLoading.value = false
   }
 }
 
@@ -119,6 +153,15 @@ onMounted(fetchLogs)
       <h1>操作日志</h1>
       <p>查询关键操作的执行记录，追溯内容审核、发布与权限变更。</p>
     </div>
+
+    <ElAlert
+      v-if="!canListLogs"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="没有日志查询权限"
+      description="当前账号缺少 log:list 权限，无法查询操作日志；请联系管理员分配权限后再试。"
+    />
 
     <section class="filter-card" aria-label="日志筛选">
       <div class="filter-grid">
@@ -152,10 +195,22 @@ onMounted(fetchLogs)
         </label>
       </div>
       <div class="filter-actions">
-        <ElButton type="primary" :loading="loading" :disabled="loading" @click="handleSearch">查询</ElButton>
-        <ElButton :disabled="loading" @click="handleReset">重置</ElButton>
+        <ElButton type="primary" :loading="loading" :disabled="loading || !canListLogs" @click="handleSearch">查询</ElButton>
+        <ElButton :disabled="loading || !canListLogs" @click="handleReset">重置</ElButton>
       </div>
     </section>
+
+    <ElAlert
+      v-if="loadError"
+      type="error"
+      :closable="false"
+      show-icon
+      :title="loadError"
+    >
+      <template #default>
+        <ElButton link type="primary" :disabled="loading || !canListLogs" @click="fetchLogs">重新加载</ElButton>
+      </template>
+    </ElAlert>
 
     <section class="table-card" aria-label="日志列表">
       <div class="table-meta">
@@ -188,7 +243,8 @@ onMounted(fetchLogs)
           </ElTableColumn>
           <ElTableColumn label="操作" width="84" fixed="right">
             <template #default="{ row }">
-              <ElButton link type="primary" @click="openDetail(row)">详情</ElButton>
+              <ElButton v-if="canReadLog" link type="primary" @click="openDetail(row)">详情</ElButton>
+              <span v-else class="muted-text">无权限</span>
             </template>
           </ElTableColumn>
           <template #empty><ElEmpty description="暂无日志数据" /></template>
@@ -210,6 +266,14 @@ onMounted(fetchLogs)
 
     <ElDrawer v-model="drawerVisible" title="日志详情" size="440px" append-to-body>
       <div v-loading="detailLoading" class="detail-body">
+        <ElAlert
+          v-if="detailError"
+          type="error"
+          :closable="false"
+          show-icon
+          :title="detailError"
+          class="detail-alert"
+        />
         <ElEmpty v-if="!detail" description="暂无详情" />
         <dl v-else class="detail-grid">
           <template v-for="item in detailItems" :key="item.label">
@@ -295,6 +359,15 @@ onMounted(fetchLogs)
 
 .detail-body {
   min-height: 160px;
+}
+
+.detail-alert {
+  margin-bottom: 14px;
+}
+
+.muted-text {
+  color: var(--muted, #9ca3af);
+  font-size: 12.5px;
 }
 
 .detail-grid {

@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { isValidLogId, normalizeTotal } from '../src/api/log.js'
 import { buildLogQuery, formatLocalDateTime, formatLogTime } from '../src/api/log.js'
 
 test('默认分页参数为第一页、每页 10 条，空筛选项不传给后端', () => {
@@ -47,4 +48,28 @@ test('formatLogTime 显示到秒，空值显示破折号', () => {
   assert.equal(formatLogTime(null), '—')
   assert.equal(formatLogTime(''), '—')
   assert.equal(formatLogTime(undefined), '—')
+})
+
+test('isValidLogId 只接受 1-18 位正整数，拒绝 undefined/0/负数/0x 前缀', () => {
+  assert.equal(isValidLogId(990001), true)
+  assert.equal(isValidLogId('990001'), true)
+  assert.equal(isValidLogId(1), true)
+  assert.equal(isValidLogId(undefined), false)
+  assert.equal(isValidLogId(null), false)
+  assert.equal(isValidLogId(''), false)
+  assert.equal(isValidLogId(0), false)
+  assert.equal(isValidLogId(-1), false)
+  assert.equal(isValidLogId('0x1'), false)
+  assert.equal(isValidLogId('abc'), false)
+})
+
+test('normalizeTotal 把非法或负值收敛为 0，其余取整', () => {
+  assert.equal(normalizeTotal(3), 3)
+  assert.equal(normalizeTotal('12'), 12)
+  assert.equal(normalizeTotal('12.9'), 12)
+  assert.equal(normalizeTotal(undefined), 0)
+  assert.equal(normalizeTotal(null), 0)
+  assert.equal(normalizeTotal(NaN), 0)
+  assert.equal(normalizeTotal(-5), 0)
+  assert.equal(normalizeTotal(Infinity), 0)
 })
