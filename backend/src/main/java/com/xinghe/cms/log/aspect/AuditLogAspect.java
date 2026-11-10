@@ -2,9 +2,11 @@ package com.xinghe.cms.log.aspect;
 
 import java.util.concurrent.TimeUnit;
 
+import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.log.entity.OperationLog;
 import com.xinghe.cms.log.service.AuditLogWriter;
+import com.xinghe.cms.security.CurrentUserProvider;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -48,6 +50,8 @@ public class AuditLogAspect {
     private static final String UNKNOWN = "";
 
     private final AuditLogWriter auditLogWriter;
+
+    private final CurrentUserProvider currentUserProvider;
 
     @Around("@annotation(auditLog)")
     public Object record(ProceedingJoinPoint joinPoint, AuditLog auditLog) throws Throwable {
@@ -145,11 +149,17 @@ public class AuditLogAspect {
     }
 
     /**
-     * 操作人 ID。
-     * TODO 待 A 的 CurrentUserProvider 合入 dev 后改为 requireCurrentUser().userId()；
-     * 当前该契约尚未合入，按"未登录操作为 null"处理，不自建身份类型或使用反射注入。
+     * 操作人 ID：只取 A 的安全入口 {@link CurrentUserProvider#requireCurrentUser()}，
+     * 不接受请求参数中的 userId，也不自建身份或使用反射注入。
+     *
+     * <p>无认证上下文时（未登录、内部调用、单元测试）返回 {@code null} 由数据库记录为空，
+     * 不伪造身份；认证失败异常不向业务抛出，避免审计影响主流程。</p>
      */
     private Long resolveUserId() {
-        return null;
+        try {
+            return currentUserProvider.requireCurrentUser().userId();
+        } catch (BusinessException exception) {
+            return null;
+        }
     }
 }

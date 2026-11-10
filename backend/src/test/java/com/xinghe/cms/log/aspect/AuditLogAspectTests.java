@@ -8,9 +8,11 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.log.entity.OperationLog;
 import com.xinghe.cms.log.service.AuditLogWriter;
+import com.xinghe.cms.security.CurrentUserProvider;
 import org.aspectj.lang.JoinPoint;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.Signature;
@@ -38,13 +40,15 @@ class AuditLogAspectTests {
 
     private final FakeAuditLogWriter writer = new FakeAuditLogWriter();
 
+    private final CurrentUserProvider currentUserProvider = new CurrentUserProvider();
+
     private AuditLogAspect aspect;
 
     private AuditLog auditLog;
 
     @BeforeEach
     void setUp() throws Exception {
-        aspect = new AuditLogAspect(writer);
+        aspect = new AuditLogAspect(writer, currentUserProvider);
         Method method = AnnotatedSample.class.getDeclaredMethod("approve");
         auditLog = method.getAnnotation(AuditLog.class);
         bindRequest("POST", "/api/admin/articles/123/approve", "token=secret&password=secret");
@@ -99,6 +103,25 @@ class AuditLogAspectTests {
         assertThat(entry.getRequestUri()).isEmpty();
         assertThat(entry.getHttpMethod()).isEmpty();
         assertThat(entry.getResult()).isEqualTo("SUCCESS");
+    }
+
+    @Test
+    void recordsAuthenticatedUserIdFromCurrentUserProvider() throws Throwable {
+        bindAuthenticatedRequest(990101L, "log_demo");
+
+        aspect.record(StubProceedingJoinPoint.returning("ok"), auditLog);
+
+        assertThat(writer.written.get(0).getUserId()).isEqualTo(990101L);
+    }
+
+    @Test
+    void ignoresSpoofedUserIdQueryParameterWhenUnauthenticated() throws Throwable {
+        // 操作人只取服务端已验证身份；请求参数里的 userId 不得影响审计记录。
+        bindRequest("POST", "/api/admin/articles/123/approve", "userId=123");
+
+        aspect.record(StubProceedingJoinPoint.returning("ok"), auditLog);
+
+        assertThat(writer.written.get(0).getUserId()).isNull();
     }
 
     @Test
@@ -205,6 +228,13 @@ class AuditLogAspectTests {
     private void bindRequest(String method, String requestUri, String queryString) {
         MockHttpServletRequest request = new MockHttpServletRequest(method, requestUri);
         request.setQueryString(queryString);
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request, new MockHttpServletResponse()));
+    }
+
+    /** 模拟 A 的 Bearer 过滤器写入已验证身份后的请求上下文。 */
+    private void bindAuthenticatedRequest(Long userId, String username) {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/admin/articles/123/approve");
+        request.setAttribute(CurrentUserProvider.REQUEST_ATTRIBUTE, new CurrentUser(userId, username, 1L));
         RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request, new MockHttpServletResponse()));
     }
 

@@ -137,12 +137,12 @@ DELETE FROM sys_user WHERE id = 990101;
 
 | 编号 | 场景 | 操作 | 断言 |
 | --- | --- | --- | --- |
-| A-01 | 成功写 SUCCESS | 调用 `POST /api/admin/articles/{id}/approve`（合法待审核文章、正确 version） | 接口 200；日志表新增 1 条 `operation="article.approve"`、`result="SUCCESS"`、`http_method="POST"`、`request_uri` 为该接口路径、`duration_ms >= 0`；`user_id` 与登录用户一致（A 合入后） |
+| A-01 | 成功写 SUCCESS | 调用 `POST /api/admin/articles/{id}/approve`（合法待审核文章、正确 version） | 接口 200；日志表新增 1 条 `operation="article.approve"`、`result="SUCCESS"`、`http_method="POST"`、`request_uri` 为该接口路径、`duration_ms >= 0`；`user_id` 与登录用户一致（A 的身份入口已合入） |
 | A-02 | 业务失败写 FAILURE | 用旧 `version` 再次调用 approve，预期 409 | 接口 409；日志表新增 1 条 `FAILURE`，且该次调用**没有**新增 `SUCCESS`；原业务错误响应仍返回给前端 |
 | A-03 | 回滚不留 SUCCESS | 构造业务事务提交前失败（如文章状态不是 `PENDING_REVIEW`、或依赖的审核记录写入失败） | 业务返回 4xx/409；该次调用只出现 `FAILURE`，不出现 `SUCCESS`；`cms_review` 无新增记录 |
 | A-04 | requestUri 不含查询参数 | 调用带查询参数的写接口（如 C 的逻辑删除 `DELETE /api/admin/articles/{id}?version=N`） | 日志 `request_uri` 只含路径，不含 `?version=N`；`http_method` 为实际方法 |
 | A-05 | 不记录敏感信息 | 调用登录接口（应不产生通用审计记录）；检查日志表与接口返回 | `operation` 无 `auth.login` 记录；所有日志的 `operation`、`request_uri` 不含密码、Token；接口响应不回显密码或 Token |
-| A-06 | 未登录 userId 为 null | 当前分支（无鉴权）直接调用带 `@AuditLog` 的写接口 | 新增日志 `user_id` 为 NULL；A/B 合入后此用例改为期望 401 且不新增日志 |
+| A-06 | 未登录不写日志且返回 401 | 不带 Token 调用带 `@AuditLog` 的写接口 | 接口 401 `请先登录`（A 的 Bearer 过滤器已合入 dev），日志表不新增记录；带伪造 Token 时同样不新增（当前伪 Token 返回 500，属 A 的会话校验问题，见第 6 节） |
 
 审计用例当前无法执行的准确原因：本分支只实现了日志查询与切面能力，审核/发布等业务接口属于后续提交（依赖 C 的 `ArticleWorkflowService` 和 A/B 的身份、权限契约），没有可调用的写接口。
 
@@ -180,7 +180,7 @@ pm.test("时间毫秒精度", () => {
 
 1. **手动执行：** 在 Apifox 按 L-01～L-25 顺序执行，保存请求/响应截图；错误用例至少截一张完整响应体。
 2. **场景运行：** 把 L-01～L-25 加入"操作日志回归"测试场景，一条命令跑完，保存运行报告截图。
-3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（46 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
+3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（48 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
 4. **回归时机：** 修改查询参数、错误提示、VO 字段、权限注解后必须重跑 L 组用例；接入业务写接口后补跑 A 组用例。
 5. **自动化替代：** 本地已提供 `课程设计/项目指导/scripts/run_e2e.ps1`，导入种子后自动启动 jar、执行 L-01～L-25 并清理数据，可作为 Apifox 之外的回归手段（脚本须以 UTF-8 带 BOM 保存，Windows PowerShell 5.1 才能正确解析中文；`docker exec mysql` 导入种子需加 `--default-character-set=utf8mb4`）。
 
@@ -188,9 +188,10 @@ pm.test("时间毫秒精度", () => {
 
 | 偏差 | 影响 | 处理 |
 | --- | --- | --- |
-| 权限注解未接入（B 的权限数据层已合入） | 未登录也能查日志；普通员工可读全局审计数据 | 待 B 交付 `@RequirePermission` 后补 401/403 用例并验收 |
+| 权限注解未接入（B 的权限数据层、A 的身份入口已合入） | 未登录已被 A 的 Bearer 过滤器拦截为 401（实测）；普通员工仍可读全局审计数据（缺 403） | 待 B 交付 `@RequirePermission` 后补 403 用例并按"匿名 401 / 普通员工 403 / 管理员 200"验收 |
+| 伪造 Token 返回 500 | 带 `Authorization: Bearer fake-token` 请求返回 500 `系统繁忙` 而非 401 | 属 A 的会话校验边界问题，已记录在其 PR #20 复审上下文，不在 D 模块修改 |
 | 审计事务分支未在真实业务事务验证 | 仅测试桩 + 手工同步环境覆盖 | 业务写接口合入后执行 A-01～A-06 |
-| 完整构建受宿主机 Mockito attach 限制 | B 的两个 Mockito 测试类 13 项在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 109 项全过（本模块 46 项）；环境问题需组长/B 统一处理 |
+| 完整构建受宿主机 Mockito attach 限制 | A/B 的 7 个 Mockito 测试类在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 119 项全过（本模块 48 项）；环境问题需组长/B 统一处理 |
 
 ## 7. 本次执行记录（2026-11-09 第三轮，C7）
 
@@ -200,3 +201,10 @@ pm.test("时间毫秒精度", () => {
 - 首跑 23/25 的两个失败均为验证脚本自身问题：种子中文字符集乱码（`docker exec mysql` 缺 `--default-character-set=utf8mb4`，显示为 `æ—¥å¿—æ¼”ç¤ºç”¨æˆ·`）与 L-25 期望值写错（应为 1）；修复脚本后 25/25。
 - 脚本结束后 `cleanup` 删除种子日志与演示用户（复查 remaining_logs=0、remaining_user=0），`Stop-Process` 停止后端并释放 8080。
 - 构建：`mvn -B clean verify` 排除 B 的两个 Mockito 类后 **109 项全过**（本模块 46 项）。
+
+## 8. 第四轮补充（2026-11-10，C4b：接入 A 的身份）
+
+- `origin/dev` 已合并 A 的 PR #20（`e4f87ff`），本分支已合并新 dev；审计切面的 `resolveUserId()` 改为调用 `CurrentUserProvider.requireCurrentUser().userId()`，无认证上下文记 `NULL`，不接受请求参数里的 `userId`。
+- 追加验证（启动 jar 后匿名请求）：`GET /api/admin/logs` → **401 `请先登录`**；`GET /api/admin/logs/1` → **401 `请先登录`**；带 `Authorization: Bearer fake-token` → 500（A 的会话校验边界问题，已写入第 6 节）。
+- 结论：认证层已生效，D 模块仍缺权限层（403），因此在 B 交付 `@RequirePermission` 前本 PR 保持 open、不请求合并；L-01～L-25 查询用例本身不依赖登录状态，接入权限后需补"匿名 401 / 普通员工 403 / 管理员 200"三条验收。
+- 测试与构建：本模块 **48 项**全过（新增"认证上下文取 userId""伪造请求参数无效"两项），全量排除 A/B 的 7 个 Mockito 类后 **119 项**全过。
