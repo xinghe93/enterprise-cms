@@ -17,6 +17,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -63,9 +64,13 @@ public class AuthService {
      * 先记录当前会话纪元，再复查账号状态，最后带着这个纪元签发。
      * 停用按契约先在数据库事务里提交 status=0、提交后才刷新会话纪元，因此
      * ① 停用提交发生在取纪元之前时，复查状态会看到已停用；
-     * ② 停用提交发生在复查之后时，刷新纪元要么让签发时的纪元比对失败，
-     *    要么在签发后立刻把新 Token 的旧纪元作废。
+     * ② 停用提交发生在复查之后时，纪元比对与写入会话在同一段 Lua 内完成：
+     *    要么比对失败直接拒绝，要么新 Token 也随即带上已作废的旧纪元。
      * 两条路径都不会留下「重新启用后仍可用」的 Token。</p>
+     *
+     * <p>首次登录时该用户还没有纪元键，{@code currentEpoch} 返回空，
+     * 由签发脚本现场生成随机纪元并落库；此后若纪元键丢失，校验一律失败，
+     * 不会被当成「初始版本」而让已撤销的旧 Token 复活。</p>
      */
     public LoginResultVO login(LoginRequest request) {
         String username = request.username().trim();
@@ -77,7 +82,7 @@ public class AuthService {
             throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);
         }
         Long userId = credentials.id();
-        String expectedEpoch = sessions.currentEpoch(userId);
+        Optional<String> expectedEpoch = sessions.currentEpoch(userId);
         CurrentUserStatusRow status = userMapper.findStatusById(userId);
         if (status == null || status.status() == null || status.status() != 1) {
             throw new BusinessException(ResultCode.UNAUTHORIZED, LOGIN_FAILURE_MESSAGE);

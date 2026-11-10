@@ -25,6 +25,7 @@ import com.xinghe.cms.user.vo.LoginResultVO;
 import com.xinghe.cms.user.vo.UserVO;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -58,14 +59,14 @@ class AuthServiceTests {
     @Test
     void loginTrimsUsernameAndReturnsExactContractFields() {
         stubEnabledCredentials();
-        when(sessions.currentEpoch(7L)).thenReturn("epoch-1");
+        when(sessions.currentEpoch(7L)).thenReturn(Optional.of("epoch-1"));
         when(userMapper.findStatusById(7L))
                 .thenReturn(new CurrentUserStatusRow("editor_demo", null, 1));
         when(userMapper.findProfileById(7L)).thenReturn(profile());
         when(userMapper.findRolesByUserId(7L)).thenReturn(List.of(
                 new RoleBriefRow(9L, "ADMIN", "管理员", 0),
                 new RoleBriefRow(2L, "EDITOR", "内容编辑", 1)));
-        when(sessions.issue(7L, "epoch-1")).thenReturn("opaque-token");
+        when(sessions.issue(7L, Optional.of("epoch-1"))).thenReturn("opaque-token");
 
         LoginResultVO result = authService.login(new LoginRequest("  editor_demo  ", "pw"));
 
@@ -80,14 +81,31 @@ class AuthServiceTests {
         assertEquals("2026-11-02T16:00:00.123", user.createdAt());
         assertEquals(List.of("2", "9"), user.roles().stream().map(r -> r.id()).toList());
         assertEquals(0, user.roles().get(1).status(), "停用角色仍用于回显");
-        verify(sessions).issue(7L, "epoch-1");
+        verify(sessions).issue(7L, Optional.of("epoch-1"));
+    }
+
+    /** 首次登录：该用户还没有纪元键，按「空纪元」交给签发脚本现场创建随机值。 */
+    @Test
+    void loginOnFirstEverSessionIssuesWithEmptyExpectedEpoch() {
+        stubEnabledCredentials();
+        when(sessions.currentEpoch(7L)).thenReturn(Optional.empty());
+        when(userMapper.findStatusById(7L))
+                .thenReturn(new CurrentUserStatusRow("editor_demo", null, 1));
+        when(userMapper.findProfileById(7L)).thenReturn(profile());
+        when(userMapper.findRolesByUserId(7L)).thenReturn(List.of());
+        when(sessions.issue(7L, Optional.empty())).thenReturn("opaque-token");
+
+        LoginResultVO result = authService.login(new LoginRequest("editor_demo", "pw"));
+
+        assertEquals("opaque-token", result.accessToken());
+        verify(sessions).issue(7L, Optional.empty());
     }
 
     /** 并发停用：取纪元前停用已提交，复查状态必须拒绝，不能签发任何 Token。 */
     @Test
     void loginIsRejectedWhenStatusRecheckSeesDisabledAccount() {
         stubEnabledCredentials();
-        when(sessions.currentEpoch(7L)).thenReturn("epoch-1");
+        when(sessions.currentEpoch(7L)).thenReturn(Optional.of("epoch-1"));
         when(userMapper.findStatusById(7L))
                 .thenReturn(new CurrentUserStatusRow("editor_demo", null, 0));
 
@@ -96,7 +114,7 @@ class AuthServiceTests {
 
         assertEquals(ResultCode.UNAUTHORIZED, exception.getResultCode());
         assertEquals("用户名或密码错误", exception.getMessage());
-        verify(sessions, never()).issue(any(), anyString());
+        verify(sessions, never()).issue(any(), any());
         verify(userMapper, never()).findProfileById(any());
     }
 
@@ -104,19 +122,19 @@ class AuthServiceTests {
     @Test
     void loginIsRejectedWhenEpochChangedBeforeIssuing() {
         stubEnabledCredentials();
-        when(sessions.currentEpoch(7L)).thenReturn("epoch-1");
+        when(sessions.currentEpoch(7L)).thenReturn(Optional.of("epoch-1"));
         when(userMapper.findStatusById(7L))
                 .thenReturn(new CurrentUserStatusRow("editor_demo", null, 1));
         when(userMapper.findProfileById(7L)).thenReturn(profile());
         when(userMapper.findRolesByUserId(7L)).thenReturn(List.of());
-        when(sessions.issue(7L, "epoch-1")).thenReturn(null);
+        when(sessions.issue(7L, Optional.of("epoch-1"))).thenReturn(null);
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> authService.login(new LoginRequest("editor_demo", "pw")));
 
         assertEquals(ResultCode.UNAUTHORIZED, exception.getResultCode());
         assertEquals("用户名或密码错误", exception.getMessage());
-        verify(sessions).issue(7L, "epoch-1");
+        verify(sessions).issue(7L, Optional.of("epoch-1"));
     }
 
     @Test
@@ -139,7 +157,7 @@ class AuthServiceTests {
         assertEquals(ResultCode.UNAUTHORIZED, exception.getResultCode());
         assertEquals("用户名或密码错误", exception.getMessage());
         verify(passwordHasher).matches(eq("pw"), anyString());
-        verify(sessions, never()).issue(any(), anyString());
+        verify(sessions, never()).issue(any(), any());
     }
 
     @Test
@@ -150,7 +168,7 @@ class AuthServiceTests {
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> authService.login(new LoginRequest("editor_demo", "wrong")));
         assertEquals("用户名或密码错误", exception.getMessage());
-        verify(sessions, never()).issue(any(), anyString());
+        verify(sessions, never()).issue(any(), any());
     }
 
     @Test
