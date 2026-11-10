@@ -11,7 +11,10 @@ export const router = createRouter({
         { path: 'workspace', name: 'workspace', component: () => import('../views/WorkspaceView.vue'), meta: { title: '工作空间' } },
         ...moduleEntries.map((entry) => ({
           path: entry.path.slice(1), name: entry.name,
-          component: () => import('../views/ModuleView.vue'),
+          // 已实现的模块挂真实页面，其余仍由占位页接管。
+          component: entry.name === 'logs'
+            ? () => import('../views/LogListView.vue')
+            : () => import('../views/ModuleView.vue'),
           props: { entry }, meta: { title: entry.title },
         })),
         { path: 'login', name: 'login', component: () => import('../views/LoginView.vue'), meta: { title: '账号登录' } },
