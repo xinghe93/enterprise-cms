@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.review.mapper.ArticleTagMapper">
+
+    <!-- 用构造器结果映射显式绑定 record 组件，避免依赖编译参数名。 -->
+    <resultMap id="tagRowMap" type="com.xinghe.cms.review.mapper.TagRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="tag_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="int"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="articleTagRowMap" type="com.xinghe.cms.review.mapper.ArticleTagRow">
+        <constructor>
+            <arg column="article_id" javaType="java.lang.Long"/>
+            <arg column="tag_id" javaType="java.lang.Long"/>
+            <arg column="tag_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="int"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <select id="lockTagsByIds" resultMap="tagRowMap">
+        SELECT id, tag_name, status, created_at, updated_at
+        FROM cms_tag
+        WHERE id IN
+        <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">
+            #{tagId}
+        </foreach>
+        ORDER BY id ASC
+        FOR SHARE
+    </select>
+
+    <select id="selectBoundTagIds" resultType="long">
+        SELECT tag_id
+        FROM cms_article_tag
+        WHERE article_id = #{articleId}
+        ORDER BY tag_id ASC
+    </select>
+
+    <delete id="deleteBindings">
+        DELETE FROM cms_article_tag
+        WHERE article_id = #{articleId}
+        <if test="tagIds != null and !tagIds.isEmpty()">
+            AND tag_id NOT IN
+            <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">
+                #{tagId}
+            </foreach>
+        </if>
+    </delete>
+
+    <insert id="insertBindings">
+        INSERT INTO cms_article_tag (article_id, tag_id)
+        VALUES
+        <foreach collection="tagIds" item="tagId" separator=",">
+            (#{articleId}, #{tagId})
+        </foreach>
+    </insert>
+
+    <select id="selectTagRowsByArticleIds" resultMap="articleTagRowMap">
+        SELECT link.article_id,
+               tag.id AS tag_id,
+               tag.tag_name,
+               tag.status,
+               tag.created_at,
+               tag.updated_at
+        FROM cms_article_tag link
+        INNER JOIN cms_tag tag ON tag.id = link.tag_id
+        WHERE link.article_id IN
+        <foreach collection="articleIds" item="articleId" open="(" separator="," close=")">
+            #{articleId}
+        </foreach>
+        ORDER BY link.article_id ASC, tag.id ASC
+    </select>
+</mapper>
