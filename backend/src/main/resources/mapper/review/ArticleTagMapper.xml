@@ -2,12 +2,13 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.xinghe.cms.review.mapper.ArticleTagMapper">
 
-    <!-- 用构造器结果映射显式绑定 record 组件，避免依赖编译参数名。 -->
+    <!-- 用构造器结果映射显式绑定 record 组件，避免依赖编译参数名。
+         status 是 record 的基本类型 int，必须用 MyBatis 别名 _int（int 会解析成 Integer）。 -->
     <resultMap id="tagRowMap" type="com.xinghe.cms.review.mapper.TagRow">
         <constructor>
             <idArg column="id" javaType="java.lang.Long"/>
             <arg column="tag_name" javaType="java.lang.String"/>
-            <arg column="status" javaType="int"/>
+            <arg column="status" javaType="_int"/>
             <arg column="created_at" javaType="java.time.LocalDateTime"/>
             <arg column="updated_at" javaType="java.time.LocalDateTime"/>
         </constructor>
@@ -18,7 +19,7 @@
             <arg column="article_id" javaType="java.lang.Long"/>
             <arg column="tag_id" javaType="java.lang.Long"/>
             <arg column="tag_name" javaType="java.lang.String"/>
-            <arg column="status" javaType="int"/>
+            <arg column="status" javaType="_int"/>
             <arg column="created_at" javaType="java.time.LocalDateTime"/>
             <arg column="updated_at" javaType="java.time.LocalDateTime"/>
         </constructor>
@@ -35,22 +36,24 @@
         FOR SHARE
     </select>
 
+    <!-- 调用方已持文章行锁，这里必须用加锁当前读：REPEATABLE READ 下普通 SELECT 会复用外层旧快照，
+         并发删除关联后可能误判“已绑定”而漏插入。 -->
     <select id="selectBoundTagIds" resultType="long">
         SELECT tag_id
         FROM cms_article_tag
         WHERE article_id = #{articleId}
         ORDER BY tag_id ASC
+        FOR UPDATE
     </select>
 
-    <delete id="deleteBindings">
+    <!-- 只删除差集里的明确 ID：避免按 NOT IN 删除时误删并发事务新增的绑定。 -->
+    <delete id="deleteBindingsByIds">
         DELETE FROM cms_article_tag
         WHERE article_id = #{articleId}
-        <if test="tagIds != null and !tagIds.isEmpty()">
-            AND tag_id NOT IN
-            <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">
-                #{tagId}
-            </foreach>
-        </if>
+          AND tag_id IN
+        <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">
+            #{tagId}
+        </foreach>
     </delete>
 
     <insert id="insertBindings">

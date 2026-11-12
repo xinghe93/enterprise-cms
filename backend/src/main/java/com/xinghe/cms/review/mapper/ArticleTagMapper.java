@@ -17,14 +17,14 @@ public interface ArticleTagMapper {
     List<TagRow> lockTagsByIds(@Param("tagIds") List<Long> tagIds);
 
     /**
-     * 查询一篇文章当前已绑定的标签 ID，按 ID 升序。
+     * 在原文章行锁内以加锁当前读查询已绑定标签 ID（FOR UPDATE），避免 REPEATABLE READ 旧快照漏判。
      */
     List<Long> selectBoundTagIds(@Param("articleId") Long articleId);
 
     /**
-     * 删除该文章中不在给定集合内的绑定；tagIds 为 null 或空集合时删除该文章全部绑定。
+     * 按明确 ID 删除该文章的部分绑定；调用方需保证 tagIds 非空且属于该文章。
      */
-    int deleteBindings(@Param("articleId") Long articleId, @Param("tagIds") List<Long> tagIds);
+    int deleteBindingsByIds(@Param("articleId") Long articleId, @Param("tagIds") List<Long> tagIds);
 
     /**
      * 批量插入该文章的新绑定；调用方已通过差集保证不会产生重复键。

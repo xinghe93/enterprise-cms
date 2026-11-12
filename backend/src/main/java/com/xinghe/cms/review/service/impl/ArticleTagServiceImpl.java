@@ -31,6 +31,9 @@ public class ArticleTagServiceImpl implements ArticleTagService {
     /** 契约上限：单篇文章最多绑定 100 个标签。 */
     static final int MAX_TAGS = 100;
 
+    /** 批量查询上限：一次最多查询 500 篇文章的标签，避免超长 IN 子句。 */
+    static final int MAX_ARTICLE_IDS = 500;
+
     /** cms_tag.status：1=启用，0=停用。 */
     static final int TAG_STATUS_ENABLED = 1;
 
@@ -42,13 +45,21 @@ public class ArticleTagServiceImpl implements ArticleTagService {
         requireArticleId(articleId);
         List<Long> requested = normalizeTagIds(tagIds);
 
+        // 加锁当前读：外层已持文章行锁，这里要看到并发事务对关联表的最新修改。
         List<Long> existing = articleTagMapper.selectBoundTagIds(articleId);
         Set<Long> existingSet = existing == null ? Set.of() : new LinkedHashSet<>(existing);
+        Set<Long> requestedSet = new LinkedHashSet<>(requested);
 
         List<Long> toInsert = new ArrayList<>();
         for (Long tagId : requested) {
             if (!existingSet.contains(tagId)) {
                 toInsert.add(tagId);
+            }
+        }
+        List<Long> toDelete = new ArrayList<>();
+        for (Long tagId : existingSet) {
+            if (!requestedSet.contains(tagId)) {
+                toDelete.add(tagId);
             }
         }
 
@@ -58,7 +69,10 @@ public class ArticleTagServiceImpl implements ArticleTagService {
             requireAllTagsBindable(toInsert, locked);
         }
 
-        articleTagMapper.deleteBindings(articleId, requested);
+        // 只删除明确算出的差集，避免 NOT IN 误删并发新增的绑定。
+        if (!toDelete.isEmpty()) {
+            articleTagMapper.deleteBindingsByIds(articleId, toDelete);
+        }
         if (!toInsert.isEmpty()) {
             articleTagMapper.insertBindings(articleId, toInsert);
         }
@@ -69,6 +83,9 @@ public class ArticleTagServiceImpl implements ArticleTagService {
     public Map<Long, List<TagView>> findByArticleIds(List<Long> articleIds) {
         if (articleIds == null || articleIds.isEmpty()) {
             return Map.of();
+        }
+        if (articleIds.size() > MAX_ARTICLE_IDS) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "文章数量不能超过 500");
         }
         LinkedHashSet<Long> distinctIds = new LinkedHashSet<>();
         for (Long articleId : articleIds) {

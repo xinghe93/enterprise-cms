@@ -29,9 +29,21 @@ class ArticleTagMapperXmlTests {
 
         assertThat(configuration.hasStatement(NAMESPACE + ".lockTagsByIds")).isTrue();
         assertThat(configuration.hasStatement(NAMESPACE + ".selectBoundTagIds")).isTrue();
-        assertThat(configuration.hasStatement(NAMESPACE + ".deleteBindings")).isTrue();
+        assertThat(configuration.hasStatement(NAMESPACE + ".deleteBindingsByIds")).isTrue();
         assertThat(configuration.hasStatement(NAMESPACE + ".insertBindings")).isTrue();
         assertThat(configuration.hasStatement(NAMESPACE + ".selectTagRowsByArticleIds")).isTrue();
+    }
+
+    @Test
+    void boundTagIdsStatementUsesCurrentRead() {
+        BoundSql boundSql = boundSql("selectBoundTagIds", Map.of("articleId", 1L));
+
+        assertThat(normalize(boundSql.getSql()))
+                .contains("FROM cms_article_tag")
+                .contains("WHERE article_id = ?")
+                .contains("ORDER BY tag_id ASC")
+                .contains("FOR UPDATE");
+        assertThat(boundSql.getParameterMappings()).hasSize(1);
     }
 
     @Test
@@ -46,20 +58,12 @@ class ArticleTagMapperXmlTests {
     }
 
     @Test
-    void deleteStatementDeletesAllBindingsForEmptyTagList() {
-        BoundSql empty = boundSql("deleteBindings", Map.of("articleId", 1L, "tagIds", List.of()));
-
-        assertThat(normalize(empty.getSql()))
-                .isEqualTo("DELETE FROM cms_article_tag WHERE article_id = ?");
-    }
-
-    @Test
-    void deleteStatementExcludesRequestedTagsForNonEmptyList() {
-        BoundSql boundSql = boundSql("deleteBindings", Map.of("articleId", 1L, "tagIds", List.of(3L, 4L)));
+    void deleteStatementDeletesOnlyGivenTagIds() {
+        BoundSql boundSql = boundSql("deleteBindingsByIds", Map.of("articleId", 1L, "tagIds", List.of(3L, 4L)));
 
         assertThat(normalize(boundSql.getSql()))
                 .contains("DELETE FROM cms_article_tag")
-                .contains("AND tag_id NOT IN")
+                .contains("AND tag_id IN")
                 .contains("(? , ?)");
         assertThat(boundSql.getParameterMappings()).hasSize(3);
     }

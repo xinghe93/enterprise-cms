@@ -61,7 +61,7 @@ class ArticleTagServiceTests {
                         yield ids.stream().map(tagDictionary::get).filter(Objects::nonNull).toList();
                     }
                     case "selectBoundTagIds" -> new ArrayList<>(existingBindings);
-                    case "deleteBindings" -> {
+                    case "deleteBindingsByIds" -> {
                         deleteCalls.incrementAndGet();
                         deletedIds.set(copyOf(args[1]));
                         yield 0;
@@ -75,6 +75,9 @@ class ArticleTagServiceTests {
                         tagRowsCalls.incrementAndGet();
                         yield new ArrayList<>(articleTagRows);
                     }
+                    case "toString" -> "ArticleTagMapperProxy";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
                     default -> defaultValue(method.getReturnType());
                 });
         service = new ArticleTagServiceImpl(mapper);
@@ -121,7 +124,7 @@ class ArticleTagServiceTests {
 
         assertThat(insertCalls).hasValue(1);
         assertThat(insertedIds.get()).hasSize(100).isSorted();
-        assertThat(deleteCalls).hasValue(1);
+        assertThat(deleteCalls).hasValue(0);
     }
 
     @Test
@@ -131,7 +134,7 @@ class ArticleTagServiceTests {
         service.replaceBindings(1L, List.of());
 
         assertThat(deleteCalls).hasValue(1);
-        assertThat(deletedIds.get()).isEmpty();
+        assertThat(deletedIds.get()).containsExactly(2L, 3L);
         assertThat(lockCalls).hasValue(0);
         assertThat(insertCalls).hasValue(0);
     }
@@ -146,7 +149,7 @@ class ArticleTagServiceTests {
 
         assertThat(lockedIds.get()).containsExactly(4L);
         assertThat(insertedIds.get()).containsExactly(4L);
-        assertThat(deletedIds.get()).containsExactly(3L, 4L);
+        assertThat(deletedIds.get()).containsExactly(2L);
     }
 
     @Test
@@ -199,7 +202,15 @@ class ArticleTagServiceTests {
 
         assertThat(lockCalls).hasValue(0);
         assertThat(insertCalls).hasValue(0);
-        assertThat(deleteCalls).hasValue(1);
+        assertThat(deleteCalls).hasValue(0);
+    }
+
+    @Test
+    void findByArticleIdsRejectsMoreThanFiveHundredArticles() {
+        List<Long> tooMany = LongStream.rangeClosed(1, 501).boxed().toList();
+
+        assertBadRequest(() -> service.findByArticleIds(tooMany), "文章数量不能超过 500");
+        assertThat(tagRowsCalls).hasValue(0);
     }
 
     @Test
@@ -275,7 +286,7 @@ class ArticleTagServiceTests {
     }
 
     private static List<Long> copyOf(Object argument) {
-        return argument == null ? null : requireLongs(argument, "deleteBindings");
+        return argument == null ? null : requireLongs(argument, "deleteBindingsByIds");
     }
 
     private static Object defaultValue(Class<?> returnType) {
