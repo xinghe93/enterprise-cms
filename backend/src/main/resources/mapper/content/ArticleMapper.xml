@@ -17,11 +17,88 @@
         FOR UPDATE
     </select>
 
+    <sql id="articleColumns">
+        a.id, a.title, a.summary, a.category_id, c.category_name, a.author_id, u.real_name AS author_name,
+        a.status, a.visibility, a.version, a.published_at, a.created_at, a.updated_at
+    </sql>
+
+    <sql id="articleJoins">
+        FROM cms_article a
+        JOIN cms_category c ON c.id = a.category_id
+        JOIN sys_user u ON u.id = a.author_id
+        WHERE a.is_deleted = 0
+    </sql>
+
+    <sql id="portalVisibility">
+        AND a.status = 'PUBLISHED' AND a.visibility = 'ALL'
+    </sql>
+
+    <select id="findPage" resultType="com.xinghe.cms.content.mapper.row.ArticleRow">
+        SELECT <include refid="articleColumns"/>, NULL AS content
+        <include refid="articleJoins"/>
+        <choose>
+            <when test="portal">
+                <include refid="portalVisibility"/>
+            </when>
+            <otherwise>
+                <if test="scopeUserId != null">
+                    AND (a.author_id = #{scopeUserId}
+                    <if test="includeOtherNonDrafts">OR a.status &lt;&gt; 'DRAFT'</if>)
+                </if>
+                <if test="authorId != null">AND a.author_id = #{authorId}</if>
+                <if test="status != null">AND a.status = #{status}</if>
+            </otherwise>
+        </choose>
+        <if test="categoryIds != null">
+            AND a.category_id IN
+            <foreach collection="categoryIds" item="categoryId" open="(" close=")" separator=",">
+                #{categoryId}
+            </foreach>
+        </if>
+        <if test="tagId != null">
+            AND EXISTS (
+                SELECT 1 FROM cms_article_tag at WHERE at.article_id = a.id AND at.tag_id = #{tagId}
+            )
+        </if>
+        <if test="keyword != null">
+            AND (a.title LIKE #{keyword} ESCAPE '!' OR a.summary LIKE #{keyword} ESCAPE '!')
+        </if>
+        <choose>
+            <when test="portal">ORDER BY a.published_at DESC, a.id DESC</when>
+            <otherwise>ORDER BY a.updated_at DESC, a.id DESC</otherwise>
+        </choose>
+    </select>
+
+    <select id="findDetail" resultType="com.xinghe.cms.content.mapper.row.ArticleRow">
+        SELECT <include refid="articleColumns"/>, a.content
+        <include refid="articleJoins"/>
+        AND a.id = #{id}
+        <if test="portal"><include refid="portalVisibility"/></if>
+    </select>
+
+    <sql id="expectedState">
+        WHERE id = #{expected.id} AND is_deleted = 0
+        AND status = #{expected.status} AND version = #{expected.version}
+    </sql>
+
     <update id="changeState">
         UPDATE cms_article
         SET status = #{target}, version = version + 1
         <if test="target.name() == 'PUBLISHED'">, published_at = CURRENT_TIMESTAMP(3)</if>
-        WHERE id = #{expected.id} AND is_deleted = 0
-        AND status = #{expected.status} AND version = #{expected.version}
+        <include refid="expectedState"/>
+    </update>
+
+    <update id="saveDraft">
+        UPDATE cms_article
+        SET title = #{draft.title}, summary = #{draft.summary,jdbcType=VARCHAR},
+            content = #{draft.content}, category_id = #{draft.categoryId},
+            status = #{target}, version = version + 1
+        <include refid="expectedState"/>
+    </update>
+
+    <update id="markDeleted">
+        UPDATE cms_article
+        SET is_deleted = 1, version = version + 1
+        <include refid="expectedState"/>
     </update>
 </mapper>
