@@ -51,8 +51,9 @@ public class ReviewDecisionServiceImpl implements ReviewDecisionService {
     }
 
     private ArticleStateVO decide(long articleId, int expectedVersion, String comment, ArticleAction action) {
-        ArticleState state = articleWorkflowService.transition(articleId, expectedVersion, action);
+        // 先解析审核人，再流转状态：未登录时在产生任何写入之前直接 401，避免"状态已改、审核人取不到"的歧义。
         CurrentUser currentUser = currentUserProvider.requireCurrentUser();
+        ArticleState state = articleWorkflowService.transition(articleId, expectedVersion, action);
 
         ReviewRecord record = new ReviewRecord();
         record.setArticleId(articleId);
