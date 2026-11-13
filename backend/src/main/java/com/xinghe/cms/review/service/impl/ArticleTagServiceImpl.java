@@ -45,37 +45,21 @@ public class ArticleTagServiceImpl implements ArticleTagService {
         requireArticleId(articleId);
         List<Long> requested = normalizeTagIds(tagIds);
 
-        // 加锁当前读：外层已持文章行锁，这里要看到并发事务对关联表的最新修改。
-        List<Long> existing = articleTagMapper.selectBoundTagIds(articleId);
-        Set<Long> existingSet = existing == null ? Set.of() : new LinkedHashSet<>(existing);
-        Set<Long> requestedSet = new LinkedHashSet<>(requested);
-
-        List<Long> toInsert = new ArrayList<>();
-        for (Long tagId : requested) {
-            if (!existingSet.contains(tagId)) {
-                toInsert.add(tagId);
-            }
-        }
-        List<Long> toDelete = new ArrayList<>();
-        for (Long tagId : existingSet) {
-            if (!requestedSet.contains(tagId)) {
-                toDelete.add(tagId);
-            }
+        if (!requested.isEmpty()) {
+            // 先完成全部校验：按标签 ID 升序加共享锁，确认标签都存在，并收集停用标签。
+            List<TagRow> locked = articleTagMapper.lockTagsByIds(requested);
+            requireAllTagsExist(requested, locked);
+            rejectNewBindingsOfDisabledTags(articleId, locked);
         }
 
-        // 先完成全部校验（共享锁 + 存在性 + 状态），再执行删除/插入，避免半途失败留下不一致数据。
-        if (!toInsert.isEmpty()) {
-            List<TagRow> locked = articleTagMapper.lockTagsByIds(toInsert);
-            requireAllTagsBindable(toInsert, locked);
+        // 幂等写入，最终绑定集合严格等于请求集合：
+        // 先批量补齐请求的绑定（INSERT IGNORE，已存在的跳过），再删除不在请求集合内的绑定。
+        // 顺序不能颠倒：空关联表下若先做加锁读/删除，两个事务可能先锁住同一个索引间隙，
+        // 随后各自的插入互相等待，导致其中一次保存死锁回滚（PR #28 复审 P2）。
+        if (!requested.isEmpty()) {
+            articleTagMapper.insertBindingsIfAbsent(articleId, requested);
         }
-
-        // 只删除明确算出的差集，避免 NOT IN 误删并发新增的绑定。
-        if (!toDelete.isEmpty()) {
-            articleTagMapper.deleteBindingsByIds(articleId, toDelete);
-        }
-        if (!toInsert.isEmpty()) {
-            articleTagMapper.insertBindings(articleId, toInsert);
-        }
+        articleTagMapper.deleteBindingsNotRequested(articleId, requested);
     }
 
     @Override
@@ -103,8 +87,11 @@ public class ArticleTagServiceImpl implements ArticleTagService {
             return result;
         }
         for (ArticleTagRow row : rows) {
-            result.get(row.articleId()).add(new TagView(
-                    row.tagId(), row.tagName(), row.status(), row.createdAt(), row.updatedAt()));
+            List<TagView> views = result.get(row.articleId());
+            if (views == null) {
+                continue;
+            }
+            views.add(new TagView(row.tagId(), row.tagName(), row.status(), row.createdAt(), row.updatedAt()));
         }
         // SQL 已按标签 ID 升序返回；这里再排一次，保证契约不依赖驱动/执行计划的行序。
         for (List<TagView> views : result.values()) {
@@ -123,9 +110,6 @@ public class ArticleTagServiceImpl implements ArticleTagService {
         if (tagIds == null) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "标签 ID 列表不能为空");
         }
-        if (tagIds.size() > MAX_TAGS) {
-            throw new BusinessException(ResultCode.BAD_REQUEST, "标签数量不能超过 100");
-        }
         Set<Long> unique = new TreeSet<>();
         for (Long tagId : tagIds) {
             if (tagId == null || tagId <= 0) {
@@ -135,26 +119,40 @@ public class ArticleTagServiceImpl implements ArticleTagService {
                 throw new BusinessException(ResultCode.BAD_REQUEST, "标签 ID 不能重复");
             }
         }
+        if (unique.size() > MAX_TAGS) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "标签数量不能超过 100");
+        }
         return new ArrayList<>(unique);
     }
 
-    private static void requireAllTagsBindable(List<Long> toInsert, List<TagRow> locked) {
+    private static void requireAllTagsExist(List<Long> requested, List<TagRow> locked) {
         Set<Long> lockedIds = new LinkedHashSet<>();
         if (locked != null) {
             for (TagRow row : locked) {
                 lockedIds.add(row.id());
             }
         }
-        for (Long tagId : toInsert) {
+        for (Long tagId : requested) {
             if (!lockedIds.contains(tagId)) {
                 throw new BusinessException(ResultCode.NOT_FOUND, "标签不存在");
             }
         }
-        if (locked != null) {
-            for (TagRow row : locked) {
-                if (row.status() != TAG_STATUS_ENABLED) {
-                    throw new BusinessException(ResultCode.CONFLICT, "标签已停用");
-                }
+    }
+
+    /**
+     * 停用标签规则：只有原本已绑定的停用标签可以保留，新绑定停用标签返回 409。
+     *
+     * <p>这里不读取关联表：用幂等插入的受影响行数判断该停用标签是否为"新绑定"。
+     * 已绑定返回 0（保留），确实新增返回 1（回滚并返回 409）。</p>
+     */
+    private void rejectNewBindingsOfDisabledTags(Long articleId, List<TagRow> locked) {
+        if (locked == null) {
+            return;
+        }
+        for (TagRow row : locked) {
+            if (row.status() != TAG_STATUS_ENABLED
+                    && articleTagMapper.insertBindingIfAbsent(articleId, row.id()) > 0) {
+                throw new BusinessException(ResultCode.CONFLICT, "标签已停用");
             }
         }
     }

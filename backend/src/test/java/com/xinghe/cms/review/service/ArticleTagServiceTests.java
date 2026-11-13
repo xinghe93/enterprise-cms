@@ -37,11 +37,14 @@ class ArticleTagServiceTests {
     private final List<Long> existingBindings = new ArrayList<>();
     private final Map<Long, TagRow> tagDictionary = new LinkedHashMap<>();
     private final List<ArticleTagRow> articleTagRows = new ArrayList<>();
+    private final List<String> events = new ArrayList<>();
 
     private final AtomicReference<List<Long>> lockedIds = new AtomicReference<>();
     private final AtomicReference<List<Long>> deletedIds = new AtomicReference<>();
+    private final AtomicReference<List<Long>> requestedDeleteIds = new AtomicReference<>();
     private final AtomicReference<List<Long>> insertedIds = new AtomicReference<>();
     private final AtomicInteger lockCalls = new AtomicInteger();
+    private final AtomicInteger insertIfAbsentCalls = new AtomicInteger();
     private final AtomicInteger deleteCalls = new AtomicInteger();
     private final AtomicInteger insertCalls = new AtomicInteger();
     private final AtomicInteger tagRowsCalls = new AtomicInteger();
@@ -56,20 +59,47 @@ class ArticleTagServiceTests {
                 (proxy, method, args) -> switch (method.getName()) {
                     case "lockTagsByIds" -> {
                         lockCalls.incrementAndGet();
+                        events.add("lock");
                         List<Long> ids = requireLongs(args[0], "lockTagsByIds");
                         lockedIds.set(ids);
                         yield ids.stream().map(tagDictionary::get).filter(Objects::nonNull).toList();
                     }
-                    case "selectBoundTagIds" -> new ArrayList<>(existingBindings);
-                    case "deleteBindingsByIds" -> {
-                        deleteCalls.incrementAndGet();
-                        deletedIds.set(copyOf(args[1]));
-                        yield 0;
+                    case "insertBindingIfAbsent" -> {
+                        insertIfAbsentCalls.incrementAndGet();
+                        events.add("insertIfAbsent");
+                        Long tagId = requireLong(args[1], "insertBindingIfAbsent");
+                        if (existingBindings.contains(tagId)) {
+                            yield 0;
+                        }
+                        existingBindings.add(tagId);
+                        yield 1;
                     }
-                    case "insertBindings" -> {
+                    case "insertBindingsIfAbsent" -> {
                         insertCalls.incrementAndGet();
-                        insertedIds.set(requireLongs(args[1], "insertBindings"));
-                        yield ((List<?>) args[1]).size();
+                        events.add("insert");
+                        List<Long> ids = requireLongs(args[1], "insertBindingsIfAbsent");
+                        insertedIds.set(ids);
+                        for (Long tagId : ids) {
+                            if (!existingBindings.contains(tagId)) {
+                                existingBindings.add(tagId);
+                            }
+                        }
+                        yield ids.size();
+                    }
+                    case "deleteBindingsNotRequested" -> {
+                        deleteCalls.incrementAndGet();
+                        events.add("delete");
+                        List<Long> requested = copyOf(args[1]);
+                        requestedDeleteIds.set(requested);
+                        List<Long> removed = new ArrayList<>();
+                        for (Long tagId : existingBindings) {
+                            if (!requested.contains(tagId)) {
+                                removed.add(tagId);
+                            }
+                        }
+                        existingBindings.retainAll(requested);
+                        deletedIds.set(removed);
+                        yield removed.size();
                     }
                     case "selectTagRowsByArticleIds" -> {
                         tagRowsCalls.incrementAndGet();
@@ -122,9 +152,13 @@ class ArticleTagServiceTests {
 
         service.replaceBindings(1L, hundred);
 
+        assertThat(lockCalls).hasValue(1);
+        assertThat(lockedIds.get()).hasSize(100).isSorted();
         assertThat(insertCalls).hasValue(1);
         assertThat(insertedIds.get()).hasSize(100).isSorted();
-        assertThat(deleteCalls).hasValue(0);
+        assertThat(insertIfAbsentCalls).hasValue(0);
+        assertThat(deleteCalls).hasValue(1);
+        assertThat(deletedIds.get()).isEmpty();
     }
 
     @Test
@@ -133,27 +167,41 @@ class ArticleTagServiceTests {
 
         service.replaceBindings(1L, List.of());
 
-        assertThat(deleteCalls).hasValue(1);
-        assertThat(deletedIds.get()).containsExactly(2L, 3L);
         assertThat(lockCalls).hasValue(0);
         assertThat(insertCalls).hasValue(0);
+        assertThat(insertIfAbsentCalls).hasValue(0);
+        assertThat(deleteCalls).hasValue(1);
+        assertThat(deletedIds.get()).containsExactly(2L, 3L);
+        assertThat(requestedDeleteIds.get()).isEmpty();
     }
 
     @Test
-    void replaceComputesInsertDiffAndKeepsExistingBindings() {
+    void replaceInsertsBeforeDeletingToAvoidGapLockDeadlock() {
         existingBindings.addAll(List.of(2L, 3L));
         enableTag(3L);
         enableTag(4L);
 
         service.replaceBindings(1L, List.of(3L, 4L));
 
-        assertThat(lockedIds.get()).containsExactly(4L);
-        assertThat(insertedIds.get()).containsExactly(4L);
+        assertThat(events).containsExactly("lock", "insert", "delete");
+    }
+
+    @Test
+    void replaceLocksRequestedTagsAndDeletesUnrequestedBindings() {
+        existingBindings.addAll(List.of(2L, 3L));
+        enableTag(3L);
+        enableTag(4L);
+
+        service.replaceBindings(1L, List.of(3L, 4L));
+
+        assertThat(lockedIds.get()).containsExactly(3L, 4L);
+        assertThat(insertedIds.get()).containsExactly(3L, 4L);
+        assertThat(requestedDeleteIds.get()).containsExactly(3L, 4L);
         assertThat(deletedIds.get()).containsExactly(2L);
     }
 
     @Test
-    void replaceLocksNewTagsInAscendingIdOrder() {
+    void replaceLocksRequestedTagsInAscendingIdOrder() {
         enableTag(3L);
         enableTag(5L);
         enableTag(9L);
@@ -165,7 +213,7 @@ class ArticleTagServiceTests {
     }
 
     @Test
-    void replaceThrowsNotFoundWhenNewTagDoesNotExist() {
+    void replaceThrowsNotFoundWhenRequestedTagDoesNotExist() {
         enableTag(4L);
 
         assertThatThrownBy(() -> service.replaceBindings(1L, List.of(4L, 8L)))
@@ -174,14 +222,13 @@ class ArticleTagServiceTests {
                 .satisfies(exception -> assertThat(((BusinessException) exception).getResultCode())
                         .isEqualTo(ResultCode.NOT_FOUND));
 
-        assertThat(deleteCalls).hasValue(0);
         assertThat(insertCalls).hasValue(0);
+        assertThat(deleteCalls).hasValue(0);
     }
 
     @Test
     void replaceRejectsDisabledTagForNewBinding() {
-        TagRow disabled = new TagRow(4L, "停用标签", 0, CREATED_AT, UPDATED_AT);
-        tagDictionary.put(4L, disabled);
+        tagDictionary.put(4L, new TagRow(4L, "停用标签", 0, CREATED_AT, UPDATED_AT));
 
         assertThatThrownBy(() -> service.replaceBindings(1L, List.of(4L)))
                 .isInstanceOf(BusinessException.class)
@@ -189,20 +236,23 @@ class ArticleTagServiceTests {
                 .satisfies(exception -> assertThat(((BusinessException) exception).getResultCode())
                         .isEqualTo(ResultCode.CONFLICT));
 
-        assertThat(deleteCalls).hasValue(0);
+        assertThat(insertIfAbsentCalls).hasValue(1);
         assertThat(insertCalls).hasValue(0);
+        assertThat(deleteCalls).hasValue(0);
     }
 
     @Test
     void replaceKeepsAlreadyBoundDisabledTag() {
         existingBindings.addAll(List.of(2L, 3L));
         tagDictionary.put(2L, new TagRow(2L, "旧停用标签", 0, CREATED_AT, UPDATED_AT));
+        enableTag(3L);
 
         service.replaceBindings(1L, List.of(2L, 3L));
 
-        assertThat(lockCalls).hasValue(0);
-        assertThat(insertCalls).hasValue(0);
-        assertThat(deleteCalls).hasValue(0);
+        assertThat(insertIfAbsentCalls).hasValue(1);
+        assertThat(insertCalls).hasValue(1);
+        assertThat(insertedIds.get()).containsExactly(2L, 3L);
+        assertThat(deletedIds.get()).isEmpty();
     }
 
     @Test
@@ -285,8 +335,16 @@ class ArticleTagServiceTests {
                 + (argument == null ? "null" : argument.getClass().getName()));
     }
 
+    private static Long requireLong(Object argument, String method) {
+        if (argument instanceof Long value) {
+            return value;
+        }
+        throw new IllegalStateException(method + " 的参数应为 Long，实际为 "
+                + (argument == null ? "null" : argument.getClass().getName()));
+    }
+
     private static List<Long> copyOf(Object argument) {
-        return argument == null ? null : requireLongs(argument, "deleteBindingsByIds");
+        return argument == null ? List.of() : requireLongs(argument, "deleteBindingsNotRequested");
     }
 
     private static Object defaultValue(Class<?> returnType) {

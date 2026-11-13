@@ -28,22 +28,10 @@ class ArticleTagMapperXmlTests {
         var configuration = sqlSessionFactory.getConfiguration();
 
         assertThat(configuration.hasStatement(NAMESPACE + ".lockTagsByIds")).isTrue();
-        assertThat(configuration.hasStatement(NAMESPACE + ".selectBoundTagIds")).isTrue();
-        assertThat(configuration.hasStatement(NAMESPACE + ".deleteBindingsByIds")).isTrue();
-        assertThat(configuration.hasStatement(NAMESPACE + ".insertBindings")).isTrue();
+        assertThat(configuration.hasStatement(NAMESPACE + ".insertBindingIfAbsent")).isTrue();
+        assertThat(configuration.hasStatement(NAMESPACE + ".insertBindingsIfAbsent")).isTrue();
+        assertThat(configuration.hasStatement(NAMESPACE + ".deleteBindingsNotRequested")).isTrue();
         assertThat(configuration.hasStatement(NAMESPACE + ".selectTagRowsByArticleIds")).isTrue();
-    }
-
-    @Test
-    void boundTagIdsStatementUsesCurrentRead() {
-        BoundSql boundSql = boundSql("selectBoundTagIds", Map.of("articleId", 1L));
-
-        assertThat(normalize(boundSql.getSql()))
-                .contains("FROM cms_article_tag")
-                .contains("WHERE article_id = ?")
-                .contains("ORDER BY tag_id ASC")
-                .contains("FOR UPDATE");
-        assertThat(boundSql.getParameterMappings()).hasSize(1);
     }
 
     @Test
@@ -58,24 +46,45 @@ class ArticleTagMapperXmlTests {
     }
 
     @Test
-    void deleteStatementDeletesOnlyGivenTagIds() {
-        BoundSql boundSql = boundSql("deleteBindingsByIds", Map.of("articleId", 1L, "tagIds", List.of(3L, 4L)));
+    void singleInsertStatementIsIdempotent() {
+        BoundSql boundSql = boundSql("insertBindingIfAbsent", Map.of("articleId", 1L, "tagId", 3L));
+
+        assertThat(normalize(boundSql.getSql()))
+                .startsWith("INSERT IGNORE INTO cms_article_tag (article_id, tag_id) VALUES")
+                .contains("(?, ?)");
+        assertThat(boundSql.getParameterMappings()).hasSize(2);
+    }
+
+    @Test
+    void batchInsertStatementIsIdempotentAndBindsOneRowPerTag() {
+        BoundSql boundSql = boundSql("insertBindingsIfAbsent", Map.of("articleId", 1L, "tagIds", List.of(3L, 4L)));
+
+        assertThat(normalize(boundSql.getSql()))
+                .startsWith("INSERT IGNORE INTO cms_article_tag (article_id, tag_id) VALUES")
+                .contains("(?, ?) , (?, ?)");
+        assertThat(boundSql.getParameterMappings()).hasSize(4);
+    }
+
+    @Test
+    void deleteStatementRemovesTagIdsOutsideRequestedSet() {
+        BoundSql boundSql = boundSql("deleteBindingsNotRequested", Map.of("articleId", 1L, "tagIds", List.of(3L, 4L)));
 
         assertThat(normalize(boundSql.getSql()))
                 .contains("DELETE FROM cms_article_tag")
-                .contains("AND tag_id IN")
+                .contains("AND tag_id NOT IN")
                 .contains("(? , ?)");
         assertThat(boundSql.getParameterMappings()).hasSize(3);
     }
 
     @Test
-    void insertStatementBindsOneRowPerTag() {
-        BoundSql boundSql = boundSql("insertBindings", Map.of("articleId", 1L, "tagIds", List.of(3L, 4L)));
+    void deleteStatementClearsAllBindingsWhenRequestedSetIsEmpty() {
+        BoundSql boundSql = boundSql("deleteBindingsNotRequested", Map.of("articleId", 1L, "tagIds", List.of()));
 
         assertThat(normalize(boundSql.getSql()))
-                .startsWith("INSERT INTO cms_article_tag (article_id, tag_id) VALUES")
-                .contains("(?, ?) , (?, ?)");
-        assertThat(boundSql.getParameterMappings()).hasSize(4);
+                .contains("DELETE FROM cms_article_tag")
+                .contains("WHERE article_id = ?")
+                .doesNotContain("NOT IN");
+        assertThat(boundSql.getParameterMappings()).hasSize(1);
     }
 
     @Test
