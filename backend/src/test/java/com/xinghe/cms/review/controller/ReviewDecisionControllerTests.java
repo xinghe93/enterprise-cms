@@ -143,6 +143,42 @@ class ReviewDecisionControllerTests {
         assertThat(stubService.approvedArticleId).isEqualTo(999999999999999999L);
     }
 
+    @Test
+    void acceptsLongMaxValueArticleId() throws Exception {
+        stubService.result = new ArticleStateVO(Long.MAX_VALUE, ArticleStatus.APPROVED, 1, null);
+
+        MvcResult result = postDecision("/api/admin/articles/9223372036854775807/approve",
+                "{\"version\": 0}");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.approvedArticleId).isEqualTo(Long.MAX_VALUE);
+    }
+
+    @Test
+    void rejectsArticleIdExceedingLongMaxValue() throws Exception {
+        MvcResult result = postDecision("/api/admin/articles/9223372036854775808/approve",
+                "{\"version\": 3}");
+
+        assertError(result, 400, "请求参数错误");
+        assertThat(stubService.approvedArticleId).isNull();
+    }
+
+    @Test
+    void rejectsArticleIdWithLeadingZeros() throws Exception {
+        MvcResult result = postDecision("/api/admin/articles/001/approve", "{\"version\": 3}");
+
+        assertError(result, 400, "请求参数错误");
+        assertThat(stubService.approvedArticleId).isNull();
+    }
+
+    @Test
+    void rejectsZeroArticleId() throws Exception {
+        MvcResult result = postDecision("/api/admin/articles/0/reject", "{\"version\": 3}");
+
+        assertError(result, 400, "请求参数错误");
+        assertThat(stubService.rejectedArticleId).isNull();
+    }
+
     private MvcResult postDecision(String path, String json) throws Exception {
         return mockMvc.perform(post(path)
                 .contentType(MediaType.APPLICATION_JSON)

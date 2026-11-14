@@ -27,7 +27,11 @@ import java.util.regex.Pattern;
 @RequestMapping("/api/admin/articles")
 public class ReviewDecisionController {
 
-    private static final Pattern ARTICLE_ID_PATTERN = Pattern.compile("[0-9]{1,18}");
+    /**
+     * OpenAPI 的 Id 定义：无前导零的正十进制整数，最大值为 {@link Long#MAX_VALUE}。
+     * 前导零（如 {@code 001}）、{@code 0}、十六进制与任何非数字字符都按 400 处理。
+     */
+    private static final Pattern ARTICLE_ID_PATTERN = Pattern.compile("[1-9][0-9]*");
 
     private final ReviewDecisionService reviewDecisionService;
 
