@@ -20,6 +20,7 @@ import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.review.mapper.ArticleTagMapper;
 import com.xinghe.cms.review.mapper.ArticleTagRow;
 import com.xinghe.cms.review.mapper.TagRow;
+import com.xinghe.cms.support.TestDatabaseGuard;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -89,9 +90,7 @@ class ArticleTagServiceMysqlIT {
 
     @BeforeEach
     void seed() {
-        assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class))
-                .as("集成测试必须运行在独立测试库")
-                .isEqualTo(IT_DATABASE);
+        TestDatabaseGuard.requireDatabase(jdbc, IT_DATABASE);
         cleanup();
         jdbc.update("INSERT INTO sys_user (id, username, password_hash, real_name, department_id, status) "
                 + "VALUES (?, ?, ?, ?, NULL, 1)", USER_ID, "it_reviewer", "not-a-real-hash", "IT用户");
@@ -109,6 +108,9 @@ class ArticleTagServiceMysqlIT {
 
     @AfterEach
     void cleanup() {
+        // 任何 DELETE 之前先校验实际连接的库名：Hikari 配置可能覆盖测试数据源，
+        // 即使 @BeforeEach 断言失败，@AfterEach 仍会执行，因此这里必须自带保护。
+        TestDatabaseGuard.requireDatabase(jdbc, IT_DATABASE);
         jdbc.update("DELETE FROM cms_article_tag WHERE article_id IN (?, ?)", ARTICLE_A, ARTICLE_B);
         jdbc.update("DELETE FROM cms_article WHERE id IN (?, ?)", ARTICLE_A, ARTICLE_B);
         jdbc.update("DELETE FROM cms_tag WHERE id IN (?, ?, ?, ?)", TAG_A, TAG_B, TAG_C, TAG_DISABLED);
