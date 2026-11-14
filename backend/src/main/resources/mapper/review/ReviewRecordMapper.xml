@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.review.mapper.ReviewRecordMapper">
+
+    <!-- 审核历史：cms_review 与 sys_user 的单条 JOIN 查询（多表查询考点）。
+         reviewer_name 取自 sys_user.real_name；VO 为普通 JavaBean，靠
+         map-underscore-to-camel-case 自动映射，故这里用 resultType 而非手写 resultMap。
+         排序固定为 reviewed_at DESC, id DESC（同一秒内按 id 倒序稳定）；分页与 count
+         由 MyBatis-Plus PaginationInnerInterceptor 追加，SQL 里不写 LIMIT。 -->
+    <select id="selectReviewPage" resultType="com.xinghe.cms.review.vo.ReviewRecordVO">
+        SELECT r.id,
+               r.article_id,
+               r.reviewer_id,
+               u.real_name AS reviewer_name,
+               r.result,
+               r.comment,
+               r.reviewed_at
+        FROM cms_review r
+        INNER JOIN sys_user u ON u.id = r.reviewer_id
+        WHERE r.article_id = #{articleId}
+        ORDER BY r.reviewed_at DESC, r.id DESC
+    </select>
+</mapper>
