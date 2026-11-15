@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.user.mapper.UserAdminMapper">
+
+    <!-- 必须在 UserStatusService 的写事务内调用：行锁保证「读状态 → 写状态」不被并发穿插。
+         登录链路的普通快照读不请求锁，因此不会阻塞登录。 -->
+    <select id="findStatusForUpdate" resultType="java.lang.Integer">
+        SELECT status
+        FROM sys_user
+        WHERE id = #{userId}
+        FOR UPDATE
+    </select>
+
+    <!-- updated_at 由 001_init.sql 的 ON UPDATE CURRENT_TIMESTAMP(3) 自动维护，
+         服务端不接收也不返回客户端伪造的时间。 -->
+    <update id="updateStatus">
+        UPDATE sys_user
+        SET status = #{status}
+        WHERE id = #{userId}
+    </update>
+
+    <resultMap id="profileMap" type="com.xinghe.cms.user.mapper.row.UserProfileRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="username" javaType="java.lang.String"/>
+            <arg column="real_name" javaType="java.lang.String"/>
+            <arg column="department_id" javaType="java.lang.Long"/>
+            <arg column="dept_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="roleRowMap" type="com.xinghe.cms.user.mapper.row.UserRoleRow">
+        <constructor>
+            <arg column="user_id" javaType="java.lang.Long"/>
+            <arg column="role_id" javaType="java.lang.Long"/>
+            <arg column="role_code" javaType="java.lang.String"/>
+            <arg column="role_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="profileColumns">
+        u.id, u.username, u.real_name, u.department_id, d.dept_name,
+        u.status, u.created_at, u.updated_at
+    </sql>
+
+    <!-- 契约 8.2：keyword 字面包含，% _ ! 在 Service 中按 ! 转义，SQL 声明 ESCAPE '!'；
+         departmentId 含本部门与全部后代；空后代集合表示合法但不存在的部门，必须返回空分页。 -->
+    <sql id="userFilter">
+        FROM sys_user u
+        LEFT JOIN sys_department d ON d.id = u.department_id
+        WHERE 1 = 1
+        <if test="keywordPattern != null and keywordPattern != ''">
+            AND (u.username LIKE #{keywordPattern} ESCAPE '!'
+                 OR u.real_name LIKE #{keywordPattern} ESCAPE '!')
+        </if>
+        <choose>
+            <when test="departmentIds != null and departmentIds.isEmpty()">
+                AND 1 = 0
+            </when>
+            <when test="departmentIds != null">
+                AND u.department_id IN
+                <foreach collection="departmentIds" item="deptId" open="(" separator="," close=")">
+                    #{deptId}
+                </foreach>
+            </when>
+        </choose>
+        <if test="status != null">
+            AND u.status = #{status}
+        </if>
+    </sql>
+
+    <select id="findProfileForUpdate" resultMap="profileMap">
+        SELECT <include refid="profileColumns"/>
+        FROM sys_user u
+        LEFT JOIN sys_department d ON d.id = u.department_id
+        WHERE u.id = #{userId}
+        FOR UPDATE
+    </select>
+
+    <select id="findProfileByUsername" resultMap="profileMap">
+        SELECT <include refid="profileColumns"/>
+        FROM sys_user u
+        LEFT JOIN sys_department d ON d.id = u.department_id
+        WHERE u.username = #{username}
+    </select>
+
+    <select id="findProfileById" resultMap="profileMap">
+        SELECT <include refid="profileColumns"/>
+        FROM sys_user u
+        LEFT JOIN sys_department d ON d.id = u.department_id
+        WHERE u.id = #{userId}
+    </select>
+
+    <insert id="insertUser">
+        INSERT INTO sys_user (username, password_hash, real_name, department_id, status)
+        VALUES (#{username}, #{passwordHash}, #{realName}, #{departmentId}, 1)
+    </insert>
+
+    <update id="updateProfile">
+        UPDATE sys_user
+        SET real_name = #{realName}, department_id = #{departmentId}
+        WHERE id = #{userId}
+    </update>
+
+    <select id="countUsers" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        <include refid="userFilter"/>
+    </select>
+
+    <select id="findUsersPage" resultMap="profileMap">
+        SELECT <include refid="profileColumns"/>
+        <include refid="userFilter"/>
+        ORDER BY u.updated_at DESC, u.id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="findRolesByUserIds" resultMap="roleRowMap">
+        SELECT ur.user_id, r.id AS role_id, r.role_code, r.role_name, r.status
+        FROM sys_user_role ur
+        JOIN sys_role r ON r.id = ur.role_id
+        WHERE ur.user_id IN
+        <foreach collection="userIds" item="userId" open="(" separator="," close=")">
+            #{userId}
+        </foreach>
+        ORDER BY ur.user_id ASC, r.id ASC
+    </select>
+
+    <select id="findRoleIdsByUserId" resultType="java.lang.Long">
+        SELECT role_id
+        FROM sys_user_role
+        WHERE user_id = #{userId}
+        ORDER BY role_id ASC
+    </select>
+
+    <delete id="deleteUserRoles">
+        DELETE FROM sys_user_role
+        WHERE user_id = #{userId}
+    </delete>
+
+    <insert id="insertUserRoles">
+        INSERT INTO sys_user_role (user_id, role_id)
+        VALUES
+        <foreach collection="roleIds" item="roleId" separator=",">
+            (#{userId}, #{roleId})
+        </foreach>
+    </insert>
+
+    <!-- MySQL 8.4 递归 CTE；UNION DISTINCT 让脏数据里的环自然终止，不会无限递归。
+         返回「目标 → 根」的整条祖先链状态：空列表即部门不存在。 -->
+    <select id="findDepartmentChainStatuses" resultType="java.lang.Integer">
+        WITH RECURSIVE chain (id, parent_id, status) AS (
+            SELECT id, parent_id, status
+            FROM sys_department
+            WHERE id = #{departmentId}
+            UNION DISTINCT
+            SELECT d.id, d.parent_id, d.status
+            FROM sys_department d
+            JOIN chain c ON d.id = c.parent_id
+        )
+        SELECT status FROM chain
+    </select>
+
+    <select id="findDescendantDepartmentIds" resultType="java.lang.Long">
+        WITH RECURSIVE subtree (id) AS (
+            SELECT id
+            FROM sys_department
+            WHERE id = #{departmentId}
+            UNION DISTINCT
+            SELECT d.id
+            FROM sys_department d
+            JOIN subtree s ON d.parent_id = s.id
+        )
+        SELECT id FROM subtree
+    </select>
+
+</mapper>
