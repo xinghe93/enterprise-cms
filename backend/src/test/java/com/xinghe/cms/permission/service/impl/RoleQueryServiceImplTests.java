@@ -102,6 +102,17 @@ class RoleQueryServiceImplTests {
         verifyNoInteractions(sysRoleMapper);
     }
 
+    /** 契约 8.x：原始长度先校验再去空白，空白填充不得绕过上限（PR #23 P3）。 */
+    @Test
+    void rejectsKeywordPaddedToOverlongByWhitespace() {
+        assertThatThrownBy(() -> service.page(new PageQuery(), " ".repeat(100) + "x", null))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+
+        verifyNoInteractions(sysRoleMapper);
+    }
+
     @Test
     void mapsPageResultWithSerializedId() {
         Page<SysRole> page = new Page<>(2, 10);

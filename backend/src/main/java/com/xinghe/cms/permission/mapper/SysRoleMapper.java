@@ -17,7 +17,8 @@ public interface SysRoleMapper extends BaseMapper<SysRole> {
 
     /**
      * 角色分页（管理端列表）：keyword 为转义后的字面关键词，对 role_code / role_name
-     * 做包含匹配；status 为精确筛选。固定按 id 升序返回，保证分页顺序稳定。
+     * 做包含匹配；status 为精确筛选。排序遵循契约 8.2 列表默认规则：
+     * updated_at DESC, id DESC（id 兜底保证同时间戳下顺序稳定）。
      *
      * <p>调用方约定：keyword 已去首尾空白并完成 LIKE 通配符转义
      * （{@code !} 为转义字符），status 仅允许 0/1 或 null。</p>
@@ -39,7 +40,7 @@ public interface SysRoleMapper extends BaseMapper<SysRole> {
             AND status = #{status}
             </if>
             </where>
-            ORDER BY id ASC
+            ORDER BY updated_at DESC, id DESC
             </script>
             """)
     Page<SysRole> selectRolePage(Page<SysRole> page, @Param("keyword") String keyword,
