@@ -63,7 +63,10 @@ public class ReviewDecisionServiceImpl implements ReviewDecisionService {
                 : ReviewRecord.RESULT_REJECTED);
         record.setComment(comment);
         // reviewedAt 保持 null，由数据库 CURRENT_TIMESTAMP(3) 生成，Java 侧永不写入。
-        reviewRecordMapper.insert(record);
+        // 审核历史是审计证据：插入必须真正写入一行，否则回滚整个事务（状态变更与历史同时回滚）。
+        if (reviewRecordMapper.insert(record) != 1) {
+            throw new IllegalStateException("审核记录写入失败");
+        }
 
         return new ArticleStateVO(state.id(), state.status(), state.version(), state.publishedAt());
     }

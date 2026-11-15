@@ -140,6 +140,16 @@ class ReviewDecisionServiceTests {
         assertThat(mapper.inserted.get()).isNull();
     }
 
+    @Test
+    void failsWhenHistoryInsertDoesNotWriteRow() {
+        mapper.insertResult = 0;
+
+        assertThatThrownBy(() -> service.approve(ARTICLE_ID, new ReviewDecisionRequest(VERSION, "内容完整")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("审核记录写入失败");
+        assertThat(workflow.calls).containsExactly("transition:" + ARTICLE_ID + ":" + VERSION + ":APPROVE");
+    }
+
     private void bindCurrentUser(long userId) {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setAttribute(CurrentUserProvider.REQUEST_ATTRIBUTE, new CurrentUser(userId, "it_reviewer", null));
@@ -167,6 +177,7 @@ class ReviewDecisionServiceTests {
     private static final class StubReviewRecordMapper {
 
         private final AtomicReference<ReviewRecord> inserted = new AtomicReference<>();
+        private int insertResult = 1;
 
         ReviewRecordMapper proxy() {
             return (ReviewRecordMapper) Proxy.newProxyInstance(
@@ -177,7 +188,7 @@ class ReviewDecisionServiceTests {
                             if (args[0] instanceof ReviewRecord record) {
                                 inserted.set(record);
                             }
-                            yield 1;
+                            yield insertResult;
                         }
                         case "toString" -> "ReviewRecordMapperStub";
                         case "hashCode" -> System.identityHashCode(proxy);

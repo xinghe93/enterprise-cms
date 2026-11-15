@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
@@ -19,6 +20,8 @@ import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.review.vo.ReviewRecordVO;
 import com.xinghe.cms.security.CurrentUserProvider;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -71,8 +74,18 @@ class ReviewQueryServiceMysqlIT {
     /** 未被插入的缺失文章 ID（仅用于 404 场景，测试事务回滚不会写入任何数据）。 */
     private static final long MISSING_ARTICLE_ID = 990299L;
 
-    static {
-        provisionItDatabase();
+    /**
+     * 准备独立测试库。放在 {@code @BeforeAll} 而不是静态块里：实例不可用时整类跳过，
+     * 不会因类加载失败而把“环境未启动”误报成代码错误。
+     */
+    @BeforeAll
+    static void prepareIsolatedDatabase() {
+        try {
+            provisionItDatabase();
+        } catch (RuntimeException exception) {
+            Assumptions.assumeTrue(false,
+                    "跳过审核历史 MySQL 集成测试：独立测试库不可用（" + exception.getMessage() + "）");
+        }
     }
 
     @DynamicPropertySource
@@ -230,11 +243,28 @@ class ReviewQueryServiceMysqlIT {
                         + " CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
             }
             Path script = locateInitScript();
-            String sql = Files.readString(script, StandardCharsets.UTF_8).replace("enterprise_cms", IT_DATABASE);
+            // 只改写脚本里的建库与切换库两条目标语句，避免把表名/注释里出现的库名一并替换。
+            String sql = Files.readString(script, StandardCharsets.UTF_8)
+                    .replace("CREATE DATABASE IF NOT EXISTS enterprise_cms",
+                            "CREATE DATABASE IF NOT EXISTS " + IT_DATABASE)
+                    .replace("USE enterprise_cms;", "USE " + IT_DATABASE + ";");
             ScriptUtils.executeSqlScript(connection,
                     new EncodedResource(new ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8));
+            requireConnectedDatabase(connection);
         } catch (SQLException | IOException exception) {
             throw new IllegalStateException("无法准备独立测试库 " + IT_DATABASE + "，请确认 MySQL 可连接", exception);
+        }
+    }
+
+    /** 在建表脚本执行后校验实际连接到的库，防止改写失效时把表建到业务库。 */
+    private static void requireConnectedDatabase(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT DATABASE()")) {
+            String actualDatabase = resultSet.next() ? resultSet.getString(1) : null;
+            if (!IT_DATABASE.equals(actualDatabase)) {
+                throw new IllegalStateException("初始化脚本未切换到独立测试库 " + IT_DATABASE
+                        + "，实际连接 " + actualDatabase);
+            }
         }
     }
 
