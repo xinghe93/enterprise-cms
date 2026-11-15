@@ -77,6 +77,10 @@ public class PublishCommandServiceImpl implements PublishCommandService {
         List<Integer> versions = new ArrayList<>(items.size());
         Set<Long> uniqueIds = new HashSet<>();
         for (BatchArticleItemRequest item : items) {
+            if (item == null) {
+                // JSON 数组里允许出现 null 元素，@Valid 不会拦截元素本身，必须在服务层显式拒绝。
+                throw new BusinessException(ResultCode.BAD_REQUEST, "文章项不能为空");
+            }
             long articleId = parseItemId(item.id());
             if (!uniqueIds.add(articleId)) {
                 throw new BusinessException(ResultCode.BAD_REQUEST, "文章 ID 不能重复");
@@ -140,6 +144,10 @@ public class PublishCommandServiceImpl implements PublishCommandService {
     }
 
     private static ArticleStateVO toVO(ArticleState state) {
+        if (state == null) {
+            // C 的 transition 约定返回非空；这里兜底，避免 NPE 变成难以定位的 500。
+            throw new IllegalStateException("文章状态更新失败");
+        }
         return new ArticleStateVO(state.id(), state.status(), state.version(), state.publishedAt());
     }
 }

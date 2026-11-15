@@ -149,6 +149,26 @@ class PublishCommandServiceTests {
     }
 
     @Test
+    void rejectsNullBatchItemBeforeCallingWorkflow() {
+        List<BatchArticleItemRequest> items = new ArrayList<>();
+        items.add(item("1", 0));
+        items.add(null);
+
+        assertThatThrownBy(() -> service.publishBatch(new BatchArticlesRequest(items)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("文章项不能为空");
+        assertThat(workflow.calls).isEmpty();
+    }
+
+    @Test
+    void failsWhenWorkflowReturnsNullState() {
+        assertThatThrownBy(() -> service.publish(990201L, new ArticleVersionRequest(3)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("文章状态更新失败");
+        assertThat(workflow.calls).containsExactly("transition:990201:3:PUBLISH");
+    }
+
+    @Test
     void rejectsNonPositiveArticleId() {
         assertThatThrownBy(() -> service.publish(0L, new ArticleVersionRequest(1)))
                 .isInstanceOf(BusinessException.class)
