@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
@@ -45,8 +46,10 @@ import static org.assertj.core.api.Assertions.tuple;
  * 3. 两个事务同时给不同文章首次绑定标签时都成功且关联均写入（不使用关联表加锁读，避免间隙锁死锁）。
  *
  * <p>测试库隔离：本类使用独立、可丢弃的 {@value #IT_DATABASE} 库，启动前自动创建并按
- * {@code database/001_init.sql} 建表；数据源通过 {@code spring.datasource.url} 覆盖，
- * 清理只操作该库，不会触碰业务库中的固定 ID 数据。</p>
+ * {@code database/001_init.sql} 建表（只替换脚本中的 CREATE DATABASE 与 USE 目标库，
+ * 建表后校验实际连接库名）；数据源通过 {@code spring.datasource.url} 覆盖。
+ * 每次数据准备与清理前都用 {@link TestDatabaseGuard} 在实际连接上校验库名，
+ * 不匹配时立即终止写入、收尾跳过删除，不会触碰业务库中的任何数据。</p>
  *
  * <p>类名以 IT 结尾，默认 surefire 不包含，避免每次 mvn test 都依赖真实库。</p>
  */
@@ -91,7 +94,7 @@ class ArticleTagServiceMysqlIT {
     @BeforeEach
     void seed() {
         TestDatabaseGuard.requireDatabase(jdbc, IT_DATABASE);
-        cleanup();
+        cleanupIfIsolated();
         jdbc.update("INSERT INTO sys_user (id, username, password_hash, real_name, department_id, status) "
                 + "VALUES (?, ?, ?, ?, NULL, 1)", USER_ID, "it_reviewer", "not-a-real-hash", "IT用户");
         jdbc.update("INSERT INTO cms_category (id, parent_id, category_name, sort_order, status) "
@@ -108,9 +111,20 @@ class ArticleTagServiceMysqlIT {
 
     @AfterEach
     void cleanup() {
-        // 任何 DELETE 之前先校验实际连接的库名：Hikari 配置可能覆盖测试数据源，
-        // 即使 @BeforeEach 断言失败，@AfterEach 仍会执行，因此这里必须自带保护。
-        TestDatabaseGuard.requireDatabase(jdbc, IT_DATABASE);
+        cleanupIfIsolated();
+    }
+
+    /**
+     * 收尾清理：DELETE 之前必须校验实际连接的库名；Hikari 配置可能覆盖测试数据源，
+     * 即使 {@code @BeforeEach} 断言失败，{@code @AfterEach} 仍会执行，因此这里自带保护。
+     * 库名不匹配时跳过全部删除，绝不触碰业务库数据。
+     */
+    private void cleanupIfIsolated() {
+        try {
+            TestDatabaseGuard.requireDatabase(jdbc, IT_DATABASE);
+        } catch (IllegalStateException skipped) {
+            return;
+        }
         jdbc.update("DELETE FROM cms_article_tag WHERE article_id IN (?, ?)", ARTICLE_A, ARTICLE_B);
         jdbc.update("DELETE FROM cms_article WHERE id IN (?, ?)", ARTICLE_A, ARTICLE_B);
         jdbc.update("DELETE FROM cms_tag WHERE id IN (?, ?, ?, ?)", TAG_A, TAG_B, TAG_C, TAG_DISABLED);
@@ -231,11 +245,30 @@ class ArticleTagServiceMysqlIT {
                         + " CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
             }
             Path script = locateInitScript();
-            String sql = Files.readString(script, StandardCharsets.UTF_8).replace("enterprise_cms", IT_DATABASE);
+            // 只替换脚本中的目标库声明，避免把注释或数据里的 enterprise_cms 一并替换。
+            String sql = Files.readString(script, StandardCharsets.UTF_8)
+                    .replace("CREATE DATABASE IF NOT EXISTS enterprise_cms",
+                            "CREATE DATABASE IF NOT EXISTS " + IT_DATABASE)
+                    .replace("USE enterprise_cms;", "USE " + IT_DATABASE + ";");
             ScriptUtils.executeSqlScript(connection,
                     new EncodedResource(new ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8));
+            requireConnectedDatabase(connection);
         } catch (SQLException | IOException exception) {
             throw new IllegalStateException("无法准备独立测试库 " + IT_DATABASE + "，请确认 MySQL 可连接", exception);
+        }
+    }
+
+    /** 建表脚本执行后校验连接实际落在本次运行分配的独立测试库上。 */
+    private static void requireConnectedDatabase(Connection connection) {
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT DATABASE()")) {
+            String actualDatabase = resultSet.next() ? resultSet.getString(1) : null;
+            if (!IT_DATABASE.equals(actualDatabase)) {
+                throw new IllegalStateException("初始化脚本未切换到独立测试库 " + IT_DATABASE
+                        + "，实际连接 " + actualDatabase);
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("无法校验独立测试库 " + IT_DATABASE + " 的连接目标", exception);
         }
     }
 
