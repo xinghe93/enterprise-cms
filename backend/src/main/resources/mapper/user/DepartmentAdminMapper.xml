@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.user.mapper.DepartmentAdminMapper">
+
+    <!-- 构造参数顺序与 DepartmentRow 的组件顺序严格一致。 -->
+    <resultMap id="departmentMap" type="com.xinghe.cms.user.mapper.row.DepartmentRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="parent_id" javaType="java.lang.Long"/>
+            <arg column="dept_code" javaType="java.lang.String"/>
+            <arg column="dept_name" javaType="java.lang.String"/>
+            <arg column="sort_order" javaType="java.lang.Integer"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="departmentColumns">
+        id, parent_id, dept_code, dept_name, sort_order, status, created_at, updated_at
+    </sql>
+
+    <select id="findAll" resultMap="departmentMap">
+        SELECT <include refid="departmentColumns"/>
+        FROM sys_department
+    </select>
+
+    <select id="findById" resultMap="departmentMap">
+        SELECT <include refid="departmentColumns"/>
+        FROM sys_department
+        WHERE id = #{id}
+    </select>
+
+    <select id="findByIdForUpdate" resultMap="departmentMap">
+        SELECT <include refid="departmentColumns"/>
+        FROM sys_department
+        WHERE id = #{id}
+        FOR UPDATE
+    </select>
+
+    <select id="findByDeptCode" resultMap="departmentMap">
+        SELECT <include refid="departmentColumns"/>
+        FROM sys_department
+        WHERE dept_code = #{deptCode}
+    </select>
+
+    <!-- status 使用 001_init.sql 的默认值 1；updated_at 由 ON UPDATE 自动维护。 -->
+    <insert id="insert">
+        INSERT INTO sys_department (parent_id, dept_code, dept_name, sort_order)
+        VALUES (#{parentId}, #{deptCode}, #{deptName}, #{sortOrder})
+    </insert>
+
+    <update id="updateNode">
+        UPDATE sys_department
+        SET parent_id = #{parentId}, dept_name = #{deptName}, sort_order = #{sortOrder}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateStatus">
+        UPDATE sys_department
+        SET status = #{status}
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM sys_department
+        WHERE id = #{id}
+    </delete>
+
+    <select id="countChildren" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM sys_department
+        WHERE parent_id = #{id}
+    </select>
+
+    <select id="countUsers" resultType="java.lang.Integer">
+        SELECT COUNT(*)
+        FROM sys_user
+        WHERE department_id = #{id}
+    </select>
+
+</mapper>
