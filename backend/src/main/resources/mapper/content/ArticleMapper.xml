@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.content.mapper.ArticleMapper">
+
+    <sql id="snapshot">
+        SELECT id, author_id, category_id, status, version, published_at
+        FROM cms_article
+        WHERE id = #{id} AND is_deleted = 0
+    </sql>
+
+    <select id="findSnapshot" resultType="com.xinghe.cms.common.contract.ArticleSnapshot">
+        <include refid="snapshot"/>
+    </select>
+
+    <select id="lockSnapshot" resultType="com.xinghe.cms.common.contract.ArticleSnapshot">
+        <include refid="snapshot"/>
+        FOR UPDATE
+    </select>
+
+    <update id="changeState">
+        UPDATE cms_article
+        SET status = #{target}, version = version + 1
+        <if test="target.name() == 'PUBLISHED'">, published_at = CURRENT_TIMESTAMP(3)</if>
+        WHERE id = #{expected.id} AND is_deleted = 0
+        AND status = #{expected.status} AND version = #{expected.version}
+    </update>
+</mapper>
