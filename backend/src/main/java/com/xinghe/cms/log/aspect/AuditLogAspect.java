@@ -24,6 +24,11 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 /**
  * 审计切面：环绕 {@link AuditLog} 标注的方法，记录操作编码、请求路径、HTTP 方法、结果与耗时。
  *
+ * <p><b>接入位置：</b>{@link AuditLog} 必须标在事务边界之内、经 Spring 代理调用的方法上
+ * （Controller → {@code @Transactional} Service → 审计方法）。标在 Controller 上时事务尚未开启，
+ * 会走"无事务"分支，成功日志在业务提交后才写、失败也不回滚业务，不满足
+ * 《跨模块服务接口》第 5 节的"成功审计随外层事务提交"要求。</p>
+ *
  * <p>结果以"方法是否正常返回 + 事务最终状态"共同判定，并且成功日志必须与业务一起提交：</p>
  * <ul>
  *   <li>调用方存在事务时只注册一个事务同步器：方法正常返回时，在
