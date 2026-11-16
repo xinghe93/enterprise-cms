@@ -23,11 +23,12 @@ import java.util.regex.Pattern;
 public final class QueryParams {
 
     /**
-     * 严格十进制正整数：无符号、无空白、无前导零，最多 18 位——18 位以内必然
-     * 落在 {@code long} 范围内，{@code Long.parseLong} 不会溢出
-     * （19 位可能超过 {@code Long.MAX_VALUE}）。
+     * 严格十进制正整数：无符号、无空白、无前导零，最多 19 位——与 OpenAPI 的
+     * {@code int64}（含 {@code current}）对齐，{@code Long.MAX_VALUE} 本身
+     * （9223372036854775807，19 位）是合法取值；超出 {@code long} 范围的取值
+     * 由 {@link #parseStrictDecimal} 在解析阶段转为 400。
      */
-    private static final Pattern STRICT_DECIMAL = Pattern.compile("[1-9][0-9]{0,17}");
+    private static final Pattern STRICT_DECIMAL = Pattern.compile("[1-9][0-9]{0,18}");
 
     private QueryParams() {
     }
@@ -95,6 +96,11 @@ public final class QueryParams {
      * Spring 的数字绑定忽略空白后解析为 12，{@code 01}、{@code +1}、{@code 1e2}
      * 也会被宽松解析；契约 8.1 要求非法数字一律 400。参数未出现不校验（保留绑定默认值）。
      *
+     * <p>格式上限与 OpenAPI 的 {@code int64} 对齐：最多 19 位十进制，
+     * {@code Long.MAX_VALUE} 是合法格式；但 19 位取值可能超出 {@code long}
+     * 范围，超界取值由 {@link #parseStrictDecimal} 在解析时转为 400，
+     * 不要绕过本方法直接 {@code Long.parseLong}。</p>
+     *
      * @param allParams 本次请求的原始查询参数全集（数组形态）
      * @param key       数字参数名
      */
@@ -107,6 +113,24 @@ public final class QueryParams {
             throw new BusinessException(ResultCode.BAD_REQUEST, "查询参数重复传值: " + key);
         }
         if (!STRICT_DECIMAL.matcher(values[0]).matches()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "查询参数取值非法: " + key);
+        }
+    }
+
+    /**
+     * 把已通过 {@link #requireStrictDecimalValue} 校验的取值解析为 {@code long}。
+     * 19 位的规范十进制仍可能超出 {@code Long.MAX_VALUE}（如 {@code 9999999999999999999}），
+     * 按 OpenAPI 的 {@code int64} 语义这类取值视为非法数字，返回 400 而非抛未受检异常导致 500。
+     *
+     * @param allParams 已通过 {@code requireStrictDecimalValue} 校验的原始查询参数全集
+     * @param key       数字参数名
+     * @return 解析出的数值
+     */
+    public static long parseStrictDecimal(Map<String, String[]> allParams, String key) {
+        String raw = allParams.get(key)[0];
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException e) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "查询参数取值非法: " + key);
         }
     }

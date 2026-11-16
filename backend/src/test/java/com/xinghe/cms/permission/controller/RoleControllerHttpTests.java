@@ -182,6 +182,45 @@ class RoleControllerHttpTests {
         assertThat(captor.getValue().getSize()).isEqualTo(10L);
     }
 
+    /**
+     * 复审 P2：current 是 OpenAPI int64——Long.MAX_VALUE 配合 size=1 偏移量不溢出，
+     * 按契约返回 200 空页，服务收到完整还原的真实数值。
+     */
+    @Test
+    void int64BoundaryCurrentWithSizeOneReturns200Empty() throws Exception {
+        when(roleQueryService.page(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(new PageResult<>(List.of(), 0L, Long.MAX_VALUE, 1L));
+
+        mockMvc.perform(get("/api/admin/roles")
+                        .param("current", "9223372036854775807")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.records.length()").value(0))
+                .andExpect(jsonPath("$.data.total").value(0));
+
+        ArgumentCaptor<PageQuery> captor = ArgumentCaptor.forClass(PageQuery.class);
+        verify(roleQueryService).page(captor.capture(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull());
+        assertThat(captor.getValue().getCurrent()).isEqualTo(Long.MAX_VALUE);
+        assertThat(captor.getValue().getSize()).isEqualTo(1L);
+    }
+
+    /** 复审 P2：超出 int64 范围的取值（Long.MAX_VALUE + 1）在解析阶段返回 400。 */
+    @Test
+    void currentBeyondInt64RangeReturns400() throws Exception {
+        mockMvc.perform(get("/api/admin/roles")
+                        .param("current", "9999999999999999999")
+                        .param("size", "1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleQueryService);
+    }
+
     /** 详情接口不接受任何查询参数。 */
     @Test
     void detailRejectsUnknownQueryParam() throws Exception {

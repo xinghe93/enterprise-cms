@@ -57,6 +57,8 @@ public class RoleController {
      * 绑定会把 {@code 1 2} 忽略空白解析为 12、把 {@code 0x1} 解析为十六进制，
      * 且默认值可能被同名请求头等非查询参数来源覆盖。这里在通过原始取值校验后
      * 显式构造 {@link PageQuery}，current/size 未传时保留默认第 1 页、每页 10 条；
+     * {@code current} 按 OpenAPI 是 {@code int64}，{@code Long.MAX_VALUE} 为合法取值
+     * （配合 {@code size=1} 按契约返回 200 空页），超出 {@code long} 范围的取值返回 400；
      * 数值范围（≥1、size≤100、偏移量不溢出）由 {@code PageQuery#toPage} 兜底。</p>
      */
     @GetMapping
@@ -70,11 +72,10 @@ public class RoleController {
         QueryParams.requireStrictEnumValue(allParams, "status", STATUS_VALUES);
         PageQuery query = new PageQuery();
         if (allParams.containsKey("current")) {
-            // 原始取值已被 requireStrictDecimalValue 校验为规范十进制，解析不会失败
-            query.setCurrent(Long.parseLong(allParams.get("current")[0]));
+            query.setCurrent(QueryParams.parseStrictDecimal(allParams, "current"));
         }
         if (allParams.containsKey("size")) {
-            query.setSize(Long.parseLong(allParams.get("size")[0]));
+            query.setSize(QueryParams.parseStrictDecimal(allParams, "size"));
         }
         String keyword = allParams.containsKey("keyword") ? allParams.get("keyword")[0] : null;
         Integer status = allParams.containsKey("status")

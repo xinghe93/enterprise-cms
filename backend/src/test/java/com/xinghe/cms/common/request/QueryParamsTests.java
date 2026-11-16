@@ -1,5 +1,6 @@
 package com.xinghe.cms.common.request;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -93,16 +94,39 @@ class QueryParamsTests {
                 .doesNotThrowAnyException();
     }
 
-    /** PR #23 复审 P3：规范的十进制取值放行（最多 18 位，避免超出 long 范围）。 */
+    /** 复审 P2：current 为 OpenAPI int64，19 位的 int64 边界值是合法格式。 */
     @Test
     void allowsCanonicalDecimalParam() {
-        Map<String, String[]> params = Map.of("current", new String[] {"3"},
-                "size", new String[] {"999999999999999999"});
+        Map<String, String[]> params = Map.of("current", new String[] {"1000000000000000000"},
+                "size", new String[] {"999999999999999999"},
+                "max", new String[] {"9223372036854775807"});
 
         assertThatCode(() -> {
             QueryParams.requireStrictDecimalValue(params, "current");
             QueryParams.requireStrictDecimalValue(params, "size");
+            QueryParams.requireStrictDecimalValue(params, "max");
         }).doesNotThrowAnyException();
+    }
+
+    /** 复审 P2：int64 边界值配合解析，应完整还原数值而不丢失精度。 */
+    @Test
+    void parseStrictDecimalReturnsExactInt64BoundaryValue() {
+        Map<String, String[]> params = Map.of("current", new String[] {"9223372036854775807"});
+
+        QueryParams.requireStrictDecimalValue(params, "current");
+        assertThat(QueryParams.parseStrictDecimal(params, "current")).isEqualTo(Long.MAX_VALUE);
+    }
+
+    /** 复审 P2：超出 long 范围的 19 位规范十进制在解析阶段转为 400，而不是 500。 */
+    @Test
+    void parseStrictDecimalRejectsValueBeyondLongMax() {
+        Map<String, String[]> params = Map.of("current", new String[] {"9999999999999999999"});
+
+        QueryParams.requireStrictDecimalValue(params, "current");
+        assertThatThrownBy(() -> QueryParams.parseStrictDecimal(params, "current"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
     }
 
     /** PR #23 复审 P3：current=1 2 会被 Spring 数字绑定忽略空白解析为 12，必须按原始值拒绝。 */
@@ -116,12 +140,11 @@ class QueryParamsTests {
                 .isEqualTo(ResultCode.BAD_REQUEST);
     }
 
-    /** PR #23 复审 P3：+1/01/1e2/空串等宽松解析变体一律 400。 */
-    /** PR #23 复审 P3：+1/01/1e2/空串等宽松解析变体，以及 19 位超出 long 范围的取值，一律 400。 */
+    /** PR #23 复审 P3：+1/01/1e2/空串等宽松解析变体与超长取值一律 400（int64 超界由解析阶段拦截）。 */
     @Test
     void rejectsNonCanonicalDecimalVariants() {
         for (String raw : new String[] {"+1", "01", "1e2", "", "0", "-1", "1,234",
-                "9999999999999999999"}) {
+                "12345678901234567890"}) {
             Map<String, String[]> params = Map.of("size", new String[] {raw});
 
             assertThatThrownBy(() -> QueryParams.requireStrictDecimalValue(params, "size"))
