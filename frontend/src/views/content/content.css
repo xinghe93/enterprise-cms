@@ -31,3 +31,6 @@
 .content-page .table-wrap { overflow: hidden; }
 .content-page .content-pagination { padding: 12px; }
 .content-page .field-help { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.content-page .text-link { color: var(--el-color-primary); text-decoration: underline; text-underline-offset: 3px; }
+.content-page .content-back { display: inline-flex; align-items: center; gap: 8px; color: var(--el-color-primary); font-size: 13px; margin-bottom: 18px; }
+.content-page .content-back svg { transform: rotate(180deg); }
