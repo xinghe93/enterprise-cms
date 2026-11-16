@@ -85,4 +85,59 @@ class QueryParamsTests {
         assertThatCode(() -> QueryParams.requireStrictEnumValue(params, "status", Set.of("0", "1")))
                 .doesNotThrowAnyException();
     }
+
+    /** PR #23 复审 P3：current/size 未传时不校验，保留绑定默认值。 */
+    @Test
+    void allowsAbsentOptionalDecimalParam() {
+        assertThatCode(() -> QueryParams.requireStrictDecimalValue(Map.of(), "current"))
+                .doesNotThrowAnyException();
+    }
+
+    /** PR #23 复审 P3：规范的十进制取值放行（最多 18 位，避免超出 long 范围）。 */
+    @Test
+    void allowsCanonicalDecimalParam() {
+        Map<String, String[]> params = Map.of("current", new String[] {"3"},
+                "size", new String[] {"999999999999999999"});
+
+        assertThatCode(() -> {
+            QueryParams.requireStrictDecimalValue(params, "current");
+            QueryParams.requireStrictDecimalValue(params, "size");
+        }).doesNotThrowAnyException();
+    }
+
+    /** PR #23 复审 P3：current=1 2 会被 Spring 数字绑定忽略空白解析为 12，必须按原始值拒绝。 */
+    @Test
+    void rejectsWhitespacePaddedDecimalParam() {
+        Map<String, String[]> params = Map.of("current", new String[] {"1 2"});
+
+        assertThatThrownBy(() -> QueryParams.requireStrictDecimalValue(params, "current"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+    }
+
+    /** PR #23 复审 P3：+1/01/1e2/空串等宽松解析变体一律 400。 */
+    @Test
+    void rejectsNonCanonicalDecimalVariants() {
+        for (String raw : new String[] {"+1", "01", "1e2", "", "0", "-1", "1,234"}) {
+            Map<String, String[]> params = Map.of("size", new String[] {raw});
+
+            assertThatThrownBy(() -> QueryParams.requireStrictDecimalValue(params, "size"))
+                    .as("size=%s 应被拒绝", raw)
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).getResultCode())
+                    .isEqualTo(ResultCode.BAD_REQUEST);
+        }
+    }
+
+    /** PR #23 复审 P3：current=1&current=2 重复传参必须 400。 */
+    @Test
+    void rejectsDuplicateDecimalParamValues() {
+        Map<String, String[]> params = Map.of("current", new String[] {"1", "2"});
+
+        assertThatThrownBy(() -> QueryParams.requireStrictDecimalValue(params, "current"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+    }
 }

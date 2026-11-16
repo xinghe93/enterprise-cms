@@ -115,6 +115,39 @@ class RoleControllerHttpTests {
         verifyNoInteractions(roleQueryService);
     }
 
+    /**
+     * 复审 P3 复现：current=1%202&size=3%204 会被 Spring 数字绑定忽略空白解析为
+     * 第 12 页、每页 34 条，必须按原始取值 400 拒绝且不进入服务。
+     */
+    @Test
+    void whitespacePaddedPaginationParamsReturn400() throws Exception {
+        mockMvc.perform(get("/api/admin/roles")
+                        .param("current", "1 2")
+                        .param("size", "3 4"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        verifyNoInteractions(roleQueryService);
+    }
+
+    /** 复审 P3：current/size 未传时保留默认值（第 1 页、每页 10 条），请求正常到达服务。 */
+    @Test
+    void paginationParamsOmittedFallBackToDefaults() throws Exception {
+        when(roleQueryService.page(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(new PageResult<>(List.of(), 0L, 1L, 10L));
+
+        mockMvc.perform(get("/api/admin/roles"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        verify(roleQueryService).page(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull());
+    }
+
     /** 详情接口不接受任何查询参数。 */
     @Test
     void detailRejectsUnknownQueryParam() throws Exception {

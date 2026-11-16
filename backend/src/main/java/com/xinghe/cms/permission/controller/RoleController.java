@@ -54,7 +54,8 @@ public class RoleController {
      * 再由服务层去空白），status 精确筛选（原始取值严格匹配 0/1，重复传参 400）。
      *
      * <p>查询参数走原始集合校验：标量绑定会静默取首值（重复传参丢失）、
-     * 把 {@code 0x1} 解析为十六进制，均在绑定前按契约拦截。</p>
+     * 把 {@code 0x1} 解析为十六进制、把 {@code 1 2} 忽略空白解析为 12，
+     * 均在绑定前按契约拦截；current/size 未传时保留默认值。</p>
      */
     @GetMapping
     @RequirePermission("role:list")
@@ -64,6 +65,8 @@ public class RoleController {
         Map<String, String[]> allParams = request.getParameterMap();
         QueryParams.requireAllowedKeys(allParams, PAGE_QUERY_PARAMS);
         QueryParams.requireSingleValueForEachPresentKey(allParams);
+        QueryParams.requireStrictDecimalValue(allParams, "current");
+        QueryParams.requireStrictDecimalValue(allParams, "size");
         QueryParams.requireStrictEnumValue(allParams, "status", STATUS_VALUES);
         Integer status = allParams.containsKey("status")
                 ? Integer.valueOf(allParams.get("status")[0])

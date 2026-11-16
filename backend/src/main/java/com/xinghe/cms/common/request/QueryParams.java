@@ -4,6 +4,7 @@ import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 查询参数的契约级校验（契约 8.x：未知查询参数、重复传参、空值/非法枚举参数一律 400，
@@ -14,11 +15,15 @@ import java.util.Set;
  * 不要用 {@code @RequestParam Map<String, String[]>}——泛型擦除后运行期可能得到单值 String，
  * 取数组时抛 {@code ClassCastException}。
  * 校验顺序：{@link #requireAllowedKeys} 过滤未知键 → {@link #requireSingleValueForEachPresentKey}
- * 拒绝重复传参 → {@link #requireStrictEnumValue} 校验枚举原始取值。
+ * 拒绝重复传参 → {@link #requireStrictDecimalValue}/{@link #requireStrictEnumValue}
+ * 校验数字/枚举原始取值。
  * JSON 请求体的未知字段由 Jackson 严格模式全局拦截（A 的配置），查询参数无全局钩子，
  * 由各 Controller 显式调用本工具。</p>
  */
 public final class QueryParams {
+
+    /** 严格十进制正整数：无符号、无空白、无前导零，最多 18 位（避免超出 long 范围）。 */
+    private static final Pattern STRICT_DECIMAL = Pattern.compile("[1-9][0-9]{0,18}");
 
     private QueryParams() {
     }
@@ -77,6 +82,27 @@ public final class QueryParams {
         }
         String value = values[0];
         if (!allowedValues.contains(value)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "查询参数取值非法: " + key);
+        }
+    }
+
+    /**
+     * 正整数参数必须严格是十进制字面量。{@code current=1%202} 这类带空白的取值会被
+     * Spring 的数字绑定忽略空白后解析为 12，{@code 01}、{@code +1}、{@code 1e2}
+     * 也会被宽松解析；契约 8.1 要求非法数字一律 400。参数未出现不校验（保留绑定默认值）。
+     *
+     * @param allParams 本次请求的原始查询参数全集（数组形态）
+     * @param key       数字参数名
+     */
+    public static void requireStrictDecimalValue(Map<String, String[]> allParams, String key) {
+        String[] values = allParams.get(key);
+        if (values == null) {
+            return;
+        }
+        if (values.length != 1) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "查询参数重复传值: " + key);
+        }
+        if (!STRICT_DECIMAL.matcher(values[0]).matches()) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "查询参数取值非法: " + key);
         }
     }
