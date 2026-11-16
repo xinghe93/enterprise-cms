@@ -138,5 +138,6 @@ test('公共入口把 A 的两个模块映射到真实页面，其余仍走占�
   assert.match(routerSource, /props: \{ entry \}/)
   assert.match(viewsSource, /departments: \(\) => import\('\.\.\/views\/user\/DepartmentView\.vue'\)/)
   assert.match(viewsSource, /users: \(\) => import\('\.\.\/views\/user\/AssignmentView\.vue'\)/)
+  assert.match(viewsSource, /categories: \(\) => import\('\.\.\/views\/content\/TaxonomyView\.vue'\)/)
   assert.match(mainSource, /import '\.\/styles\/organization\.css'/)
 })

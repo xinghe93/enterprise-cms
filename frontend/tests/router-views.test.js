@@ -13,11 +13,14 @@ test('导航中 A 的两个入口保持原路径与名称，只替换渲染组�
   assert.equal(navigation.find((group) => group.title === '组织管理').items.length, 4)
 })
 
-test('只有 A 的两个入口映射到真实页面，其余模块仍走占位页', () => {
-  assert.deepEqual(Object.keys(moduleViews).sort(), ['departments', 'users'])
+test('A 的两个入口与迁入映射表的 C 分类页映射到真实页面，其余模块仍走占位页', () => {
+  // categories 是 C 的 #31 合入 dev 后从 router/index.js 硬编码分支迁入映射表的，
+  // 目的仍是让 router/index.js 不再逐页硬编码；它属于真实页面，其余 owner 仍走占位页。
+  assert.deepEqual(Object.keys(moduleViews).sort(), ['categories', 'departments', 'users'])
   for (const view of Object.values(moduleViews)) assert.equal(typeof view, 'function')
   for (const entry of moduleEntries) {
-    assert.equal(Boolean(moduleViews[entry.name]), entry.owner === 'A')
+    const expected = entry.owner === 'A' || entry.name === 'categories'
+    assert.equal(Boolean(moduleViews[entry.name]), expected)
   }
 })
 

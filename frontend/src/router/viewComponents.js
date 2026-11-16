@@ -8,4 +8,6 @@
 export const moduleViews = {
   departments: () => import('../views/user/DepartmentView.vue'),
   users: () => import('../views/user/AssignmentView.vue'),
+  // C 的 #31 分类与标签页：从 router/index.js 的硬编码分支迁入映射表，保持单一入口。
+  categories: () => import('../views/content/TaxonomyView.vue'),
 }
