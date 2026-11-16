@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.content.mapper.TagMapper">
+
+    <sql id="columns">
+        t.id, t.tag_name, t.status, t.created_at, t.updated_at
+    </sql>
+
+    <select id="findPage" resultType="com.xinghe.cms.content.entity.Tag">
+        SELECT <include refid="columns"/>
+        FROM cms_tag t
+        <where>
+            <if test="status != null">
+                AND t.status = #{status}
+            </if>
+            <if test="pattern != null">
+                AND t.tag_name LIKE #{pattern} ESCAPE '!'
+            </if>
+            <if test="portal">
+                AND t.status = 1
+                AND EXISTS (
+                    SELECT 1
+                    FROM cms_article_tag link
+                    INNER JOIN cms_article a ON a.id = link.article_id
+                    WHERE link.tag_id = t.id
+                      AND a.is_deleted = 0
+                      AND a.status = 'PUBLISHED'
+                      AND a.visibility = 'ALL'
+                )
+            </if>
+        </where>
+        ORDER BY t.tag_name ASC, t.id ASC
+    </select>
+
+    <select id="selectForUpdate" resultType="com.xinghe.cms.content.entity.Tag">
+        SELECT <include refid="columns"/>
+        FROM cms_tag t
+        WHERE t.id = #{id}
+        FOR UPDATE
+    </select>
+
+    <select id="hasArticleReference" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM cms_article_tag WHERE tag_id = #{id})
+    </select>
+</mapper>

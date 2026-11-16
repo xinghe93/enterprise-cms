@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.review.mapper.ArticleTagMapper">
+
+    <!-- 用构造器结果映射显式绑定 record 组件，避免依赖编译参数名。
+         status 是 record 的基本类型 int，必须用 MyBatis 别名 _int（int 会解析成 Integer）。 -->
+    <resultMap id="tagRowMap" type="com.xinghe.cms.review.mapper.TagRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="tag_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="_int"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <resultMap id="articleTagRowMap" type="com.xinghe.cms.review.mapper.ArticleTagRow">
+        <constructor>
+            <arg column="article_id" javaType="java.lang.Long"/>
+            <arg column="tag_id" javaType="java.lang.Long"/>
+            <arg column="tag_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="_int"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <select id="lockTagsByIds" resultMap="tagRowMap">
+        SELECT id, tag_name, status, created_at, updated_at
+        FROM cms_tag
+        WHERE id IN
+        <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">
+            #{tagId}
+        </foreach>
+        ORDER BY id ASC
+        FOR SHARE
+    </select>
+
+    <!-- 幂等插入：已存在的绑定不报错，因此不需要先在事务内读取关联表。 -->
+    <insert id="insertBindingIfAbsent">
+        INSERT IGNORE INTO cms_article_tag (article_id, tag_id)
+        VALUES (#{articleId}, #{tagId})
+    </insert>
+
+    <insert id="insertBindingsIfAbsent">
+        INSERT IGNORE INTO cms_article_tag (article_id, tag_id)
+        VALUES
+        <foreach collection="tagIds" item="tagId" separator=",">
+            (#{articleId}, #{tagId})
+        </foreach>
+    </insert>
+
+    <!-- 删除不在请求集合内的绑定；请求集合为空表示清空该文章的全部绑定。
+         调用方已持有文章行锁，且写入顺序为先插后删，因此不会与并发写作互相等待索引间隙锁。 -->
+    <delete id="deleteBindingsNotRequested">
+        DELETE FROM cms_article_tag
+        WHERE article_id = #{articleId}
+        <if test="tagIds != null and tagIds.size() > 0">
+            AND tag_id NOT IN
+            <foreach collection="tagIds" item="tagId" open="(" separator="," close=")">
+                #{tagId}
+            </foreach>
+        </if>
+    </delete>
+
+    <select id="selectTagRowsByArticleIds" resultMap="articleTagRowMap">
+        SELECT link.article_id,
+               tag.id AS tag_id,
+               tag.tag_name,
+               tag.status,
+               tag.created_at,
+               tag.updated_at
+        FROM cms_article_tag link
+        INNER JOIN cms_tag tag ON tag.id = link.tag_id
+        WHERE link.article_id IN
+        <foreach collection="articleIds" item="articleId" open="(" separator="," close=")">
+            #{articleId}
+        </foreach>
+        ORDER BY link.article_id ASC, tag.id ASC
+    </select>
+</mapper>
