@@ -17,12 +17,18 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import javax.sql.DataSource;
+
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.review.mapper.ArticleTagMapper;
 import com.xinghe.cms.review.mapper.ArticleTagRow;
 import com.xinghe.cms.review.mapper.TagRow;
+import com.xinghe.cms.support.GuardedDataSource;
 import com.xinghe.cms.support.TestDatabaseGuard;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +36,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.support.EncodedResource;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -45,18 +54,22 @@ import static org.assertj.core.api.Assertions.tuple;
  * 2. 替换标签的最终绑定集合严格等于请求集合，停用标签规则正确；
  * 3. 两个事务同时给不同文章首次绑定标签时都成功且关联均写入（不使用关联表加锁读，避免间隙锁死锁）。
  *
- * <p>测试库隔离：本类使用独立、可丢弃的 {@value #IT_DATABASE} 库，启动前自动创建并按
- * {@code database/001_init.sql} 建表（只替换脚本中的 CREATE DATABASE 与 USE 目标库，
- * 建表后校验实际连接库名）；数据源通过 {@code spring.datasource.url} 覆盖。
- * 每次数据准备与清理前都用 {@link TestDatabaseGuard} 在实际连接上校验库名，
- * 不匹配时立即终止写入、收尾跳过删除，不会触碰业务库中的任何数据。</p>
+ * <p>测试库隔离：本类使用<b>每次运行专属</b>的可丢弃库（库名 {@code cms_it_<runId>_tag}），
+ * 启动时用不带 IF NOT EXISTS 的 CREATE DATABASE 创建并按 {@code database/001_init.sql} 建表，
+ * 库名校验与建库/建表在同一个连接上完成；数据源被包装成 {@link GuardedDataSource}，
+ * 测试写入、Service 事务与收尾清理的每个连接都会先校验实际库名，不匹配立即终止，
+ * 不会触碰业务库中的任何数据。运行结束后只删除本轮实际创建的库。</p>
  *
  * <p>类名以 IT 结尾，默认 surefire 不包含，避免每次 mvn test 都依赖真实库。</p>
  */
 @SpringBootTest
 class ArticleTagServiceMysqlIT {
 
-    private static final String IT_DATABASE = "enterprise_cms_it";
+    /**
+     * 本次运行专属的测试库：带时间戳后缀，两轮测试并行时各自拿到不同库，
+     * 不会复用上一次运行残留的库。
+     */
+    private static final String IT_DATABASE = "cms_it_" + Long.toHexString(System.nanoTime()) + "_tag";
     private static final String DEFAULT_URL =
             "jdbc:mysql://127.0.0.1:3306/enterprise_cms?useSSL=false&allowPublicKeyRetrieval=true"
                     + "&serverTimezone=Asia/Shanghai&characterEncoding=utf8";
@@ -70,9 +83,7 @@ class ArticleTagServiceMysqlIT {
     private static final long TAG_C = 991303L;
     private static final long TAG_DISABLED = 991304L;
 
-    static {
-        provisionItDatabase();
-    }
+    private static boolean createdDatabase = false;
 
     @DynamicPropertySource
     static void isolatedDatasource(DynamicPropertyRegistry registry) {
@@ -236,25 +247,78 @@ class ArticleTagServiceMysqlIT {
 
     // ---------------------------------------------------------------- 独立测试库准备
 
-    private static void provisionItDatabase() {
+    /**
+     * 每次运行创建一个专属、可丢弃的测试库（库名带时间戳，不使用 IF NOT EXISTS），
+     * 并在<b>同一个连接</b>上完成建库、切换库、执行建表脚本与两次库名校验；
+     * 测试写入与清理则通过 {@link GuardedDataSource} 在每次借用连接时校验库名，
+     * 保证校验与 DDL/DML 使用同一个物理连接。
+     */
+    @BeforeAll
+    static void provisionItDatabase() {
         String username = envOr("SPRING_DATASOURCE_USERNAME", "root");
         String password = envOr("SPRING_DATASOURCE_PASSWORD", "");
         try (Connection connection = DriverManager.getConnection(serverUrl(), username, password)) {
             try (Statement statement = connection.createStatement()) {
-                statement.execute("CREATE DATABASE IF NOT EXISTS " + IT_DATABASE
-                        + " CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+                // 不带 IF NOT EXISTS：库名带本次运行标识，创建失败说明冲突或环境异常，直接暴露。
+                statement.execute("CREATE DATABASE `" + IT_DATABASE
+                        + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+                statement.execute("USE `" + IT_DATABASE + "`");
+                // 库一创建成功就记为"本轮创建"，即使后续建表失败也能在 @AfterAll 中清理自己的库。
+                createdDatabase = true;
             }
+            requireConnectedDatabase(connection);
             Path script = locateInitScript();
-            // 只替换脚本中的目标库声明，避免把注释或数据里的 enterprise_cms 一并替换。
-            String sql = Files.readString(script, StandardCharsets.UTF_8)
-                    .replace("CREATE DATABASE IF NOT EXISTS enterprise_cms",
-                            "CREATE DATABASE IF NOT EXISTS " + IT_DATABASE)
-                    .replace("USE enterprise_cms;", "USE " + IT_DATABASE + ";");
+            // 建库与切换库已由测试在同一连接上完成：截去脚本头部的 CREATE DATABASE / USE 声明，
+            // 只执行建表语句，保证所有 DDL 落在本轮专属库、且不会重跑全局建库语句。
+            String rawScript = Files.readString(script, StandardCharsets.UTF_8);
+            int useIndex = rawScript.indexOf("USE enterprise_cms;");
+            if (useIndex < 0) {
+                throw new IllegalStateException("初始化脚本缺少 USE enterprise_cms; 声明，无法隔离建表目标库");
+            }
+            String sql = rawScript.substring(useIndex + "USE enterprise_cms;".length());
             ScriptUtils.executeSqlScript(connection,
                     new EncodedResource(new ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8));
             requireConnectedDatabase(connection);
         } catch (SQLException | IOException exception) {
-            throw new IllegalStateException("无法准备独立测试库 " + IT_DATABASE + "，请确认 MySQL 可连接", exception);
+            Assumptions.assumeTrue(false, "跳过标签关联 MySQL 集成测试：无法准备本轮专有测试库（"
+                    + exception.getMessage() + "）");
+        }
+    }
+
+    @AfterAll
+    static void dropItDatabase() {
+        // 只清理本轮实际创建的库：库名必须以本次运行标识开头。
+        if (!createdDatabase || !IT_DATABASE.startsWith("cms_it_")) {
+            return;
+        }
+        try (Connection connection = DriverManager.getConnection(serverUrl(),
+                envOr("SPRING_DATASOURCE_USERNAME", "root"), envOr("SPRING_DATASOURCE_PASSWORD", ""));
+             Statement statement = connection.createStatement()) {
+            statement.execute("DROP DATABASE IF EXISTS `" + IT_DATABASE + "`");
+        } catch (SQLException ignored) {
+            // 清理失败不覆盖测试结论，库本身是本次运行创建的一次性库。
+        }
+    }
+
+    /**
+     * 把自动配置的数据源包装成 {@link GuardedDataSource}：任何一次连接池取连接（测试准备、
+     * Service 写入、事务、收尾清理）都会先在实际连接上校验库名，配置指错库时立刻失败，
+     * 不会执行任何 DDL/DML。
+     */
+    @TestConfiguration
+    static class GuardedDataSourceConfiguration {
+
+        @Bean
+        static BeanPostProcessor guardedDataSourcePostProcessor() {
+            return new BeanPostProcessor() {
+                @Override
+                public Object postProcessAfterInitialization(Object bean, String beanName) {
+                    if (bean instanceof DataSource dataSource && "dataSource".equals(beanName)) {
+                        return new GuardedDataSource(dataSource, IT_DATABASE);
+                    }
+                    return bean;
+                }
+            };
         }
     }
 

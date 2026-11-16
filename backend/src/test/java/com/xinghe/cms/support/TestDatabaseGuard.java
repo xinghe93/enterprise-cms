@@ -1,5 +1,11 @@
 package com.xinghe.cms.support;
 
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
@@ -13,6 +19,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p>比较规则：库名按 MySQL 语义精确比较（区分大小写），仅大小写不同的库名
  * 也必须拒绝；期望库名为空同样拒绝。</p>
+ *
+ * <p>校验既可以接收 {@link Connection}（调用方随后在<b>同一个连接</b>上执行 SQL），
+ * 也可以接收 {@link JdbcTemplate}——后者会通过 {@code execute} 在同一连接上完成校验。</p>
  */
 public final class TestDatabaseGuard {
 
@@ -20,20 +29,45 @@ public final class TestDatabaseGuard {
     }
 
     /**
-     * 校验当前连接的实际库名是否为本次运行分配的独立测试库；不匹配时抛出
-     * {@link IllegalStateException}，调用方应在任何建表、插入、删除语句之前调用本方法。
-     *
-     * @param jdbc             当前测试使用的 JdbcTemplate（必须与后续写入共用同一个连接池）
-     * @param expectedDatabase 本次运行分配的独立测试库名，例如 {@code enterprise_cms_it}
+     * 在指定连接上校验实际库名；调用方应随后复用同一个 {@link Connection} 执行 SQL。
+     */
+    public static void requireDatabase(Connection connection, String expectedDatabase) {
+        if (connection == null) {
+            throw new IllegalArgumentException("数据库连接不能为空");
+        }
+        requireExpectedName(expectedDatabase);
+        String actualDatabase;
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("SELECT DATABASE()")) {
+            actualDatabase = resultSet.next() ? resultSet.getString(1) : null;
+        } catch (SQLException exception) {
+            throw new IllegalStateException("无法读取当前连接的实际库名", exception);
+        }
+        rejectMismatch(expectedDatabase, actualDatabase);
+    }
+
+    /**
+     * 校验 JdbcTemplate 当前连接的实际库名；校验与后续 SQL 共用一次
+     * {@link JdbcTemplate#execute(ConnectionCallback)} 的连接。
      */
     public static void requireDatabase(JdbcTemplate jdbc, String expectedDatabase) {
         if (jdbc == null) {
             throw new IllegalArgumentException("JdbcTemplate 不能为空");
         }
+        requireExpectedName(expectedDatabase);
+        jdbc.execute((ConnectionCallback<Void>) connection -> {
+            requireDatabase(connection, expectedDatabase);
+            return null;
+        });
+    }
+
+    private static void requireExpectedName(String expectedDatabase) {
         if (expectedDatabase == null || expectedDatabase.isBlank()) {
             throw new IllegalArgumentException("期望的测试库名不能为空");
         }
-        String actualDatabase = jdbc.queryForObject("SELECT DATABASE()", String.class);
+    }
+
+    private static void rejectMismatch(String expectedDatabase, String actualDatabase) {
         // 精确比较：MySQL 的库名大小写语义依赖实例配置，仅大小写不同也必须拒绝，
         // 避免把数据写进另一个名字相近的库。
         if (!expectedDatabase.equals(actualDatabase)) {
