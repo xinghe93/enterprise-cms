@@ -25,19 +25,26 @@ const isCategory = props.kind === 'category'
 const label = isCategory ? '分类' : '标签'
 const nameKey = isCategory ? 'categoryName' : 'tagName'
 const nameLimit = isCategory ? 100 : 64
+const countCodePoints = (value) => Array.from(value).length
 const pageSize = 10
 const session = useSessionStore()
 const can = (action) => session.isAuthenticated && session.hasPermission(`${props.kind}:${action}`)
 const status = ref(null)
 const keyword = ref('')
 const filters = reactive({ current: 1, size: pageSize, status: undefined, keyword: undefined })
-const { data, loading, error, load } = useContentQuery((config) => isCategory
+const listQuery = useContentQuery((config) => isCategory
   ? listCategories({ status: filters.status }, config)
   : listTags({ ...filters }, config))
+const { data, loading, error, load } = listQuery
 const rows = computed(() => isCategory ? data.value ?? [] : data.value?.records ?? [])
 const allCategories = useContentQuery((config) => listCategories(undefined, config))
+const parentQuery = computed(() => filters.status === undefined ? listQuery : allCategories)
+const parentUnavailable = computed(() => {
+  const { data, loading, error } = parentQuery.value
+  return loading.value || Boolean(error.value) || data.value === null
+})
 const parentOptions = computed(() => categoryOptions(
-  filters.status === undefined ? rows.value : allCategories.data.value ?? [],
+  parentQuery.value.data.value ?? [],
   { activeOnly: true, currentId: originalParent.value, excludeId: editingId.value },
 ))
 
@@ -83,9 +90,9 @@ function openEditor(row) {
 }
 
 async function save() {
-  if (busy.value) return
+  if (busy.value || (isCategory && parentUnavailable.value)) return
   const name = fields.name.trim()
-  if (!name || fields.name.length > nameLimit) {
+  if (!name || countCodePoints(fields.name) > nameLimit) {
     formError.value = `请输入 1 至 ${nameLimit} 个字符的${label}名称`
     return
   }
@@ -137,7 +144,10 @@ async function mutate(row, deleting) {
   <form class="content-filters" @submit.prevent="search">
     <label v-if="!isCategory">
       标签名称
-      <ElInput v-model="keyword" aria-label="标签名称" maxlength="64" clearable placeholder="输入标签名称检索" />
+      <ElInput
+        v-model="keyword" aria-label="标签名称" :maxlength="nameLimit" :count-graphemes="countCodePoints"
+        clearable placeholder="输入标签名称检索"
+      />
     </label>
     <label class="status-filter">
       状态
@@ -190,17 +200,20 @@ async function mutate(row, deleting) {
   >
     <ElForm label-position="top" @submit.prevent="save">
       <ElFormItem :label="`${label}名称`" required>
-        <ElInput v-model="fields.name" :aria-label="`${label}名称`" :maxlength="nameLimit" show-word-limit />
+        <ElInput
+          v-model="fields.name" :aria-label="`${label}名称`" :maxlength="nameLimit"
+          :count-graphemes="countCodePoints" show-word-limit
+        />
       </ElFormItem>
       <ElFormItem v-if="isCategory" label="上级分类">
         <ElSelect
-          v-model="fields.parentId" aria-label="上级分类" filterable :loading="allCategories.loading.value"
-          :disabled="allCategories.loading.value || Boolean(allCategories.error.value)"
+          v-model="fields.parentId" aria-label="上级分类" filterable
+          :loading="parentQuery.loading.value" :disabled="parentUnavailable"
         >
           <ElOption label="根分类（无上级）" value="" />
           <ElOption v-for="option in parentOptions" :key="option.id" :value="option.id" :label="option.label" />
         </ElSelect>
-        <ElButton v-if="allCategories.error.value" link type="danger" @click="allCategories.load()">加载上级分类失败，点击重试</ElButton>
+        <ElButton v-if="parentQuery.error.value" link type="danger" @click="parentQuery.load()">加载上级分类失败，点击重试</ElButton>
         <p class="field-help">新选上级及其祖先须启用。保留原上级时可继续使用已停用的层级。</p>
       </ElFormItem>
       <ElFormItem v-if="isCategory" label="排序" required>
@@ -209,7 +222,7 @@ async function mutate(row, deleting) {
       <ElAlert v-if="formError" :title="formError" :closable="false" type="error" show-icon />
       <div class="dialog-actions">
         <ElButton :disabled="busy" @click="dialog = false">取消</ElButton>
-        <ElButton type="primary" native-type="submit" :loading="busy">保存</ElButton>
+        <ElButton type="primary" native-type="submit" :loading="busy" :disabled="isCategory && parentUnavailable">保存</ElButton>
       </div>
     </ElForm>
   </ElDialog>
