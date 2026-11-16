@@ -117,9 +117,11 @@ class QueryParamsTests {
     }
 
     /** PR #23 复审 P3：+1/01/1e2/空串等宽松解析变体一律 400。 */
+    /** PR #23 复审 P3：+1/01/1e2/空串等宽松解析变体，以及 19 位超出 long 范围的取值，一律 400。 */
     @Test
     void rejectsNonCanonicalDecimalVariants() {
-        for (String raw : new String[] {"+1", "01", "1e2", "", "0", "-1", "1,234"}) {
+        for (String raw : new String[] {"+1", "01", "1e2", "", "0", "-1", "1,234",
+                "9999999999999999999"}) {
             Map<String, String[]> params = Map.of("size", new String[] {raw});
 
             assertThatThrownBy(() -> QueryParams.requireStrictDecimalValue(params, "size"))

@@ -22,8 +22,12 @@ import java.util.regex.Pattern;
  */
 public final class QueryParams {
 
-    /** 严格十进制正整数：无符号、无空白、无前导零，最多 18 位（避免超出 long 范围）。 */
-    private static final Pattern STRICT_DECIMAL = Pattern.compile("[1-9][0-9]{0,18}");
+    /**
+     * 严格十进制正整数：无符号、无空白、无前导零，最多 18 位——18 位以内必然
+     * 落在 {@code long} 范围内，{@code Long.parseLong} 不会溢出
+     * （19 位可能超过 {@code Long.MAX_VALUE}）。
+     */
+    private static final Pattern STRICT_DECIMAL = Pattern.compile("[1-9][0-9]{0,17}");
 
     private QueryParams() {
     }

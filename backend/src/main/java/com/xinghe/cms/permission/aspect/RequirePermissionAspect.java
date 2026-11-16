@@ -4,7 +4,7 @@ import com.xinghe.cms.common.contract.AuthorizationSnapshot;
 import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
-import com.xinghe.cms.permission.annotation.RequirePermission;
+import com.xinghe.cms.security.annotation.RequirePermission;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.security.CurrentUserProvider;
 import java.util.Arrays;

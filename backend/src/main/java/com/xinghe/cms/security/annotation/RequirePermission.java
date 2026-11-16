@@ -1,4 +1,4 @@
-package com.xinghe.cms.permission.annotation;
+package com.xinghe.cms.security.annotation;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -6,7 +6,9 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * 接口权限标记（B 提供，全员使用）。
+ * 接口权限标记（B 提供，全员使用）。包名遵循《跨模块服务接口》契约第 49 行：
+ * 统一为 {@code com.xinghe.cms.security.annotation.RequirePermission}，
+ * 其他模块按契约导入即可编译通过。
  *
  * <p>标注在 Controller 方法上，由 {@code RequirePermissionAspect} 在方法执行前校验
  * 当前用户的有效权限（数据来源 {@code AuthorizationQueryService#getForUser}）：

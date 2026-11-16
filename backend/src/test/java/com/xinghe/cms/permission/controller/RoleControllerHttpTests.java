@@ -1,5 +1,6 @@
 package com.xinghe.cms.permission.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -10,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.xinghe.cms.common.contract.AuthorizationSnapshot;
 import com.xinghe.cms.common.contract.CurrentUser;
+import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
@@ -19,6 +21,7 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -131,7 +134,10 @@ class RoleControllerHttpTests {
         verifyNoInteractions(roleQueryService);
     }
 
-    /** 复审 P3：current/size 未传时保留默认值（第 1 页、每页 10 条），请求正常到达服务。 */
+    /**
+     * 复审 P2：current/size 未传时保留默认值——且服务必须“实际收到”第 1 页、
+     * 每页 10 条（用 ArgumentCaptor 断言构造出的 PageQuery，而非只看响应）。
+     */
     @Test
     void paginationParamsOmittedFallBackToDefaults() throws Exception {
         when(roleQueryService.page(org.mockito.ArgumentMatchers.any(),
@@ -143,9 +149,37 @@ class RoleControllerHttpTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
 
-        verify(roleQueryService).page(org.mockito.ArgumentMatchers.any(),
+        ArgumentCaptor<PageQuery> captor = ArgumentCaptor.forClass(PageQuery.class);
+        verify(roleQueryService).page(captor.capture(),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.isNull());
+        assertThat(captor.getValue().getCurrent()).isEqualTo(1L);
+        assertThat(captor.getValue().getSize()).isEqualTo(10L);
+    }
+
+    /**
+     * 复审 P2：分页值只能来自查询参数——即使带同名请求头（current/size），
+     * 也不得影响绑定结果，服务仍收到默认第 1 页、每页 10 条。
+     */
+    @Test
+    void sameNamedHeadersCannotOverridePaginationDefaults() throws Exception {
+        when(roleQueryService.page(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(new PageResult<>(List.of(), 0L, 1L, 10L));
+
+        mockMvc.perform(get("/api/admin/roles")
+                        .header("current", "7")
+                        .header("size", "99"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ArgumentCaptor<PageQuery> captor = ArgumentCaptor.forClass(PageQuery.class);
+        verify(roleQueryService).page(captor.capture(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull());
+        assertThat(captor.getValue().getCurrent()).isEqualTo(1L);
+        assertThat(captor.getValue().getSize()).isEqualTo(10L);
     }
 
     /** 详情接口不接受任何查询参数。 */
@@ -158,7 +192,7 @@ class RoleControllerHttpTests {
         verifyNoInteractions(roleQueryService);
     }
 
-    /** 合法请求仍正常到达服务。 */
+    /** 合法请求仍正常到达服务，且服务收到的是按查询参数解析出的分页值。 */
     @Test
     void validRequestStillReachesService() throws Exception {
         when(roleQueryService.page(org.mockito.ArgumentMatchers.any(),
@@ -182,8 +216,11 @@ class RoleControllerHttpTests {
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.records.length()").value(2));
 
-        verify(roleQueryService).page(org.mockito.ArgumentMatchers.any(),
+        ArgumentCaptor<PageQuery> captor = ArgumentCaptor.forClass(PageQuery.class);
+        verify(roleQueryService).page(captor.capture(),
                 org.mockito.ArgumentMatchers.eq("EDITOR"),
                 org.mockito.ArgumentMatchers.eq(1));
+        assertThat(captor.getValue().getCurrent()).isEqualTo(1L);
+        assertThat(captor.getValue().getSize()).isEqualTo(10L);
     }
 }
