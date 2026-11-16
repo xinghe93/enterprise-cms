@@ -10,6 +10,7 @@ import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.dto.OperationLogQuery;
 import com.xinghe.cms.log.service.OperationLogService;
+import com.xinghe.cms.log.support.LogPermissionGuard;
 import com.xinghe.cms.log.vo.OperationLogVO;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -22,8 +23,12 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 操作日志查询接口。
- * 权限注解（log:list / log:read）待 B 的 @RequirePermission 合入 dev 后补充；
- * 当前不添加自建注解或恒放行实现。
+ *
+ * <p>权限：列表要求 {@code log:list}、详情要求 {@code log:read}。B 的
+ * {@code @RequirePermission} 与 AOP 尚未合入 dev，这里通过 {@link LogPermissionGuard}
+ * 用 A/B 已交付的公共入口显式校验：未登录 401、已登录但缺少权限码 403。
+ * B 的注解合入后，这两个调用可直接替换为 {@code @RequirePermission("log:list")}
+ * / {@code @RequirePermission("log:read")}，行为保持不变。</p>
  */
 @RestController
 @RequestMapping("/api/admin/logs")
@@ -42,9 +47,15 @@ public class OperationLogController {
 
     private static final Pattern DECIMAL_PATTERN = Pattern.compile("-?\\d+");
 
-    private static final Pattern LOG_ID_PATTERN = Pattern.compile("[0-9]{1,18}");
+    /**
+     * 契约 Id 定义：无前导零的正十进制，最多 19 位且不超过 {@link Long#MAX_VALUE}。
+     * 19 位上限交给 {@link Long#parseLong(String)} 的溢出判断兜底。
+     */
+    private static final Pattern LOG_ID_PATTERN = Pattern.compile("[1-9][0-9]*");
 
     private final OperationLogService operationLogService;
+
+    private final LogPermissionGuard logPermissionGuard;
 
     /**
      * 日志分页查询：条件全部为 AND，默认 createdAt DESC、id DESC。
@@ -53,6 +64,7 @@ public class OperationLogController {
     public ApiResponse<PageResult<OperationLogVO>> page(@Valid @ModelAttribute OperationLogQuery query,
                                                         HttpServletRequest request) {
         rejectUnknownQueryParams(request, LIST_QUERY_PARAMS);
+        logPermissionGuard.require("log:list");
         return ApiResponse.success(operationLogService.page(query));
     }
 
@@ -63,7 +75,9 @@ public class OperationLogController {
     @GetMapping("/{id}")
     public ApiResponse<OperationLogVO> detail(@PathVariable String id, HttpServletRequest request) {
         rejectUnknownQueryParams(request, DETAIL_QUERY_PARAMS);
-        return ApiResponse.success(operationLogService.detail(parseLogId(id)));
+        Long logId = parseLogId(id);
+        logPermissionGuard.require("log:read");
+        return ApiResponse.success(operationLogService.detail(logId));
     }
 
     /**
@@ -89,7 +103,8 @@ public class OperationLogController {
     }
 
     /**
-     * 只接受 1–18 位十进制数字，避免十六进制、空白、负号或溢出值被当作合法 ID。
+     * 只接受无前导零的正十进制（1–19 位且不超过 {@link Long#MAX_VALUE}），
+     * 避免十六进制、空白、负号、前导零或溢出值被当作合法 ID。
      */
     private Long parseLogId(String rawId) {
         if (rawId == null || !LOG_ID_PATTERN.matcher(rawId).matches()) {

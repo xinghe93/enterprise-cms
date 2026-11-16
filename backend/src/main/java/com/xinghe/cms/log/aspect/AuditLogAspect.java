@@ -24,11 +24,13 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 /**
  * 审计切面：环绕 {@link AuditLog} 标注的方法，记录操作编码、请求路径、HTTP 方法、结果与耗时。
  *
- * <p>结果以"方法是否正常返回 + 事务最终状态"共同判定，避免留下假的 SUCCESS：</p>
+ * <p>结果以"方法是否正常返回 + 事务最终状态"共同判定，并且成功日志必须与业务一起提交：</p>
  * <ul>
- *   <li>调用方存在事务时，只注册一个事务同步器，在 {@code afterCompletion} 按状态写日志：
- *       方法正常返回且 COMMITTED → SUCCESS；方法抛出异常或事务回滚 → FAILURE。
- *       两种结果都用独立新事务提交，不受业务事务回滚影响，也不会与业务事务共用连接而互相拖累；</li>
+ *   <li>调用方存在事务时只注册一个事务同步器：方法正常返回时，在
+ *       {@code beforeCommit} 用业务事务写入 SUCCESS，跟随业务一起提交或回滚——
+ *       若这条写入失败，业务事务同样回滚，绝不出现"业务生效但审计缺失"；
+ *       失败结果（事务回滚或方法抛过异常）在 {@code afterCompletion} 用独立新事务
+ *       记 FAILURE，不随业务回滚丢失；</li>
  *   <li>调用方没有事务时，方法返回后直接写 SUCCESS、抛出后直接写 FAILURE。</li>
  * </ul>
  *
@@ -89,15 +91,33 @@ public class AuditLogAspect {
     }
 
     /**
-     * 事务内只注册一个同步器：方法正常返回且事务提交才算 SUCCESS，写入走独立新事务。
+     * 事务内只注册一个同步器：
+     *
+     * <ul>
+     *   <li>{@code beforeCommit}：方法正常返回时用业务事务写入 SUCCESS（参与提交/回滚）；</li>
+     *   <li>{@code afterCompletion}：事务未提交或方法抛过异常时，用独立新事务补记 FAILURE。</li>
+     * </ul>
      */
     private void registerCompletion(OperationLog entry, boolean[] thrown) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
+            public void beforeCommit(boolean readOnly) {
+                if (!thrown[0]) {
+                    entry.setResult(SUCCESS);
+                    // 与业务同一事务：提交失败/回滚时这条成功日志一起撤销，
+                    // 审计记录不会在业务回滚后残留；写入失败则事务回滚，避免业务生效而审计缺失。
+                    auditLogWriter.write(entry);
+                }
+            }
+
+            @Override
             public void afterCompletion(int status) {
                 boolean committed = status == TransactionSynchronization.STATUS_COMMITTED;
-                entry.setResult(committed && !thrown[0] ? SUCCESS : FAILURE);
-                safeWriteInNewTransaction(entry);
+                if (!committed || thrown[0]) {
+                    // 业务回滚或方法抛过异常：成功日志已撤销（或未写），用独立事务补记 FAILURE。
+                    entry.setResult(FAILURE);
+                    safeWriteInNewTransaction(entry);
+                }
             }
         });
     }

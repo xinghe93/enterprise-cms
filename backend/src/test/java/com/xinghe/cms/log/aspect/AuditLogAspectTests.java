@@ -125,7 +125,7 @@ class AuditLogAspectTests {
     }
 
     @Test
-    void committedTransactionWritesSuccessThroughNewTransaction() throws Throwable {
+    void committedTransactionWritesSuccessInsideBusinessTransaction() throws Throwable {
         beginTransactionSync();
 
         Object result = aspect.record(StubProceedingJoinPoint.returning("ok"), auditLog);
@@ -137,11 +137,26 @@ class AuditLogAspectTests {
 
         completeTransaction(TransactionSynchronization.STATUS_COMMITTED);
 
-        assertThat(writer.written).isEmpty();
-        assertThat(writer.writtenInNewTransaction).hasSize(1);
-        OperationLog entry = writer.writtenInNewTransaction.get(0);
+        // 成功日志参与业务事务（beforeCommit 写入），不再开新事务。
+        assertThat(writer.written).hasSize(1);
+        OperationLog entry = writer.written.get(0);
         assertThat(entry.getResult()).isEqualTo("SUCCESS");
         assertThat(entry.getDurationMs()).isGreaterThanOrEqualTo(0L);
+        assertThat(writer.writtenInNewTransaction).isEmpty();
+    }
+
+    @Test
+    void successWriteFailureInBeforeCommitPropagatesSoBusinessRollsBack() throws Throwable {
+        beginTransactionSync();
+        writer.failOnWrite = true;
+
+        Object result = aspect.record(StubProceedingJoinPoint.returning("ok"), auditLog);
+        assertThat(result).isEqualTo("ok");
+
+        // beforeCommit 的写入失败会从提交阶段抛出，由事务管理器回滚业务，而不是被吞掉。
+        assertThatThrownBy(() -> completeTransaction(TransactionSynchronization.STATUS_COMMITTED))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("审计写入失败");
     }
 
     @Test
@@ -218,9 +233,13 @@ class AuditLogAspectTests {
 
     /**
      * 手动触发同步器回调，模拟事务提交/回滚后的行为，不启动真实事务。
+     * 提交时先走 beforeCommit（成功日志随业务写入），再走 afterCompletion。
      */
     private void completeTransaction(int status) {
         for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+            if (status == TransactionSynchronization.STATUS_COMMITTED) {
+                synchronization.beforeCommit(true);
+            }
             synchronization.afterCompletion(status);
         }
     }
@@ -245,9 +264,13 @@ class AuditLogAspectTests {
 
         private final List<OperationLog> written = new ArrayList<>();
         private final List<OperationLog> writtenInNewTransaction = new ArrayList<>();
+        private boolean failOnWrite;
 
         @Override
         public void write(OperationLog log) {
+            if (failOnWrite) {
+                throw new IllegalStateException("审计写入失败");
+            }
             written.add(log);
         }
 
