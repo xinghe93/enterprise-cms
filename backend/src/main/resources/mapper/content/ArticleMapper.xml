@@ -33,6 +33,11 @@
         AND a.status = 'PUBLISHED' AND a.visibility = 'ALL'
     </sql>
 
+    <sql id="adminReadScope">
+        (a.author_id = #{scopeUserId}
+        <if test="includeOtherNonDrafts">OR a.status &lt;&gt; 'DRAFT'</if>)
+    </sql>
+
     <select id="findPage" resultType="com.xinghe.cms.content.mapper.row.ArticleRow">
         SELECT <include refid="articleColumns"/>, NULL AS content
         <include refid="articleJoins"/>
@@ -42,8 +47,7 @@
             </when>
             <otherwise>
                 <if test="scopeUserId != null">
-                    AND (a.author_id = #{scopeUserId}
-                    <if test="includeOtherNonDrafts">OR a.status &lt;&gt; 'DRAFT'</if>)
+                    AND <include refid="adminReadScope"/>
                 </if>
                 <if test="authorId != null">AND a.author_id = #{authorId}</if>
                 <if test="status != null">AND a.status = #{status}</if>
@@ -70,7 +74,13 @@
     </select>
 
     <select id="findDetail" resultType="com.xinghe.cms.content.mapper.row.ArticleRow">
-        SELECT <include refid="articleColumns"/>, a.content
+        SELECT <include refid="articleColumns"/>,
+        <choose>
+            <when test="!portal and scopeUserId != null">
+                CASE WHEN <include refid="adminReadScope"/> THEN a.content END AS content
+            </when>
+            <otherwise>a.content</otherwise>
+        </choose>
         <include refid="articleJoins"/>
         AND a.id = #{id}
         <if test="portal"><include refid="portalVisibility"/></if>

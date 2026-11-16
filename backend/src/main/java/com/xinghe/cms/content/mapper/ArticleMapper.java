@@ -25,7 +25,8 @@ public interface ArticleMapper extends BaseMapper<Article> {
             @Param("categoryIds") Set<Long> categoryIds, @Param("tagId") Long tagId,
             @Param("keyword") String keyword);
 
-    ArticleRow findDetail(@Param("id") Long id, @Param("portal") boolean portal);
+    ArticleRow findDetail(@Param("id") Long id, @Param("portal") boolean portal,
+            @Param("scopeUserId") Long scopeUserId, @Param("includeOtherNonDrafts") boolean includeOtherNonDrafts);
 
     int changeState(@Param("expected") ArticleSnapshot expected, @Param("target") ArticleStatus target);
 

@@ -9,11 +9,13 @@ import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.dto.ArticleDraft;
 import com.xinghe.cms.content.dto.ArticleQuery;
+import com.xinghe.cms.content.mapper.ArticleMapper;
 import com.xinghe.cms.content.mapper.row.ArticleRow;
 import com.xinghe.cms.content.vo.CategoryVO;
 import com.xinghe.cms.content.vo.TagVO;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.security.CurrentUserProvider;
+import org.apache.ibatis.session.SqlSession;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +24,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,6 +56,8 @@ class ContentMysqlIT {
     private ArticleQueryService queries;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private SqlSession sqlSession;
     @MockitoBean
     private CurrentUserProvider users;
     @MockitoBean
@@ -111,6 +116,49 @@ class ContentMysqlIT {
         authenticate(author, EDITOR);
         query.setAuthorId(other);
         assertThat(queries.adminPage(query).total()).isZero();
+    }
+
+    @Test
+    void detailQueryReturnsNoBodyOutsideTheRequestedScope() {
+        long id = drafts.create(new ArticleDraft("受限文章", null, "正文".repeat(4096), child));
+
+        // Check the actual SQL result before the service converts it to a 403.
+        ArticleRow row = sqlSession.selectOne(ArticleMapper.class.getName() + ".findDetail",
+                Map.of("id", id, "portal", false, "scopeUserId", other, "includeOtherNonDrafts", true));
+        assertThat(row.id()).isEqualTo(id);
+        assertThat(row.content()).isNull();
+    }
+
+    @Test
+    void adminDetailDistinguishesDataScopeFromMissingArticles() {
+        long id = drafts.create(new ArticleDraft("受限文章", null, "正文", child));
+        assertThat(queries.adminDetail(id).content()).isEqualTo("正文");
+
+        authenticate(other, EDITOR);
+        assertThatThrownBy(() -> queries.adminDetail(id))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getResultCode()).isEqualTo(ResultCode.FORBIDDEN));
+        assertThatThrownBy(() -> queries.adminDetail(Long.MAX_VALUE))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getResultCode()).isEqualTo(ResultCode.NOT_FOUND));
+
+        authenticate(other, new AuthorizationSnapshot(Set.of("ADMIN"), Set.of("article:read")));
+        assertThat(queries.adminDetail(id).content()).isEqualTo("正文");
+
+        var reviewer = new AuthorizationSnapshot(Set.of("REVIEWER"), Set.of("article:read"));
+        authenticate(other, reviewer);
+        assertThatThrownBy(() -> queries.adminDetail(id))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getResultCode()).isEqualTo(ResultCode.FORBIDDEN));
+        authenticate(author, EDITOR);
+        drafts.submit(id, 0);
+
+        authenticate(other, EDITOR);
+        assertThatThrownBy(() -> queries.adminDetail(id))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getResultCode()).isEqualTo(ResultCode.FORBIDDEN));
+        authenticate(other, reviewer);
+        assertThat(queries.adminDetail(id).content()).isEqualTo("正文");
     }
 
     @Test

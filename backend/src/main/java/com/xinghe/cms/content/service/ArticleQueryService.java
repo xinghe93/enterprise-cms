@@ -46,8 +46,11 @@ public class ArticleQueryService {
         long userId = users.requireCurrentUser().userId();
         AuthorizationSnapshot authorization = permissions.getForUser(userId);
         ArticlePolicy.requirePermission(authorization, "article:read");
-        ArticleRow row = requireDetail(id, false);
-        if (!ArticlePolicy.readScope(authorization).allows(userId, row.authorId(), row.status())) {
+        ArticlePolicy.ReadScope scope = ArticlePolicy.readScope(authorization);
+        ArticleRow row = requireDetail(id, false, scope == ArticlePolicy.ReadScope.ALL ? null : userId,
+                scope == ArticlePolicy.ReadScope.REVIEW);
+        // 已存在但超出数据范围的文章，SQL 会将非空正文投影为 NULL。
+        if (row.content() == null) {
             throw new BusinessException(ResultCode.FORBIDDEN);
         }
         return row;
@@ -62,7 +65,7 @@ public class ArticleQueryService {
     public ArticleRow portalDetail(Long id) {
         AuthorizationSnapshot authorization = permissions.getForUser(users.requireCurrentUser().userId());
         ArticlePolicy.requirePermission(authorization, "portal:article:read");
-        return requireDetail(id, true);
+        return requireDetail(id, true, null, false);
     }
 
     private PageResult<ArticleRow> findPage(ArticleQuery query, boolean portal,
@@ -78,8 +81,8 @@ public class ArticleQueryService {
                 includeOtherNonDrafts, query.getStatus(), categoryIds, query.getTagId(), keyword));
     }
 
-    private ArticleRow requireDetail(Long id, boolean portal) {
-        ArticleRow row = mapper.findDetail(id, portal);
+    private ArticleRow requireDetail(Long id, boolean portal, Long scopeUserId, boolean includeOtherNonDrafts) {
+        ArticleRow row = mapper.findDetail(id, portal, scopeUserId, includeOtherNonDrafts);
         if (row == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "文章不存在");
         }
