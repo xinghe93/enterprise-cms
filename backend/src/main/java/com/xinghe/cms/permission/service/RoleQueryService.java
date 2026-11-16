@@ -13,7 +13,7 @@ public interface RoleQueryService {
     /**
      * 角色分页。keyword 去首尾空白后对 roleCode/roleName 做字面包含匹配
      * （空串不筛选，通配符按字面转义）；status 仅允许 0/1。
-     * 结果固定按 id 升序。
+     * 结果按 updated_at 降序、id 降序排列（契约 8.2，id 兜底保证同时间戳下顺序稳定）。
      *
      * @param query   分页参数（页码从 1 开始，每页 1–100）
      * @param keyword 原始关键词，可为 null

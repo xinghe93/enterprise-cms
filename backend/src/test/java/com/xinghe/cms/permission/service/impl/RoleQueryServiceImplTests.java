@@ -1,6 +1,7 @@
 package com.xinghe.cms.permission.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -111,6 +112,19 @@ class RoleQueryServiceImplTests {
                 .isEqualTo(ResultCode.BAD_REQUEST);
 
         verifyNoInteractions(sysRoleMapper);
+    }
+
+    /** 复审 P3：maxLength 语义为字符数，100 个 emoji（200 个 UTF-16 代码单元）应放行。 */
+    @Test
+    void acceptsKeywordOfHundredSupplementaryCharacters() {
+        String keyword = "😀".repeat(100);
+        // 证明长度不是按 UTF-16 代码单元统计的，否则这里会是 200 > 100 被误拒
+        assertThat(keyword.length()).isEqualTo(200);
+
+        Page<SysRole> empty = new Page<>(1, 10);
+        when(sysRoleMapper.selectRolePage(any(), eq(keyword), isNull())).thenReturn(empty);
+
+        assertThatCode(() -> service.page(new PageQuery(), keyword, null)).doesNotThrowAnyException();
     }
 
     @Test

@@ -88,6 +88,33 @@ class RoleControllerHttpTests {
         verifyNoInteractions(roleQueryService);
     }
 
+    /** 复审 P2：status=0x1 会被标量绑定按十六进制解析成 1，必须按原始值拒绝。 */
+    @Test
+    void hexVariantStatusParamReturns400() throws Exception {
+        mockMvc.perform(get("/api/admin/roles")
+                        .param("current", "1")
+                        .param("size", "10")
+                        .param("status", "0x1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleQueryService);
+    }
+
+    /** 复审 P2：重复传参 status=1&status=0 会被标量绑定静默取首值，必须 400。 */
+    @Test
+    void duplicatedStatusParamReturns400() throws Exception {
+        mockMvc.perform(get("/api/admin/roles")
+                        .param("current", "1")
+                        .param("size", "10")
+                        .param("status", "1")
+                        .param("status", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleQueryService);
+    }
+
     /** 详情接口不接受任何查询参数。 */
     @Test
     void detailRejectsUnknownQueryParam() throws Exception {

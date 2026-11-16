@@ -8,6 +8,7 @@ import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.permission.annotation.RequirePermission;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.RoleQueryService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.Map;
 import java.util.Set;
@@ -24,8 +25,10 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>鉴权：按 OpenAPI {@code x-permission}，分页需要 {@code role:list}，
  * 详情需要 {@code role:read}，由 {@code RequirePermissionAspect} 统一校验。</p>
  *
- * <p>查询参数按契约 8.x 严格校验：未知参数、空值枚举参数一律 400，
- * 不依赖 MVC 绑定静默忽略未声明参数。</p>
+ * <p>查询参数按契约 8.x 严格校验：未知参数、重复传参、非法枚举取值一律 400。
+ * 校验数据源为 {@link HttpServletRequest#getParameterMap()}——它按 Servlet 规范
+ * 保证值为 {@code String[]}；{@code @RequestParam Map<String, String[]>} 受泛型擦除
+ * 影响在运行期可能拿到单值 String，不可靠。</p>
  */
 @RestController
 @RequestMapping("/api/admin/roles")
@@ -37,6 +40,9 @@ public class RoleController {
     /** 详情接口不接受任何查询参数。 */
     private static final Set<String> NO_QUERY_PARAMS = Set.of();
 
+    /** status 的合法原始取值（0 停用、1 启用）。 */
+    private static final Set<String> STATUS_VALUES = Set.of("0", "1");
+
     private final RoleQueryService roleQueryService;
 
     public RoleController(RoleQueryService roleQueryService) {
@@ -45,16 +51,23 @@ public class RoleController {
 
     /**
      * 角色分页：keyword 对 roleCode/roleName 做字面包含匹配（原始长度先校验，
-     * 再由服务层去空白），status 精确筛选（出现即必须有值，且仅允许 0/1）。
+     * 再由服务层去空白），status 精确筛选（原始取值严格匹配 0/1，重复传参 400）。
+     *
+     * <p>查询参数走原始集合校验：标量绑定会静默取首值（重复传参丢失）、
+     * 把 {@code 0x1} 解析为十六进制，均在绑定前按契约拦截。</p>
      */
     @GetMapping
     @RequirePermission("role:list")
     public ApiResponse<PageResult<RoleView>> page(@Valid PageQuery query,
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) Integer status,
-            @RequestParam Map<String, String> allParams) {
+            HttpServletRequest request) {
+        Map<String, String[]> allParams = request.getParameterMap();
         QueryParams.requireAllowedKeys(allParams, PAGE_QUERY_PARAMS);
-        QueryParams.requireNonBlankValueIfPresent(allParams, "status");
+        QueryParams.requireSingleValueForEachPresentKey(allParams);
+        QueryParams.requireStrictEnumValue(allParams, "status", STATUS_VALUES);
+        Integer status = allParams.containsKey("status")
+                ? Integer.valueOf(allParams.get("status")[0])
+                : null;
         return ApiResponse.success(roleQueryService.page(query, keyword, status));
     }
 
@@ -64,9 +77,8 @@ public class RoleController {
      */
     @GetMapping("/{id}")
     @RequirePermission("role:read")
-    public ApiResponse<RoleView> detail(@PathVariable String id,
-            @RequestParam Map<String, String> allParams) {
-        QueryParams.requireAllowedKeys(allParams, NO_QUERY_PARAMS);
+    public ApiResponse<RoleView> detail(@PathVariable String id, HttpServletRequest request) {
+        QueryParams.requireAllowedKeys(request.getParameterMap(), NO_QUERY_PARAMS);
         return ApiResponse.success(roleQueryService.getById(Ids.parse(id)));
     }
 }

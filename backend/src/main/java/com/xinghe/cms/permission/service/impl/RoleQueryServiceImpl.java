@@ -36,8 +36,10 @@ public class RoleQueryServiceImpl implements RoleQueryService {
         if (status != null && status != 0 && status != 1) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "状态只允许 0（停用）或 1（启用）");
         }
-        // 契约 8.x：原始长度先按模型校验，再去首尾空白——避免用空白填充绕过上限
-        if (keyword != null && keyword.length() > MAX_KEYWORD_LENGTH) {
+        // 契约 8.x + OpenAPI maxLength：长度按 Unicode 码点统计（maxLength 语义为字符数，
+        // String.length() 统计 UTF-16 代码单元会把增补字符如 emoji 重复计数），
+        // 且原始长度先校验再去首尾空白——避免用空白填充绕过上限
+        if (keyword != null && keyword.codePointCount(0, keyword.length()) > MAX_KEYWORD_LENGTH) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "关键词最长 100 个字符");
         }
         String trimmed = keyword == null ? null : keyword.strip();
