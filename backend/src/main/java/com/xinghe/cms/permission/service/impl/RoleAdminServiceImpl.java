@@ -19,6 +19,11 @@ import org.springframework.transaction.annotation.Transactional;
  * {@link DuplicateKeyException} 转 {@code BusinessException(CONFLICT)}
  * （协作约定：各写 Service 将已知唯一键冲突转为安全 409，不落入 500 兜底）。
  * 并发创建同一编码时同样由唯一键兜底，无需先查后插的竞态窗口。</p>
+ *
+ * <p>字段规范化（协作约定 8.1，与查询接口一致）：先校验原始长度，再去除
+ * 首尾空白并检查非空，写库使用规范化后的值——保证唯一性按去空白后的编码
+ * 判断（库存量 {@code EDITOR} 时，提交 {@code " EDITOR "} 返回 409 而非
+ * 创建出第二条记录）。</p>
  */
 @Service
 public class RoleAdminServiceImpl implements RoleAdminService {
@@ -38,8 +43,8 @@ public class RoleAdminServiceImpl implements RoleAdminService {
     @Override
     @Transactional
     public RoleView create(RoleCreateRequest request) {
-        // OpenAPI maxLength 语义为字符数：按 Unicode 码点统计，
-        // 避免 String.length() 把增补字符（emoji）按两个代码单元重复计数
+        // 协作约定 8.1：先校验原始长度，再去空白。OpenAPI maxLength 语义为字符数，
+        // 按 Unicode 码点统计，避免 String.length() 把增补字符（emoji）按两个代码单元重复计数
         if (request.roleCode().codePointCount(0, request.roleCode().length()) > MAX_ROLE_CODE_LENGTH) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色编码最长 64 个字符");
         }
@@ -47,9 +52,17 @@ public class RoleAdminServiceImpl implements RoleAdminService {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色名称最长 100 个字符");
         }
 
+        // 再去除首尾空白并检查非空：写库用规范化后的值，roleCode 唯一性
+        // 按去空白后的编码判断（" EDITOR " 与已有 EDITOR 撞唯一索引 → 409）
+        String roleCode = request.roleCode().strip();
+        String roleName = request.roleName().strip();
+        if (roleCode.isEmpty() || roleName.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "角色编码与名称不能为空白");
+        }
+
         SysRole role = new SysRole();
-        role.setRoleCode(request.roleCode());
-        role.setRoleName(request.roleName());
+        role.setRoleCode(roleCode);
+        role.setRoleName(roleName);
         role.setStatus(1);
         try {
             sysRoleMapper.insert(role);

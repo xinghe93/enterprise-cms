@@ -314,6 +314,27 @@ class RoleControllerHttpTests {
                 .andExpect(jsonPath("$.data").value(nullValue()));
     }
 
+    /** 评审 P2：带首尾空白的重复编码由服务层规范化后判重，端到端返回 409。 */
+    @Test
+    void whitespacePaddedDuplicateRoleCodeReturns409() throws Exception {
+        when(roleAdminService.create(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new BusinessException(ResultCode.CONFLICT, "角色编码已存在"));
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleCode":"  EDITOR  ","roleName":"编辑"}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(409))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        org.mockito.ArgumentCaptor<RoleCreateRequest> captor =
+                org.mockito.ArgumentCaptor.forClass(RoleCreateRequest.class);
+        verify(roleAdminService).create(captor.capture());
+        assertThat(captor.getValue().roleCode()).isEqualTo("  EDITOR  ");
+    }
+
     /** 空白 roleCode 被 @NotBlank 拦截为 400，不进入服务。 */
     @Test
     void blankRoleCodeReturns400() throws Exception {

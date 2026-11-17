@@ -85,6 +85,55 @@ class RoleAdminServiceImplTests {
                 .isEqualTo(ResultCode.CONFLICT);
     }
 
+    /** 评审 P2：写库前去除首尾空白——" EDITOR " 规范化为 EDITOR，撞唯一索引返回 409。 */
+    @Test
+    void whitespacePaddedRoleCodeCollidesWithExistingCode() {
+        doThrow(new DuplicateKeyException("Duplicate entry 'EDITOR'"))
+                .when(sysRoleMapper).insert(any(SysRole.class));
+
+        assertThatThrownBy(() -> service.create(new RoleCreateRequest("  EDITOR  ", "编辑")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.CONFLICT);
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).insert(captor.capture());
+        assertThat(captor.getValue().getRoleCode()).isEqualTo("EDITOR");
+    }
+
+    /** 评审 P2：roleCode/roleName 均去除首尾空白后写库，响应返回规范化值。 */
+    @Test
+    void trimsBothFieldsBeforeWrite() {
+        doAnswer(invocation -> {
+            SysRole entity = invocation.getArgument(0);
+            entity.setId(80L);
+            return 1;
+        }).when(sysRoleMapper).insert(any(SysRole.class));
+        when(sysRoleMapper.selectById(80L))
+                .thenReturn(savedRole(80L, "CUSTOM", "自定义编辑"));
+
+        RoleView view = service.create(new RoleCreateRequest(" CUSTOM ", "  自定义编辑\t"));
+
+        assertThat(view.roleCode()).isEqualTo("CUSTOM");
+        assertThat(view.roleName()).isEqualTo("自定义编辑");
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).insert(captor.capture());
+        assertThat(captor.getValue().getRoleCode()).isEqualTo("CUSTOM");
+        assertThat(captor.getValue().getRoleName()).isEqualTo("自定义编辑");
+    }
+
+    /** 协作约定 8.1：先校验原始长度再去空白——带空格的 65 码点输入拒绝，即使清理后只有 62。 */
+    @Test
+    void rawLengthIsCheckedBeforeTrimming() {
+        String raw = "  " + "a".repeat(62) + " ";
+
+        assertThatThrownBy(() -> service.create(new RoleCreateRequest(raw, "名称")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+    }
+
     /** roleCode 恰好 64 个码点放行（OpenAPI maxLength 按字符数计）。 */
     @Test
     void roleCodeWith64CodePointsIsAccepted() {
