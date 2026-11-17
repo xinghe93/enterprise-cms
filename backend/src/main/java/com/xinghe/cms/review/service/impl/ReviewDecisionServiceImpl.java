@@ -1,17 +1,12 @@
 package com.xinghe.cms.review.service.impl;
 
 import com.xinghe.cms.common.contract.ArticleState;
-import com.xinghe.cms.common.contract.CurrentUser;
-import com.xinghe.cms.common.enums.ArticleAction;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
-import com.xinghe.cms.content.service.ArticleWorkflowService;
+import com.xinghe.cms.review.audit.ReviewAuditRecorder;
 import com.xinghe.cms.review.dto.ReviewDecisionRequest;
-import com.xinghe.cms.review.entity.ReviewRecord;
-import com.xinghe.cms.review.mapper.ReviewRecordMapper;
 import com.xinghe.cms.review.service.ReviewDecisionService;
 import com.xinghe.cms.review.vo.ArticleStateVO;
-import com.xinghe.cms.security.CurrentUserProvider;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,24 +14,23 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 审核裁决实现。
  *
- * <p>事务边界：本方法开启事务，C 的 transition 使用 MANDATORY 加入同一事务；因此
- * 文章状态更新与审核历史写入要么同时提交、要么同时回滚。审核人 ID 只取自 A 的
- * 安全入口 {@link CurrentUserProvider}，不接受请求参数。</p>
+ * <p>本类只做参数校验与结果映射；"状态流转 + 审核记录写入"整体移入
+ * {@link ReviewAuditRecorder}，由它承载 {@code @AuditLog} 审计切面。因为本方法先开启事务
+ * 再调用审计 bean，成功日志会随业务事务一起提交、流转失败也会被记为 FAILURE，并且
+ * 状态更新与审核历史要么同时提交、要么同时回滚。</p>
  */
 @Service
 @RequiredArgsConstructor
 @Transactional
 public class ReviewDecisionServiceImpl implements ReviewDecisionService {
 
-    private final ReviewRecordMapper reviewRecordMapper;
-    private final ArticleWorkflowService articleWorkflowService;
-    private final CurrentUserProvider currentUserProvider;
+    private final ReviewAuditRecorder reviewAuditRecorder;
 
     @Override
     public ArticleStateVO approve(long articleId, ReviewDecisionRequest request) {
         requireArticleId(articleId);
         int expectedVersion = requireVersion(request);
-        return decide(articleId, expectedVersion, normalizeComment(request.comment()), ArticleAction.APPROVE);
+        return toVO(reviewAuditRecorder.approve(articleId, expectedVersion, normalizeComment(request.comment())));
     }
 
     @Override
@@ -47,27 +41,14 @@ public class ReviewDecisionServiceImpl implements ReviewDecisionService {
         if (comment == null) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "驳回意见不能为空");
         }
-        return decide(articleId, expectedVersion, comment, ArticleAction.REJECT);
+        return toVO(reviewAuditRecorder.reject(articleId, expectedVersion, comment));
     }
 
-    private ArticleStateVO decide(long articleId, int expectedVersion, String comment, ArticleAction action) {
-        // 先解析审核人，再流转状态：未登录时在产生任何写入之前直接 401，避免"状态已改、审核人取不到"的歧义。
-        CurrentUser currentUser = currentUserProvider.requireCurrentUser();
-        ArticleState state = articleWorkflowService.transition(articleId, expectedVersion, action);
-
-        ReviewRecord record = new ReviewRecord();
-        record.setArticleId(articleId);
-        record.setReviewerId(currentUser.userId());
-        record.setResult(action == ArticleAction.APPROVE
-                ? ReviewRecord.RESULT_APPROVED
-                : ReviewRecord.RESULT_REJECTED);
-        record.setComment(comment);
-        // reviewedAt 保持 null，由数据库 CURRENT_TIMESTAMP(3) 生成，Java 侧永不写入。
-        // 审核历史是审计证据：插入必须真正写入一行，否则回滚整个事务（状态变更与历史同时回滚）。
-        if (reviewRecordMapper.insert(record) != 1) {
-            throw new IllegalStateException("审核记录写入失败");
+    private static ArticleStateVO toVO(ArticleState state) {
+        if (state == null) {
+            // transition 约定返回非空；兜底避免 NPE 变成难以定位的 500。
+            throw new IllegalStateException("文章状态更新失败");
         }
-
         return new ArticleStateVO(state.id(), state.status(), state.version(), state.publishedAt());
     }
 

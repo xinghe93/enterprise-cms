@@ -1,10 +1,9 @@
 package com.xinghe.cms.review.service.impl;
 
 import com.xinghe.cms.common.contract.ArticleState;
-import com.xinghe.cms.common.enums.ArticleAction;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
-import com.xinghe.cms.content.service.ArticleWorkflowService;
+import com.xinghe.cms.review.audit.PublishAuditRecorder;
 import com.xinghe.cms.review.dto.ArticleVersionRequest;
 import com.xinghe.cms.review.dto.BatchArticleItemRequest;
 import com.xinghe.cms.review.dto.BatchArticlesRequest;
@@ -15,8 +14,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -25,13 +22,14 @@ import java.util.regex.Pattern;
 /**
  * 发布/下架命令实现（D 模块）。
  *
- * <p>本类只负责参数校验、批量编排与结果映射；状态是否允许、权限、自审、
- * 版本冲突、行锁和 publishedAt 全部由 C 的 {@code ArticleWorkflowService.transition}
- * 在同一个事务内完成，因此这里不重复判断状态、也不直接写 SQL。</p>
+ * <p>本类只负责参数校验与结果映射；状态是否允许、权限、版本冲突、行锁和 publishedAt
+ * 由 C 的 {@code ArticleWorkflowService.transition} 在同一个事务内完成。"实际的状态流转"
+ * 移入 {@link PublishAuditRecorder}，由它承载 {@code @AuditLog} 审计切面：本方法先开启事务
+ * 再调用审计 bean，成功日志随业务事务提交、失败记录独立写入。</p>
  *
- * <p>批量语义：先完成全部参数校验（ID 格式、重复、版本），再按文章 ID
- * <b>升序</b>逐个调用 transition（固定加锁顺序，降低死锁概率）；任一项失败则
- * 抛出异常，由 {@code @Transactional} 整体回滚；结果按<b>请求顺序</b>返回。</p>
+ * <p>批量语义：先完成全部参数校验（ID 格式、重复、版本），再把 ID 与版本列表交给审计 bean
+ * 按文章 ID <b>升序</b>逐个流转（固定加锁顺序）；任一项失败抛异常由 {@code @Transactional}
+ * 整体回滚；结果按<b>请求顺序</b>返回。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -42,35 +40,33 @@ public class PublishCommandServiceImpl implements PublishCommandService {
     private static final Pattern ARTICLE_ID_PATTERN = Pattern.compile("[1-9][0-9]{0,18}");
     private static final int MAX_BATCH_SIZE = 100;
 
-    private final ArticleWorkflowService articleWorkflowService;
+    private final PublishAuditRecorder publishAuditRecorder;
 
     @Override
     public ArticleStateVO publish(long articleId, ArticleVersionRequest request) {
-        return decideSingle(articleId, request, ArticleAction.PUBLISH);
+        requireArticleId(articleId);
+        int expectedVersion = requireVersion(request == null ? null : request.version());
+        return toVO(publishAuditRecorder.publish(articleId, expectedVersion));
     }
 
     @Override
     public ArticleStateVO offline(long articleId, ArticleVersionRequest request) {
-        return decideSingle(articleId, request, ArticleAction.OFFLINE);
+        requireArticleId(articleId);
+        int expectedVersion = requireVersion(request == null ? null : request.version());
+        return toVO(publishAuditRecorder.offline(articleId, expectedVersion));
     }
 
     @Override
     public List<ArticleStateVO> publishBatch(BatchArticlesRequest request) {
-        return decideBatch(request, ArticleAction.BATCH_PUBLISH);
+        return decideBatch(request, true);
     }
 
     @Override
     public List<ArticleStateVO> offlineBatch(BatchArticlesRequest request) {
-        return decideBatch(request, ArticleAction.BATCH_OFFLINE);
+        return decideBatch(request, false);
     }
 
-    private ArticleStateVO decideSingle(long articleId, ArticleVersionRequest request, ArticleAction action) {
-        requireArticleId(articleId);
-        int expectedVersion = requireVersion(request == null ? null : request.version());
-        return toVO(articleWorkflowService.transition(articleId, expectedVersion, action));
-    }
-
-    private List<ArticleStateVO> decideBatch(BatchArticlesRequest request, ArticleAction action) {
+    private List<ArticleStateVO> decideBatch(BatchArticlesRequest request, boolean publish) {
         List<BatchArticleItemRequest> items = requireItems(request);
 
         List<Long> articleIds = new ArrayList<>(items.size());
@@ -89,20 +85,15 @@ public class PublishCommandServiceImpl implements PublishCommandService {
             versions.add(requireVersion(item.version()));
         }
 
-        // 先校验全部参数，再按文章 ID 升序流转：固定加锁顺序，结果仍按请求顺序回填。
-        Integer[] order = new Integer[articleIds.size()];
-        for (int index = 0; index < order.length; index++) {
-            order[index] = index;
-        }
-        Arrays.sort(order, Comparator.comparing(articleIds::get));
+        List<ArticleState> states = publish
+                ? publishAuditRecorder.publishBatch(articleIds, versions)
+                : publishAuditRecorder.offlineBatch(articleIds, versions);
 
-        ArticleStateVO[] results = new ArticleStateVO[articleIds.size()];
-        for (int requestIndex : order) {
-            ArticleState state = articleWorkflowService.transition(
-                    articleIds.get(requestIndex), versions.get(requestIndex), action);
-            results[requestIndex] = toVO(state);
+        List<ArticleStateVO> results = new ArrayList<>(states.size());
+        for (ArticleState state : states) {
+            results.add(toVO(state));
         }
-        return List.of(results);
+        return List.copyOf(results);
     }
 
     private static List<BatchArticleItemRequest> requireItems(BatchArticlesRequest request) {

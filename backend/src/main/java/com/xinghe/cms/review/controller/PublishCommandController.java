@@ -7,6 +7,7 @@ import com.xinghe.cms.review.dto.ArticleVersionRequest;
 import com.xinghe.cms.review.dto.BatchArticlesRequest;
 import com.xinghe.cms.review.service.PublishCommandService;
 import com.xinghe.cms.review.vo.ArticleStateVO;
+import com.xinghe.cms.security.annotation.RequirePermission;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,7 +23,8 @@ import java.util.regex.Pattern;
  *
  * <p>路由参数 id 以字符串接收并按 OpenAPI Id 定义校验（无前导零的正十进制、
  * 最长 19 位、不超过 {@link Long#MAX_VALUE}），避免 Spring 把 {@code 0x1}
- * 之类文本提前转换成数字。权限与审计依赖尚未合入的 B / PR #19，此处保留 TODO。</p>
+ * 之类文本提前转换成数字。路由层权限用 B 的 {@link RequirePermission}；
+ * 审计 {@code @AuditLog} 标在事务内的 {@code PublishAuditRecorder} 上。</p>
  */
 @RestController
 @RequestMapping("/api/admin/articles")
@@ -36,31 +38,27 @@ public class PublishCommandController {
         this.publishCommandService = publishCommandService;
     }
 
-    // TODO B 交付 @RequirePermission 后补 article:publish
-    // TODO PR #19 合入 dev 后补 @AuditLog(operation = "article.publish")
+    @RequirePermission("article:publish")
     @PostMapping("/{id}/publish")
     public ApiResponse<ArticleStateVO> publish(@PathVariable("id") String id,
                                                @Valid @RequestBody ArticleVersionRequest request) {
         return ApiResponse.success(publishCommandService.publish(parseArticleId(id), request));
     }
 
-    // TODO B 交付 @RequirePermission 后补 article:offline
-    // TODO PR #19 合入 dev 后补 @AuditLog(operation = "article.offline")
+    @RequirePermission("article:offline")
     @PostMapping("/{id}/offline")
     public ApiResponse<ArticleStateVO> offline(@PathVariable("id") String id,
                                                @Valid @RequestBody ArticleVersionRequest request) {
         return ApiResponse.success(publishCommandService.offline(parseArticleId(id), request));
     }
 
-    // TODO B 交付 @RequirePermission 后补 article:publish-batch
-    // TODO PR #19 合入 dev 后补 @AuditLog(operation = "article.publish-batch")
+    @RequirePermission("article:publish-batch")
     @PostMapping("/batch/publish")
     public ApiResponse<List<ArticleStateVO>> publishBatch(@Valid @RequestBody BatchArticlesRequest request) {
         return ApiResponse.success(publishCommandService.publishBatch(request));
     }
 
-    // TODO B 交付 @RequirePermission 后补 article:offline-batch
-    // TODO PR #19 合入 dev 后补 @AuditLog(operation = "article.offline-batch")
+    @RequirePermission("article:offline-batch")
     @PostMapping("/batch/offline")
     public ApiResponse<List<ArticleStateVO>> offlineBatch(@Valid @RequestBody BatchArticlesRequest request) {
         return ApiResponse.success(publishCommandService.offlineBatch(request));

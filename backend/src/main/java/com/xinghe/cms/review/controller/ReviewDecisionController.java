@@ -6,6 +6,7 @@ import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.review.dto.ReviewDecisionRequest;
 import com.xinghe.cms.review.service.ReviewDecisionService;
 import com.xinghe.cms.review.vo.ArticleStateVO;
+import com.xinghe.cms.security.annotation.RequirePermission;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,10 +19,10 @@ import java.util.regex.Pattern;
 /**
  * 审核裁决入口（OpenAPI /api/admin/articles/{id}/approve、/reject，D 负责）。
  *
- * <p>功能权限（article:approve / article:reject）与自审拦截当前由 C 的
- * {@code ArticleWorkflowService.transition} 在事务内完成；等 B 交付
- * {@code @RequirePermission} 后在此补路由层权限注解（TODO）。审计日志
- * {@code @AuditLog} 等 PR #19 合入 dev 后再补（TODO）。</p>
+ * <p>路由层权限由 B 的 {@link RequirePermission} 在方法执行前校验（未登录 401、缺权限 403）；
+ * 数据层权限、自审拦截与状态/版本校验仍由 C 的 {@code ArticleWorkflowService.transition}
+ * 在事务内再校验一次。审计日志 {@code @AuditLog} 不在此层，标在事务内的
+ * {@code ReviewAuditRecorder} 上，保证成功日志随业务事务提交、流转失败也能记 FAILURE。</p>
  */
 @RestController
 @RequestMapping("/api/admin/articles")
@@ -39,16 +40,14 @@ public class ReviewDecisionController {
         this.reviewDecisionService = reviewDecisionService;
     }
 
-    // TODO B 交付 @RequirePermission 后补 article:approve
-    // TODO PR #19 合入 dev 后补 @AuditLog(operation = "article.approve")
+    @RequirePermission("article:approve")
     @PostMapping("/{id}/approve")
     public ApiResponse<ArticleStateVO> approve(@PathVariable String id,
             @Valid @RequestBody ReviewDecisionRequest request) {
         return ApiResponse.success(reviewDecisionService.approve(parseArticleId(id), request));
     }
 
-    // TODO B 交付 @RequirePermission 后补 article:reject
-    // TODO PR #19 合入 dev 后补 @AuditLog(operation = "article.reject")
+    @RequirePermission("article:reject")
     @PostMapping("/{id}/reject")
     public ApiResponse<ArticleStateVO> reject(@PathVariable String id,
             @Valid @RequestBody ReviewDecisionRequest request) {

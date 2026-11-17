@@ -2,10 +2,12 @@ package com.xinghe.cms.review.controller;
 
 import com.xinghe.cms.common.enums.ArticleStatus;
 import com.xinghe.cms.common.exception.GlobalExceptionHandler;
+import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.review.dto.ArticleVersionRequest;
 import com.xinghe.cms.review.dto.BatchArticlesRequest;
 import com.xinghe.cms.review.service.PublishCommandService;
 import com.xinghe.cms.review.vo.ArticleStateVO;
+import com.xinghe.cms.security.annotation.RequirePermission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.support.StaticApplicationContext;
@@ -231,6 +233,27 @@ class PublishCommandControllerTests {
         assertThat(json.get("data").isNull()).isTrue();
         assertThat(json.get("message").asString()).isEqualTo(message);
         assertThat(json.get("timestamp").asString()).endsWith("Z");
+    }
+
+    @Test
+    void declaresRoutePermissionsAndKeepsAuditOutOfController() throws Exception {
+        assertPermission(PublishCommandController.class.getDeclaredMethod(
+                "publish", String.class, ArticleVersionRequest.class), "article:publish");
+        assertPermission(PublishCommandController.class.getDeclaredMethod(
+                "offline", String.class, ArticleVersionRequest.class), "article:offline");
+        assertPermission(PublishCommandController.class.getDeclaredMethod(
+                "publishBatch", BatchArticlesRequest.class), "article:publish-batch");
+        assertPermission(PublishCommandController.class.getDeclaredMethod(
+                "offlineBatch", BatchArticlesRequest.class), "article:offline-batch");
+    }
+
+    private static void assertPermission(java.lang.reflect.Method method, String permissionCode) {
+        RequirePermission permission = method.getAnnotation(RequirePermission.class);
+        assertThat(permission).as("@RequirePermission on " + method.getName()).isNotNull();
+        assertThat(permission.value()).containsExactly(permissionCode);
+        assertThat(method.isAnnotationPresent(AuditLog.class))
+                .as("审计注解必须标在事务内的方法上，不能标 Controller")
+                .isFalse();
     }
 
     /** 可配置的 Service 替身，用于隔离 HTTP 层与业务实现。 */

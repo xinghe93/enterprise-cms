@@ -6,6 +6,7 @@ import com.xinghe.cms.common.enums.ArticleStatus;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.service.ArticleWorkflowService;
+import com.xinghe.cms.review.audit.PublishAuditRecorder;
 import com.xinghe.cms.review.dto.ArticleVersionRequest;
 import com.xinghe.cms.review.dto.BatchArticleItemRequest;
 import com.xinghe.cms.review.dto.BatchArticlesRequest;
@@ -38,7 +39,7 @@ class PublishCommandServiceTests {
     @BeforeEach
     void setUp() {
         workflow = new StubArticleWorkflowService();
-        service = new PublishCommandServiceImpl(workflow);
+        service = new PublishCommandServiceImpl(new PublishAuditRecorder(workflow));
     }
 
     @Test

@@ -13,6 +13,7 @@ import com.xinghe.cms.common.enums.ArticleStatus;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.service.ArticleWorkflowService;
+import com.xinghe.cms.review.audit.ReviewAuditRecorder;
 import com.xinghe.cms.review.dto.ReviewDecisionRequest;
 import com.xinghe.cms.review.entity.ReviewRecord;
 import com.xinghe.cms.review.mapper.ReviewRecordMapper;
@@ -47,7 +48,8 @@ class ReviewDecisionServiceTests {
     void setUp() {
         mapper = new StubReviewRecordMapper();
         workflow = new StubArticleWorkflowService();
-        service = new ReviewDecisionServiceImpl(mapper.proxy(), workflow, new CurrentUserProvider());
+        service = new ReviewDecisionServiceImpl(
+                new ReviewAuditRecorder(workflow, mapper.proxy(), new CurrentUserProvider()));
         bindCurrentUser(REVIEWER_ID);
     }
 
