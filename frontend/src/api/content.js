@@ -14,3 +14,18 @@ export const createTag = (data) => api.post(tags, data)
 export const updateTag = (id, data) => api.put(`${tags}/${id}`, data)
 export const deleteTag = (id) => api.delete(`${tags}/${id}`)
 export const setTagStatus = (id, status) => api.put(`${tags}/${id}/status`, { status })
+
+const articles = '/admin/articles'
+const portalArticles = '/portal/articles'
+
+export const listArticles = (params, config) => api.get(articles, { ...config, params })
+export const getArticle = (id, config) => api.get(`${articles}/${id}`, config)
+export const createArticle = (data) => api.post(articles, data)
+export const updateArticle = (id, data) => api.put(`${articles}/${id}`, data)
+export const deleteArticle = (id, version) => api.delete(`${articles}/${id}`, { params: { version } })
+export const submitArticle = (id, version) => api.post(`${articles}/${id}/submit`, { version })
+
+export const listPortalArticles = (params, config) => api.get(portalArticles, { ...config, params })
+export const getPortalArticle = (id, config) => api.get(`${portalArticles}/${id}`, config)
+export const listPortalCategories = (config) => api.get('/portal/categories', config)
+export const listPortalTags = (params, config) => api.get('/portal/tags', { ...config, params })
