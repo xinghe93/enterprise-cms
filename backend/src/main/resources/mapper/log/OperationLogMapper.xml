@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.log.mapper.OperationLogMapper">
+
+    <!-- 日志与操作人当前显示名称；user_name 由全局下划线转驼峰映射到 userName -->
+    <sql id="logColumns">
+        l.id, l.user_id, u.real_name AS user_name, l.operation, l.request_uri,
+        l.http_method, l.result, l.duration_ms, l.created_at
+    </sql>
+
+    <select id="selectLogPage" resultType="com.xinghe.cms.log.vo.OperationLogVO">
+        SELECT <include refid="logColumns"/>
+        FROM sys_operation_log l
+        LEFT JOIN sys_user u ON u.id = l.user_id
+        <where>
+            <if test="query.userId != null">
+                AND l.user_id = #{query.userId}
+            </if>
+            <if test="query.operation != null and query.operation != ''">
+                AND l.operation = #{query.operation}
+            </if>
+            <if test="query.result != null and query.result != ''">
+                AND l.result = #{query.result}
+            </if>
+            <if test="query.createdFrom != null">
+                AND l.created_at &gt;= #{query.createdFrom}
+            </if>
+            <if test="query.createdTo != null">
+                AND l.created_at &lt; #{query.createdTo}
+            </if>
+        </where>
+        ORDER BY l.created_at DESC, l.id DESC
+    </select>
+
+    <select id="selectLogDetail" resultType="com.xinghe.cms.log.vo.OperationLogVO">
+        SELECT <include refid="logColumns"/>
+        FROM sys_operation_log l
+        LEFT JOIN sys_user u ON u.id = l.user_id
+        WHERE l.id = #{id}
+    </select>
+
+</mapper>
