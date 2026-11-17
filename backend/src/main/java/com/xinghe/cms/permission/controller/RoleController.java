@@ -5,23 +5,29 @@ import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.PageResult;
+import com.xinghe.cms.permission.request.RoleCreateRequest;
 import com.xinghe.cms.permission.response.RoleView;
+import com.xinghe.cms.permission.service.RoleAdminService;
 import com.xinghe.cms.permission.service.RoleQueryService;
 import com.xinghe.cms.security.annotation.RequirePermission;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 角色管理接口。当前批次仅提供只读查询（D5）；
- * 创建/修改/启停在后续分支补充。
+ * 角色管理接口。当前批次：分页/详情查询（D5）+ 创建（role-admin 第一批）；
+ * 修改、启停、权限查询与全量替换在后续迭代补充。
  *
  * <p>鉴权：按 OpenAPI {@code x-permission}，分页需要 {@code role:list}，
- * 详情需要 {@code role:read}，由 {@code RequirePermissionAspect} 统一校验。
+ * 详情需要 {@code role:read}，创建需要 {@code role:create}，
+ * 由 {@code RequirePermissionAspect} 统一校验。
  * 注解包名遵循契约（《跨模块服务接口》第 49 行）：
  * {@code com.xinghe.cms.security.annotation.RequirePermission}。</p>
  *
@@ -37,7 +43,7 @@ public class RoleController {
     /** 分页接口允许的查询参数全集（契约 8.x：之外的键一律 400）。 */
     private static final Set<String> PAGE_QUERY_PARAMS = Set.of("current", "size", "keyword", "status");
 
-    /** 详情接口不接受任何查询参数。 */
+    /** 详情/创建接口不接受任何查询参数。 */
     private static final Set<String> NO_QUERY_PARAMS = Set.of();
 
     /** status 的合法原始取值（0 停用、1 启用）。 */
@@ -45,8 +51,11 @@ public class RoleController {
 
     private final RoleQueryService roleQueryService;
 
-    public RoleController(RoleQueryService roleQueryService) {
+    private final RoleAdminService roleAdminService;
+
+    public RoleController(RoleQueryService roleQueryService, RoleAdminService roleAdminService) {
         this.roleQueryService = roleQueryService;
+        this.roleAdminService = roleAdminService;
     }
 
     /**
@@ -93,5 +102,24 @@ public class RoleController {
     public ApiResponse<RoleView> detail(@PathVariable String id, HttpServletRequest request) {
         QueryParams.requireAllowedKeys(request.getParameterMap(), NO_QUERY_PARAMS);
         return ApiResponse.success(roleQueryService.getById(Ids.parse(id)));
+    }
+
+    /**
+     * 创建角色（OpenAPI {@code POST /api/admin/roles}，权限 {@code role:create}）。
+     * 请求体为 JSON（{@code roleCode}/{@code roleName}）：必填、非空白、64/100
+     * 字符上限（码点计数，服务层校验）；未知字段由 Jackson 全局严格模式拦截 400；
+     * 重复编码 409。新角色默认启用且未分配权限，返回完整 Role。
+     *
+     * <p>审计：OpenAPI 标记 {@code x-audit-operation=role.create}，按契约由 D 的
+     * {@code @AuditLog} 注解标记 HTTP 入口——该依赖尚未交付，到位后补标记。</p>
+     *
+     * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
+     */
+    @PostMapping
+    @RequirePermission("role:create")
+    public ApiResponse<RoleView> create(@Valid @RequestBody RoleCreateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
+        return ApiResponse.success(roleAdminService.create(request));
     }
 }
