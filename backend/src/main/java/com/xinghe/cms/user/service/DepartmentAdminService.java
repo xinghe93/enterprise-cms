@@ -35,6 +35,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>树、祖先链、后代集合都基于一次 {@code findAll()} 在内存中构建：避免 N+1 查询，
  * 也避免依赖特定数据库的递归 CTE 语法。写操作使用编程式事务，返回时已提交或回滚。</p>
+ *
+ * <p><strong>层级写的并发一致性</strong>：create/update 在写事务内先调用
+ * {@code findAllForUpdate()} 按 id 升序锁定整棵部门树，防环/父链校验与写入基于同一份
+ * 受保护的最新快照。只锁当前节点会让两个根部门互换父节点的并发移动各自通过校验，
+ * 提交后形成环使子树从响应中消失；固定加锁顺序同时避免死锁。</p>
  */
 @Service
 public class DepartmentAdminService {
@@ -69,9 +74,10 @@ public class DepartmentAdminService {
     /** 创建默认启用、children=[]；新父部门及祖先必须启用；deptCode 重复 409。 */
     public DepartmentVO create(DepartmentCreateRequest request) {
         return transactions.execute(transaction -> {
-            List<DepartmentRow> all = mapper.findAll();
+            // 父链校验必须基于加锁的当前读，避免并发删除/停用父部门后仍按旧快照写入。
+            // 根节点无父链可校验，不必锁树。
             if (request.parentId() != null) {
-                requireEnabledChain(all, request.parentId());
+                requireEnabledChain(mapper.findAllForUpdate(), request.parentId());
             }
             try {
                 mapper.insert(request.parentId(), request.deptCode(),
@@ -94,11 +100,16 @@ public class DepartmentAdminService {
     /** 完整 PUT：不修改 deptCode / status；返回目标节点及实际完整子树（全部状态）。 */
     public DepartmentVO update(long id, DepartmentUpdateRequest request) {
         return transactions.execute(transaction -> {
-            DepartmentRow locked = mapper.findByIdForUpdate(id);
+            // 先按 id 升序锁住整棵树，后续的防环/父链校验与 updateNode 都基于同一份受保护快照。
+            // 只锁当前节点会让两个根互换父节点的并发移动各自通过校验，提交后形成环。
+            List<DepartmentRow> all = mapper.findAllForUpdate();
+            DepartmentRow locked = all.stream()
+                    .filter(row -> row.id() == id)
+                    .findFirst()
+                    .orElse(null);
             if (locked == null) {
                 throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
             }
-            List<DepartmentRow> all = mapper.findAll();
             boolean parentChanged = !Objects.equals(request.parentId(), locked.parentId());
             if (parentChanged && request.parentId() != null) {
                 if (collectSubtree(all, id).contains(request.parentId())) {
@@ -107,12 +118,22 @@ public class DepartmentAdminService {
                 }
                 requireEnabledChain(all, request.parentId());
             }
-            int rows = mapper.updateNode(id, request.parentId(),
-                    request.deptName(), request.sortOrder());
-            if (rows == 0 && mapper.findByIdForUpdate(id) == null) {
+            try {
+                mapper.updateNode(id, request.parentId(),
+                        request.deptName(), request.sortOrder());
+            } catch (DataIntegrityViolationException exception) {
+                // 校验通过后父部门仍可能被未走本服务的路径删除，外键冲突按契约转 409。
+                throw new BusinessException(ResultCode.CONFLICT, "父部门已变更，请重试");
+            }
+            // 整树已在事务内锁定，当前节点必然存在且写入成功；回读当前读得到真实 updatedAt。
+            List<DepartmentRow> updated = mapper.findAllForUpdate();
+            DepartmentRow after = updated.stream()
+                    .filter(row -> row.id() == id)
+                    .findFirst()
+                    .orElse(null);
+            if (after == null) {
                 throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
             }
-            List<DepartmentRow> updated = mapper.findAll();
             List<DepartmentVO> forest = buildForest(updated, collectSubtree(updated, id), id);
             if (forest.isEmpty()) {
                 throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");

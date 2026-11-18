@@ -14,8 +14,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.xinghe.cms.common.contract.AuthorizationSnapshot;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.log.service.AuditLogWriter;
+import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.security.BearerTokenAuthenticationFilter;
 import com.xinghe.cms.user.dto.DepartmentCreateRequest;
@@ -25,6 +28,7 @@ import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
 import com.xinghe.cms.user.service.DepartmentAdminService;
 import com.xinghe.cms.user.vo.DepartmentVO;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,6 +50,9 @@ class DepartmentAdminControllerHttpTests {
 
     private static final String TOKEN = "good-token";
     private static final String DEPARTMENTS = "/api/admin/departments";
+    private static final Set<String> ALL_PERMISSIONS = Set.of(
+            "department:tree", "department:create", "department:update",
+            "department:delete", "department:status");
 
     @Autowired
     private WebApplicationContext context;
@@ -56,6 +63,11 @@ class DepartmentAdminControllerHttpTests {
     private AuthSessionService sessions;
     @MockitoBean
     private UserAuthMapper userAuthMapper;
+    /** 权限 AOP / 审计 AOP 都要查库，本机测试无 MySQL，按契约替换为可控桩。 */
+    @MockitoBean
+    private AuthorizationQueryService authorizationQueryService;
+    @MockitoBean
+    private AuditLogWriter auditLogWriter;
 
     private MockMvc mockMvc;
 
@@ -65,6 +77,8 @@ class DepartmentAdminControllerHttpTests {
                 .thenReturn(new AuthSessionService.SessionIdentity(9L, "epoch"));
         when(userAuthMapper.findStatusById(9L))
                 .thenReturn(new CurrentUserStatusRow("admin", null, 1));
+        when(authorizationQueryService.getForUser(9L))
+                .thenReturn(new AuthorizationSnapshot(Set.of(), ALL_PERMISSIONS));
         mockMvc = MockMvcBuilders.webAppContextSetup(context)
                 .addFilters(context.getBean(BearerTokenAuthenticationFilter.class))
                 .build();
@@ -127,6 +141,8 @@ class DepartmentAdminControllerHttpTests {
                 "{\"deptCode\":1,\"deptName\":\"研发部门\"}",
                 "{\"deptCode\":\"DEV\",\"deptName\":null}",
                 "{\"deptCode\":\"  \",\"deptName\":\"研发部门\"}",
+                "{\"deptCode\":\"　\",\"deptName\":\"研发部门\"}",
+                "{\"deptCode\":\"DEV\",\"deptName\":\"　\"}",
                 "{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\",\"status\":1}",
                 "{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\",\"parentId\":1}",
                 "{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\",\"parentId\":\"01\"}",
@@ -214,6 +230,27 @@ class DepartmentAdminControllerHttpTests {
         mockMvc.perform(get(DEPARTMENTS).servletPath(DEPARTMENTS))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
+        verifyNoInteractions(departmentService);
+    }
+
+    /** P1 权限回归：无部门权限的已登录用户访问任一部门接口必须 403，业务服务不得执行。 */
+    @Test
+    void missingPermissionReturns403WithoutEnteringService() throws Exception {
+        when(authorizationQueryService.getForUser(9L))
+                .thenReturn(new AuthorizationSnapshot(Set.of(), Set.of()));
+
+        perform(get(DEPARTMENTS), DEPARTMENTS)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        perform(post(DEPARTMENTS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\"}"), DEPARTMENTS)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        perform(put(DEPARTMENTS + "/5/status").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":0}"), DEPARTMENTS + "/5/status")
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
         verifyNoInteractions(departmentService);
     }
 

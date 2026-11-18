@@ -13,7 +13,8 @@ import tools.jackson.databind.JsonNode;
  * 互相不能引用对方尚未合入的类，因此这里不复用、也不修改公共配置文件。</p>
  *
  * <p>契约 8.1：类型按 OpenAPI 严格匹配，未知字段 / null / 非法 ID / 非法数字一律 400；
- * 名称与编码先按原始长度校验，再去首尾空白并验证非空。</p>
+ * 名称与编码先去掉首尾空白（{@link String#strip()} 覆盖 U+3000 全角空格，
+ * {@code trim()} 只处理 U+0020 及以下的 ASCII 空白），再按最终值校验长度与非空。</p>
  */
 final class DepartmentJson {
 
@@ -43,13 +44,12 @@ final class DepartmentJson {
             return context.reportInputMismatch(target, "字段 %s 必须是 JSON 字符串", field);
         }
         String raw = value.textValue();
-        if (raw.isEmpty() || raw.length() > max) {
+        // strip() 按 Unicode 判定空白，能去掉 U+3000 全角空格；trim() 不能，
+        // 纯全角空格会因此通过非空校验（P2 审查）。先 strip 再按最终值校验长度。
+        String trimmed = raw.strip();
+        if (trimmed.isEmpty() || trimmed.length() > max) {
             return context.reportInputMismatch(target, "字段 %s 长度必须在 1 到 %d 之间",
                     field, max);
-        }
-        String trimmed = raw.trim();
-        if (trimmed.isEmpty()) {
-            return context.reportInputMismatch(target, "字段 %s 不能为空白", field);
         }
         return trimmed;
     }

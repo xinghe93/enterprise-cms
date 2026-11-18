@@ -18,6 +18,12 @@ public interface DepartmentAdminMapper {
     /** 一次取回全部节点（含停用），用于树排序、祖先链和后代判定。 */
     List<DepartmentRow> findAll();
 
+    /**
+     * 写事务内按 id 升序锁定整棵部门树，供「校验层级 → 写入」基于受保护的最新状态。
+     * 固定排序使并发移动以相同顺序加锁，避免两个根互换父节点时各自基于过期快照通过校验而成环。
+     */
+    List<DepartmentRow> findAllForUpdate();
+
     DepartmentRow findById(@Param("id") Long id);
 
     /** 写事务内加行锁，保证「校验 → 写入」之间目标节点不被并发删除。 */

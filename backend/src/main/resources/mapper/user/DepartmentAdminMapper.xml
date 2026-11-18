@@ -26,6 +26,16 @@
         FROM sys_department
     </select>
 
+    <!-- 层级写事务统一按 id 升序锁定整棵树：固定加锁顺序避免死锁，
+         且 FOR UPDATE 是当前读，防环/父链校验基于已提交的最新状态，
+         不会让两个并发移动各自基于过期快照通过校验而形成环。 -->
+    <select id="findAllForUpdate" resultMap="departmentMap">
+        SELECT <include refid="departmentColumns"/>
+        FROM sys_department
+        ORDER BY id ASC
+        FOR UPDATE
+    </select>
+
     <select id="findById" resultMap="departmentMap">
         SELECT <include refid="departmentColumns"/>
         FROM sys_department

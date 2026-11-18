@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -115,7 +116,7 @@ class DepartmentAdminServiceTests {
 
     @Test
     void createRejectsMissingParentWith404() {
-        when(mapper.findAll()).thenReturn(tree());
+        when(mapper.findAllForUpdate()).thenReturn(tree());
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.create(new DepartmentCreateRequest(99L, "DEV", "研发部门", 0)));
@@ -127,7 +128,7 @@ class DepartmentAdminServiceTests {
 
     @Test
     void createRejectsDisabledAncestorWith409() {
-        when(mapper.findAll()).thenReturn(tree());
+        when(mapper.findAllForUpdate()).thenReturn(tree());
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.create(new DepartmentCreateRequest(2L, "DEV", "研发部门", 0)));
@@ -150,8 +151,7 @@ class DepartmentAdminServiceTests {
 
     @Test
     void updateRejectsSelfAndDescendantAsParent() {
-        when(mapper.findByIdForUpdate(1L)).thenReturn(row(1L, null, 10, 1));
-        when(mapper.findAll()).thenReturn(tree());
+        when(mapper.findAllForUpdate()).thenReturn(tree()).thenReturn(tree());
 
         for (Long parent : List.of(1L, 2L, 4L)) {
             BusinessException exception = assertThrows(BusinessException.class,
@@ -159,12 +159,57 @@ class DepartmentAdminServiceTests {
             assertEquals(ResultCode.CONFLICT, exception.getResultCode());
         }
         verify(mapper, never()).updateNode(any(), any(), any(), anyInt());
+        verify(mapper, org.mockito.Mockito.atLeastOnce()).findAllForUpdate();
+    }
+
+    @Test
+    void updateUsesLockedHierarchySnapshot() {
+        // 校验与写入必须基于 findAllForUpdate 的受保护快照，不能退回归普通快照读。
+        when(mapper.findAllForUpdate()).thenReturn(tree()).thenReturn(tree());
+        when(mapper.updateNode(2L, 1L, "研发部门", 5)).thenReturn(1);
+
+        service.update(2L, new DepartmentUpdateRequest(1L, "研发部门", 5));
+
+        verify(mapper, org.mockito.Mockito.times(2)).findAllForUpdate();
+        verify(mapper, never()).findAll();
+    }
+
+    @Test
+    void updateMapsForeignKeyConflictTo409() {
+        // 父节点存在且祖先链启用，校验通过后才可能在 updateNode 写入时遇到外键冲突。
+        List<DepartmentRow> enabledTree = List.of(
+                row(1L, null, 10, 1), row(2L, 1L, 1, 1), row(3L, 1L, 1, 1));
+        when(mapper.findAllForUpdate()).thenReturn(enabledTree);
+        when(mapper.updateNode(2L, 3L, "研发部门", 5))
+                .thenThrow(new DataIntegrityViolationException("fk parent_id"));
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.update(2L, new DepartmentUpdateRequest(3L, "研发部门", 5)));
+
+        assertEquals(ResultCode.CONFLICT, exception.getResultCode());
+        verify(transactionManager).rollback(any());
+    }
+
+    /** 并发移动成环回归：second 必须基于 first 提交后的最新层级校验，而不是过期快照。 */
+    @Test
+    void concurrentRootSwapDetectsCycleOnLockedSnapshot() {
+        // 初始：1、2 都是根。first 把 1 挂到 2 下并提交后，层级变为 1.parent=2。
+        List<DepartmentRow> afterFirst = List.of(
+                row(1L, 2L, 10, 1), row(2L, null, 1, 1));
+        // 第二次移动基于 first 提交后的最新层级校验。
+        when(mapper.findAllForUpdate()).thenReturn(afterFirst);
+
+        // second 要把 2 挂到 1 下；基于 afterFirst，1 是 2 的后代 → 409，不能形成环。
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.update(2L, new DepartmentUpdateRequest(1L, "研发部门", 0)));
+
+        assertEquals(ResultCode.CONFLICT, exception.getResultCode());
+        verify(mapper, never()).updateNode(2L, 1L, "研发部门", 0);
     }
 
     @Test
     void updateKeepsUnchangedDisabledParentAndReturnsFullSubtree() {
-        when(mapper.findByIdForUpdate(2L)).thenReturn(row(2L, 1L, 1, 1));
-        when(mapper.findAll()).thenReturn(tree());
+        when(mapper.findAllForUpdate()).thenReturn(tree()).thenReturn(tree());
         when(mapper.updateNode(2L, 1L, "研发部门", 5)).thenReturn(1);
 
         DepartmentVO result = service.update(2L, new DepartmentUpdateRequest(1L, "研发部门", 5));
@@ -177,7 +222,7 @@ class DepartmentAdminServiceTests {
 
     @Test
     void updateMissingDepartmentReturns404() {
-        when(mapper.findByIdForUpdate(9L)).thenReturn(null);
+        when(mapper.findAllForUpdate()).thenReturn(tree());
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.update(9L, new DepartmentUpdateRequest(null, "研发部门", 0)));
