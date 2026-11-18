@@ -364,7 +364,9 @@ class PendingReviewServiceMysqlIT {
     }
 
     private static String serverUrl() {
-        return baseUrl();
+        // 建库/删库连接与业务测试连接必须使用同一套参数（认证、TLS、serverTimezone 等），
+        // 否则需要显式认证参数的 MySQL 实例会在建库阶段失败，导致整个 IT 类被跳过。
+        return baseUrl() + queryPart();
     }
 
     private static String baseUrl() {

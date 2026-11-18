@@ -90,19 +90,21 @@ public class PendingReviewServiceImpl implements PendingReviewService {
     }
 
     /**
-     * 去首尾空白后为空表示不筛选；长度按 code point 计算，超过 255 返回 400；
+     * 长度规则以 OpenAPI 的 {@code maxLength: 255} 为准：先按<b>原始值</b>的 code point 数校验，
+     * 超过 255 一律 400（不能先 strip 再校验，否则"原始超长、去空白后未超长"的请求会被放行）；
+     * 校验通过后再去首尾空白，空白串表示不筛选；
      * 转义符为 '!'（{@code ! → !!}、{@code % → !%}、{@code _ → !_}），两侧加 % 做包含匹配。
      */
     private static String normalizeKeyword(String keyword) {
         if (keyword == null) {
             return null;
         }
+        if (keyword.codePointCount(0, keyword.length()) > MAX_KEYWORD_CODE_POINTS) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "关键词长度不能超过 255");
+        }
         String trimmed = keyword.strip();
         if (trimmed.isEmpty()) {
             return null;
-        }
-        if (trimmed.codePointCount(0, trimmed.length()) > MAX_KEYWORD_CODE_POINTS) {
-            throw new BusinessException(ResultCode.BAD_REQUEST, "关键词长度不能超过 255");
         }
         String escaped = trimmed.replace("!", "!!").replace("%", "!%").replace("_", "!_");
         return "%" + escaped + "%";

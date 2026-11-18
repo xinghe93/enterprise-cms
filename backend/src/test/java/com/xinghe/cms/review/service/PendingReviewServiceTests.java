@@ -144,6 +144,29 @@ class PendingReviewServiceTests {
     }
 
     @Test
+    void rejectsKeywordLongerThan255BeforeStripping() {
+        PendingReviewQuery query = query();
+        // 原始值 258 个 code point，去掉首尾空白后只剩 254 个：
+        // OpenAPI maxLength 作用于原始值，必须先按原始长度拒绝，不能 strip 后放行。
+        query.setKeyword("  " + "请".repeat(254) + "  ");
+
+        assertThatThrownBy(() -> service.pending(query))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("关键词长度不能超过 255");
+        assertThat(mapperCalled.get()).isFalse();
+    }
+
+    @Test
+    void acceptsKeywordWithExactly255CodePoints() {
+        PendingReviewQuery query = query();
+        query.setKeyword("请".repeat(255));
+
+        service.pending(query);
+
+        assertThat(capturedKeyword.get()).isEqualTo("%" + "请".repeat(255) + "%");
+    }
+
+    @Test
     void rejectsMalformedAuthorId() {
         PendingReviewQuery query = query();
         query.setAuthorId("0x1");
