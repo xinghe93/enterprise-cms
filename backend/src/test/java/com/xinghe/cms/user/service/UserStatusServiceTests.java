@@ -19,8 +19,6 @@ import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.user.mapper.UserAdminMapper;
 import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,17 +33,23 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
  * 启停接口的事务/会话顺序回归。
  *
  * <p>用真实 {@code TransactionTemplate} + 打桩的 {@link PlatformTransactionManager}，
- * 确定性验证：数据库提交之后才按版本撤销会话；回滚不触碰 Redis；
- * 撤销失败向上抛出；重复状态与过期撤销由带版本方法幂等跳过，
- * 使失败后可重试且延迟撤销不误伤新会话。</p>
+ * 确定性验证两个方向的撤销时序（PR #39 第三轮审查 P1/P2）：</p>
+ * <ul>
+ * <li>停用：数据库提交<strong>之后</strong>才按 status_version 撤销；回滚不触碰 Redis；
+ *     撤销失败向上抛 500，重试可按版本补偿；</li>
+ * <li>启用：撤销在事务内、提交<strong>之前</strong>完成——前序撤销失败时在此补偿，
+ *     撤销失败整体回滚，绝不出现「已启用但旧会话仍有效」的复活窗口；</li>
+ * <li>同状态请求：不写库，仅按当前 status_version 幂等补偿；
+ *     从未变更过状态的账号版本为 0，不会误踢正常会话。</li>
+ * </ul>
  */
 @ExtendWith(MockitoExtension.class)
 class UserStatusServiceTests {
 
     private static final long USER_ID = 7L;
-    private static final LocalDateTime T0 = LocalDateTime.of(2026, 11, 16, 10, 0, 0);
-    private static final LocalDateTime T1 = T0.plusMinutes(1);
-    private static final long V1 = T1.toInstant(ZoneOffset.UTC).toEpochMilli();
+    private static final long V0 = 0L;
+    private static final long V1 = 1L;
+    private static final long V2 = 2L;
 
     @Mock
     private PlatformTransactionManager transactionManager;
@@ -62,14 +66,16 @@ class UserStatusServiceTests {
         txStatus = new SimpleTransactionStatus();
         lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
                 .thenReturn(txStatus);
-        service = new UserStatusService(transactionManager, userMapper, sessions);
+        service = new UserStatusService(transactionManager, userMapper, sessions,
+                new UserAuditedActions());
     }
 
+    /** 停用：提交前绝不触碰 Redis，提交后才按新版本撤销。 */
     @Test
     void disableCommitsDatabaseBeforeRevokingSessionsByVersion() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, T0));
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, V1));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(1);
-        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, T1));
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, V2));
         // 提交这一刻会话还没被撤销，确定性排除「先刷 Redis 再提交」。
         doAnswer(invocation -> {
             verifyNoInteractions(sessions);
@@ -84,29 +90,49 @@ class UserStatusServiceTests {
         order.verify(userMapper).updateStatus(USER_ID, 0);
         order.verify(userMapper).findStatusVersion(USER_ID);
         order.verify(transactionManager).commit(txStatus);
-        order.verify(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
-    }
-
-    @Test
-    void enableAlsoRotatesEpochSoOldTokensNeverComeBack() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(0, T0));
-        when(userMapper.updateStatus(USER_ID, 1)).thenReturn(1);
-        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(1, T1));
-
-        service.changeStatus(USER_ID, 1);
-
-        InOrder order = inOrder(transactionManager, sessions);
-        order.verify(transactionManager).commit(txStatus);
-        order.verify(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
+        order.verify(sessions).revokeAllForUserUpToVersion(USER_ID, V2);
     }
 
     /**
-     * 重复状态仍调用带版本撤销（由 Lua 按版本幂等跳过），不写库。
-     * 这样若此前撤销失败、记录版本没抬高，重试可补偿撤销，不再被「状态相同」短路。
+     * 启用：撤销必须在提交<strong>之前</strong>完成——前序停用撤销失败时在此补偿，
+     * 保证重新启用提交时旧会话已全部失效，不产生复活窗口。
+     */
+    @Test
+    void enableRevokesOldSessionsBeforeCommitting() {
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(0, V1));
+        when(userMapper.updateStatus(USER_ID, 1)).thenReturn(1);
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(1, V2));
+
+        service.changeStatus(USER_ID, 1);
+
+        InOrder order = inOrder(sessions, transactionManager);
+        order.verify(sessions).revokeAllForUserUpToVersion(USER_ID, V2);
+        order.verify(transactionManager).commit(txStatus);
+    }
+
+    /** 启用方向的撤销失败：事务必须回滚（数据库仍停用），异常向上抛成 500。 */
+    @Test
+    void enableRevokeFailureRollsBackInsteadOfFakingSuccess() {
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(0, V1));
+        when(userMapper.updateStatus(USER_ID, 1)).thenReturn(1);
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(1, V2));
+        doThrow(new IllegalStateException("Redis 不可用"))
+                .when(sessions).revokeAllForUserUpToVersion(USER_ID, V2);
+
+        assertThrows(IllegalStateException.class, () -> service.changeStatus(USER_ID, 1));
+
+        verify(transactionManager).rollback(txStatus);
+        verify(transactionManager, never()).commit(txStatus);
+    }
+
+    /**
+     * 同状态请求仍调用带版本撤销（由 Lua 按版本幂等跳过），不写库。
+     * 版本取自 status_version——它不随资料更新抬升，因此正常会话不会被误踢；
+     * 只有此前撤销失败（记录未抬高）时重试才真正补偿。
      */
     @Test
     void sameStatusRetriesRevokeByCurrentVersionWithoutWriting() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(0, T1));
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(0, V1));
 
         service.changeStatus(USER_ID, 0);
 
@@ -114,6 +140,17 @@ class UserStatusServiceTests {
         verify(userMapper, never()).findStatusVersion(anyLong());
         verify(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
         verify(transactionManager).commit(txStatus);
+    }
+
+    /** 从未变更过状态的账号版本为 0：同状态请求按 0 幂等跳过（Lua 记录缺省按 0）。 */
+    @Test
+    void neverDisabledAccountSkipsRevokeByZeroVersion() {
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, V0));
+
+        service.changeStatus(USER_ID, 1);
+
+        verify(userMapper, never()).updateStatus(anyLong(), anyInt());
+        verify(sessions).revokeAllForUserUpToVersion(USER_ID, V0);
     }
 
     @Test
@@ -132,7 +169,7 @@ class UserStatusServiceTests {
     /** 条件更新影响 0 行不能静默按成功返回（契约 280）。 */
     @Test
     void zeroAffectedRowsReturns409AndDoesNotRevoke() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, T0));
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, V1));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(0);
 
         BusinessException exception = assertThrows(BusinessException.class,
@@ -155,16 +192,16 @@ class UserStatusServiceTests {
     }
 
     /**
-     * 撤销失败时事务已提交、异常必须向上抛成 500，且版本记录未被抬高（由带版本方法保证），
+     * 停用的撤销失败时事务已提交、异常必须向上抛成 500，且版本记录未被抬高（由带版本方法保证），
      * 因此重试能补偿，不会被契约的「相同状态返回 200」短路。
      */
     @Test
-    void revokeFailurePropagatesInsteadOfFakingSuccess() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, T0));
+    void disableRevokeFailurePropagatesInsteadOfFakingSuccess() {
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, V1));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(1);
-        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, T1));
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, V2));
         doThrow(new IllegalStateException("Redis 不可用"))
-                .when(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
+                .when(sessions).revokeAllForUserUpToVersion(USER_ID, V2);
 
         assertThrows(IllegalStateException.class, () -> service.changeStatus(USER_ID, 0));
 

@@ -36,7 +36,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>所有写操作使用编程式 {@link TransactionTemplate}：返回时事务已提交或回滚，
  * 失败整体回滚；角色校验与关联替换在同一事务内完成，B 的
- * {@link RoleDirectoryService#lockAssignableRoles(List)} 要求 MANDATORY 事务语义。</p>
+ * {@link RoleDirectoryService#lockAssignableRoles(List)} 要求 MANDATORY 事务语义。
+ * 写操作的成功审计随业务事务提交：事务回调内经代理调用
+ * {@link UserAuditedActions} 的 {@code @AuditLog} 方法执行业务动作（切面进入时事务
+ * 已开启，SUCCESS 在 beforeCommit 写入业务事务，FAILURE 在回滚后用独立新事务补记——
+ * PR #39 审查 P2）；只读查询不审计。</p>
  */
 @Service
 public class UserAdminService {
@@ -49,13 +53,16 @@ public class UserAdminService {
     private final UserAdminMapper mapper;
     private final PasswordHasher passwordHasher;
     private final RoleDirectoryService roleDirectory;
+    private final UserAuditedActions auditedActions;
 
     public UserAdminService(PlatformTransactionManager transactionManager, UserAdminMapper mapper,
-            PasswordHasher passwordHasher, RoleDirectoryService roleDirectory) {
+            PasswordHasher passwordHasher, RoleDirectoryService roleDirectory,
+            UserAuditedActions auditedActions) {
         this.transactions = new TransactionTemplate(transactionManager);
         this.mapper = mapper;
         this.passwordHasher = passwordHasher;
         this.roleDirectory = roleDirectory;
+        this.auditedActions = auditedActions;
     }
 
     /**
@@ -101,28 +108,32 @@ public class UserAdminService {
 
     /** 创建默认启用、无角色；部门引用不存在 404，目标或祖先停用 409，用户名重复 409。 */
     public UserVO createUser(UserCreateRequest request) {
-        return transactions.execute(transaction -> {
-            if (request.departmentId() != null) {
-                requireEnabledDepartmentChain(request.departmentId());
-            }
-            String passwordHash = passwordHasher.hash(request.password());
-            try {
-                mapper.insertUser(request.username(), passwordHash, request.realName(),
-                        request.departmentId());
-            } catch (DuplicateKeyException exception) {
-                // 契约 8.1：唯一键冲突转 409，不能被兜底异常处理器变成 500。
-                throw new BusinessException(ResultCode.CONFLICT, "登录账号已存在");
-            } catch (DataIntegrityViolationException exception) {
-                // 已知外键引用冲突（并发删除部门）转 409；不把所有 SQL 异常一概当冲突。
-                throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
-            }
-            // 时间由数据库生成后回读，不接受客户端伪造时间；新建账号 roles 恒为 []。
-            UserProfileRow created = mapper.findProfileByUsername(request.username());
-            if (created == null) {
-                throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "创建结果不可读");
-            }
-            return toUserVO(created, List.of());
-        });
+        return transactions.execute(transaction -> auditedActions.createUser(() -> doCreateUser(request)));
+    }
+
+    private UserVO doCreateUser(UserCreateRequest request) {
+        if (request.departmentId() != null) {
+            requireEnabledDepartmentChain(request.departmentId());
+        }
+        String passwordHash = passwordHasher.hash(request.password());
+        try {
+            mapper.insertUser(request.username(), passwordHash, request.realName(),
+                    request.departmentId());
+        } catch (DuplicateKeyException exception) {
+            // 契约 8.1：唯一键冲突转 409，不能被兜底异常处理器变成 500。
+            throw new BusinessException(ResultCode.CONFLICT, "登录账号已存在");
+        } catch (DataIntegrityViolationException exception) {
+            // 已知外键引用冲突（并发删除部门）转 409；不把所有 SQL 异常一概当冲突。
+            // sys_user 只有 fk_user_department 一个外键，其余完整性约束（长度/非空/
+            // CHECK status）都已在前置严格校验中排除，因此能到这里的基本是并发部门变更。
+            throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
+        }
+        // 时间由数据库生成后回读，不接受客户端伪造时间；新建账号 roles 恒为 []。
+        UserProfileRow created = mapper.findProfileByUsername(request.username());
+        if (created == null) {
+            throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "创建结果不可读");
+        }
+        return toUserVO(created, List.of());
     }
 
     /**
@@ -130,26 +141,29 @@ public class UserAdminService {
      * 契约 5：原部门引用不变时可保留已停用部门；换到新部门才检查目标及整条祖先链。
      */
     public UserVO updateUser(long userId, UserUpdateRequest request) {
-        return transactions.execute(transaction -> {
-            UserProfileRow current = mapper.findProfileForUpdate(userId);
-            if (current == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
-            }
-            if (request.departmentId() != null
-                    && !Objects.equals(request.departmentId(), current.departmentId())) {
-                requireEnabledDepartmentChain(request.departmentId());
-            }
-            int rows = mapper.updateProfile(userId, request.realName(), request.departmentId());
-            if (rows == 0 && mapper.findProfileForUpdate(userId) == null) {
-                // MySQL 值未变化时 affected rows 也会是 0；持锁重查区分「无变化」与「被并发删除」。
-                throw new BusinessException(ResultCode.CONFLICT, "员工资料已变更，请重试");
-            }
-            UserProfileRow updated = mapper.findProfileById(userId);
-            if (updated == null) {
-                throw new BusinessException(ResultCode.CONFLICT, "员工资料已变更，请重试");
-            }
-            return toUserVO(updated, loadRoles(List.of(userId)).getOrDefault(userId, List.of()));
-        });
+        return transactions.execute(transaction ->
+                auditedActions.updateUser(() -> doUpdateUser(userId, request)));
+    }
+
+    private UserVO doUpdateUser(long userId, UserUpdateRequest request) {
+        UserProfileRow current = mapper.findProfileForUpdate(userId);
+        if (current == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
+        }
+        if (request.departmentId() != null
+                && !Objects.equals(request.departmentId(), current.departmentId())) {
+            requireEnabledDepartmentChain(request.departmentId());
+        }
+        int rows = mapper.updateProfile(userId, request.realName(), request.departmentId());
+        if (rows == 0 && mapper.findProfileForUpdate(userId) == null) {
+            // MySQL 值未变化时 affected rows 也会是 0；持锁重查区分「无变化」与「被并发删除」。
+            throw new BusinessException(ResultCode.CONFLICT, "员工资料已变更，请重试");
+        }
+        UserProfileRow updated = mapper.findProfileById(userId);
+        if (updated == null) {
+            throw new BusinessException(ResultCode.CONFLICT, "员工资料已变更，请重试");
+        }
+        return toUserVO(updated, loadRoles(List.of(userId)).getOrDefault(userId, List.of()));
     }
 
     /**
@@ -158,24 +172,29 @@ public class UserAdminService {
      */
     public void replaceRoles(long userId, UserRolesUpdateRequest request) {
         transactions.execute(transaction -> {
-            if (mapper.findStatusForUpdate(userId) == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
-            }
-            List<Long> target = request.roleIds().stream().distinct().sorted().toList();
-            // 即使集合未变也要校验：既有停用角色不能借幂等语义继续保留。
-            List<RoleRef> assignable = roleDirectory.lockAssignableRoles(target);
-            if (assignable.size() != target.size()) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "角色不存在");
-            }
-            List<Long> current = mapper.findRoleIdsByUserId(userId);
-            if (!current.equals(target)) {
-                mapper.deleteUserRoles(userId);
-                if (!target.isEmpty()) {
-                    mapper.insertUserRoles(userId, target);
-                }
-            }
+            auditedActions.replaceRoles(() -> doReplaceRoles(userId, request));
             return null;
         });
+    }
+
+    private void doReplaceRoles(long userId, UserRolesUpdateRequest request) {
+        if (mapper.findStatusForUpdate(userId) == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
+        }
+        List<Long> target = request.roleIds().stream().distinct().sorted().toList();
+        // 即使集合未变也要校验：既有停用角色不能借幂等语义继续保留。
+        List<RoleRef> assignable = roleDirectory.lockAssignableRoles(target);
+        if (assignable.size() != target.size()) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "角色不存在");
+        }
+        // findRoleIdsByUserId 按 role_id ASC 返回（见 Mapper XML），与 sorted target 同序。
+        List<Long> current = mapper.findRoleIdsByUserId(userId);
+        if (!current.equals(target)) {
+            mapper.deleteUserRoles(userId);
+            if (!target.isEmpty()) {
+                mapper.insertUserRoles(userId, target);
+            }
+        }
     }
 
     private void requireEnabledDepartmentChain(Long departmentId) {

@@ -78,7 +78,10 @@ class AuthSessionServiceTests {
                 any(), any(), any());
     }
 
-    /** REVOKE_UP_TO_VERSION 有 3 个可变参数（版本、候选纪元、TTL）。 */
+    /**
+     * REVOKE_UP_TO_VERSION 有 3 个可变参数（目标版本、候选纪元、纪元 TTL）；
+     * 版本键在 Lua 内不使用 TTL 参数持久保存。
+     */
     private void stubRevokeUpToVersion(Long result) {
         doReturn(result).when(redis).execute(any(RedisScript.class), anyList(),
                 any(), any(), any());
@@ -292,11 +295,20 @@ class AuthSessionServiceTests {
         verify(values, never()).set(eq(EPOCH_KEY), anyString(), any(Duration.class));
     }
 
+    /**
+     * 跳过轮换（recorded >= version）时不做任何写操作：版本与候选纪元按序交给脚本，
+     * 且不能再有第二次 set 往返——单元层锁定调用契约，Lua 语义由 RedisIT 验证。
+     */
     @Test
     void revokeAllForUserUpToVersionReportsSkippedRotation() {
         stubRevokeUpToVersion(0L);
 
         assertFalse(sessions.revokeAllForUserUpToVersion(7L, 100L));
+
+        verify(redis).execute(any(RedisScript.class), eq(List.of(EPOCH_KEY, REVOKED_VERSION_KEY)),
+                eq("100"), any(), any());
+        verify(values, never()).set(anyString(), anyString(), any(Duration.class));
+        verify(values, never()).set(anyString(), anyString());
     }
 
     @Test

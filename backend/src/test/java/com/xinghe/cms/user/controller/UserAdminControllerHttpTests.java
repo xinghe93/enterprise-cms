@@ -110,7 +110,8 @@ class UserAdminControllerHttpTests {
         // 19 位但超过 Long.MAX_VALUE：pattern 通过，parseLong 必须转成 400 而不是 500。
         performPut("9999999999999999999", "{\"status\":0}", true)
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value(400));
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.data").value(nullValue()));
 
         verifyNoInteractions(userStatusService);
     }

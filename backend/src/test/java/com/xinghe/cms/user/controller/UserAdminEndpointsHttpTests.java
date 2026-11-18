@@ -120,6 +120,24 @@ class UserAdminEndpointsHttpTests {
                 .andExpect(jsonPath("$.data.roles").isArray())
                 .andExpect(jsonPath("$.data.password").doesNotExist())
                 .andExpect(jsonPath("$.data.passwordHash").doesNotExist());
+
+        verify(userAdminService).createUser(
+                new UserCreateRequest("editor_demo", "12345678", "演示编辑", null));
+    }
+
+    /** 合法 departmentId 的正向用例：字符串 ID 反序列化为 Long 并原样传给 Service。 */
+    @Test
+    void createUserWithDepartmentIdPassesParsedReferenceToService() throws Exception {
+        when(userAdminService.createUser(any(UserCreateRequest.class))).thenReturn(user());
+
+        perform(post(USERS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"editor_demo\",\"password\":\"12345678\","
+                                + "\"realName\":\"演示编辑\",\"departmentId\":\"3\"}"), USERS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value("7"));
+
+        verify(userAdminService).createUser(
+                new UserCreateRequest("editor_demo", "12345678", "演示编辑", 3L));
     }
 
     @Test

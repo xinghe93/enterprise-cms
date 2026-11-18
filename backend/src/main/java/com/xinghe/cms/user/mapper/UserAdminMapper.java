@@ -18,18 +18,21 @@ import org.apache.ibatis.annotations.Param;
 public interface UserAdminMapper {
 
     /**
-     * 事务内只锁 sys_user 行读取当前状态与 updated_at，避免两个并发启停请求各自基于旧快照写库，
+     * 事务内只锁 sys_user 行读取当前状态与 status_version，避免两个并发启停请求各自基于旧快照写库，
      * 也避免 JOIN 部门表连带锁住部门行造成调岗死锁（见 P2 审查意见）。
      * 登录链路的 {@code UserAuthMapper#findStatusById} 是普通快照读，不受此锁影响。
      *
-     * @return 状态与版本快照；用户不存在返回 {@code null}
+     * @return 状态与撤销版本快照；用户不存在返回 {@code null}
      */
     UserStatusSnapshot findStatusForUpdate(@Param("userId") Long userId);
 
-    /** 更新状态后在同一事务内回读 updated_at，作为本次状态变更的版本号。 */
+    /** 更新状态后在同一事务内回读 status_version，作为本次状态变更的撤销版本。 */
     UserStatusSnapshot findStatusVersion(@Param("userId") Long userId);
 
-    /** 只改状态与数据库自动维护的 updated_at，返回受影响行数。 */
+    /**
+     * 只改状态并原子递增 status_version（004 迁移脚本），返回受影响行数。
+     * status_version 仅在状态真正变化时 +1，与资料更新无关，是会话撤销的独立单调版本。
+     */
     int updateStatus(@Param("userId") Long userId, @Param("status") int status);
 
     /** 写事务内锁住员工行并读取完整资料（含部门名），用于 404 判定与「原部门不变」比较。 */

@@ -51,8 +51,10 @@ public class AuthSessionService {
     /** 沿用已有键名；值是一次性随机串，不做自增。 */
     private static final String EPOCH_PREFIX = "cms:auth:generation:";
     /**
-     * 记录「已为哪个状态版本执行过全量撤销」，值来自 DB 的 updated_at 毫秒。
+     * 记录「已为哪个状态版本执行过全量撤销」，值来自 sys_user.status_version
+     * （仅在状态真正变化时 +1 的独立单调版本，见 004 迁移脚本）。
      * 用于让账号状态变更后的撤销幂等、可重试：只有当传入版本高于已记录版本时才轮换纪元。
+     * 该键不设 TTL：版本记录是持久事实，过期会让同状态请求误判为待补偿并误踢正常会话。
      */
     private static final String REVOKED_VERSION_PREFIX = "cms:auth:revoked-version:";
     private static final Duration EPOCH_TTL = Duration.ofDays(30);
@@ -103,17 +105,25 @@ public class AuthSessionService {
 
     /**
      * 按状态版本幂等撤销：KEYS[1] 纪元键、KEYS[2] 已撤销版本键；
-     * ARGV 依次为目标版本、候选新纪元、TTL 秒。
+     * ARGV 依次为目标版本、候选新纪元、纪元 TTL 秒。
      * 只有目标版本高于已记录版本时才轮换纪元并抬高记录，否则返回 0 不做任何写操作。
      * 一段 Lua 内完成比较与写入，保证「比较版本 → 轮换 → 记录」不可被打断：
-     * 撤销失败（事务提交后 Redis 抛异常）时版本记录不会被抬高，重试可补偿；
+     * 撤销失败（Redis 抛异常）时版本记录不会被抬高，重试可补偿；
      * 版本更低的过期撤销到来时因不高于记录值而被忽略，不会误伤重新登录的新会话。
+     *
+     * <p>版本键缺省或脏值（非数字）一律按 0 处理后自愈覆写，不能让
+     * {@code tonumber(recorded) >= tonumber(version)} 在 Lua 中直接报错，
+     * 否则撤销会永久失败（PR #39 审查待核实项）。</p>
+     *
+     * <p>版本键<strong>不设 TTL</strong>（随用户长期存在）：已撤销版本是对抗
+     * 「延迟的旧撤销误伤新会话」的持久事实，若与纪元键一样 30 天过期，
+     * 过期后任何一次同状态请求都会把记录当 0 而补一次轮换，误踢启用账号的正常会话。</p>
      */
     private static final DefaultRedisScript<Long> REVOKE_UP_TO_VERSION = new DefaultRedisScript<>(
-            "local recorded = redis.call('GET', KEYS[2])\n"
-                    + "if recorded and tonumber(recorded) >= tonumber(ARGV[1]) then return 0 end\n"
+            "local recorded = tonumber(redis.call('GET', KEYS[2])) or 0\n"
+                    + "if recorded >= tonumber(ARGV[1]) then return 0 end\n"
                     + "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])\n"
-                    + "redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[3])\n"
+                    + "redis.call('SET', KEYS[2], ARGV[1])\n"
                     + "return 1", Long.class);
 
     private final StringRedisTemplate redis;
@@ -231,11 +241,13 @@ public class AuthSessionService {
     /**
      * 按状态版本全量撤销（账号启停专用，可重试、幂等、抗过期）。
      *
-     * <p>{@code version} 取自数据库事务内读到的 {@code updated_at} 毫秒，随每次状态变更单调递增。
-     * 只有该版本高于 Redis 记录的「已撤销版本」时才轮换纪元：
+     * <p>{@code version} 取自数据库事务内回读的 {@code sys_user.status_version}
+     * （004 迁移脚本）：仅在状态真正变化（0↔1）时 +1 的独立单调版本，不随资料更新抬升，
+     * 也不依赖 updated_at 的毫秒精度。只有该版本高于 Redis 记录的「已撤销版本」时才轮换纪元：
      * <ul>
      * <li>撤销失败后相同状态重试：记录未抬高，重试版本仍更高 → 补偿撤销，不再被「状态相同」短路；</li>
-     * <li>重复设置同一状态且此前已成功撤销：版本不高于记录 → 跳过，不重复踢人；</li>
+     * <li>重复设置同一状态且此前已成功撤销：版本不高于记录 → 跳过，不重复踢人；
+     * 从未发生状态变更的账号版本为 0、无记录 → 按 0 跳过，不会误踢正常会话；</li>
      * <li>延迟到达的旧状态撤销（如停用请求被阻塞到重新启用并重新登录之后）：其版本低于
      * 重新启用的版本记录 → 跳过，不误伤新令牌。</li>
      * </ul>

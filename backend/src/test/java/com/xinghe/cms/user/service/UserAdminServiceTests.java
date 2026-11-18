@@ -51,7 +51,7 @@ class UserAdminServiceTests {
     private static final long USER_ID = 7L;
     private static final LocalDateTime TIME = LocalDateTime.of(2026, 11, 2, 16, 0, 0);
     /** replaceRoles 只用 findStatusForUpdate 判存在，版本字段不参与断言。 */
-    private static final UserStatusSnapshot ACTIVE = new UserStatusSnapshot(1, TIME);
+    private static final UserStatusSnapshot ACTIVE = new UserStatusSnapshot(1, 0L);
 
     @Mock
     private PlatformTransactionManager transactionManager;
@@ -68,7 +68,8 @@ class UserAdminServiceTests {
     void setUp() {
         lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
                 .thenReturn(new SimpleTransactionStatus());
-        service = new UserAdminService(transactionManager, mapper, passwordHasher, roleDirectory);
+        service = new UserAdminService(transactionManager, mapper, passwordHasher, roleDirectory,
+                new UserAuditedActions());
     }
 
     private UserProfileRow profile(Long departmentId) {

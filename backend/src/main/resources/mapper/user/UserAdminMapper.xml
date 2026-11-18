@@ -3,10 +3,13 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.xinghe.cms.user.mapper.UserAdminMapper">
 
+    <!-- 构造器映射的 javaType 必须与 UserStatusSnapshot 的基本类型参数精确一致：
+         声明 java.lang.Integer 时 MyBatis 找不到 (int, long) 构造器，
+         真实 MySQL 上启停与角色全量替换都会映射失败（PR #39 审查 P1）。 -->
     <resultMap id="statusSnapshotMap" type="com.xinghe.cms.user.mapper.row.UserStatusSnapshot">
         <constructor>
-            <arg column="status" javaType="java.lang.Integer"/>
-            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+            <arg column="status" javaType="_int"/>
+            <arg column="status_version" javaType="_long"/>
         </constructor>
     </resultMap>
 
@@ -14,24 +17,27 @@
          保证「读状态 → 写状态」不被并发穿插，且不会连带锁住部门行造成调岗死锁。
          登录链路的普通快照读不请求锁，因此不会阻塞登录。 -->
     <select id="findStatusForUpdate" resultMap="statusSnapshotMap">
-        SELECT status, updated_at
+        SELECT status, status_version
         FROM sys_user
         WHERE id = #{userId}
         FOR UPDATE
     </select>
 
-    <!-- 更新状态后在同一事务内回读版本；此时行锁仍持有，读到的 updated_at 即本次变更版本。 -->
+    <!-- 更新状态后在同一事务内回读版本；此时行锁仍持有，读到的 status_version
+         即本次变更（+1 后）的撤销版本。 -->
     <select id="findStatusVersion" resultMap="statusSnapshotMap">
-        SELECT status, updated_at
+        SELECT status, status_version
         FROM sys_user
         WHERE id = #{userId}
     </select>
 
     <!-- updated_at 由 001_init.sql 的 ON UPDATE CURRENT_TIMESTAMP(3) 自动维护，
-         服务端不接收也不返回客户端伪造的时间。 -->
+         服务端不接收也不返回客户端伪造的时间。
+         status_version 只在状态真正变化时 +1：它是会话撤销的独立单调版本，
+         资料更新不触碰，保证撤销版本独立且严格递增（004 迁移脚本）。 -->
     <update id="updateStatus">
         UPDATE sys_user
-        SET status = #{status}
+        SET status = #{status}, status_version = status_version + 1
         WHERE id = #{userId}
     </update>
 
