@@ -18,6 +18,7 @@ import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
 import com.xinghe.cms.permission.request.RoleStatusRequest;
 import com.xinghe.cms.permission.request.RoleUpdateRequest;
@@ -64,6 +65,14 @@ class RoleControllerHttpTests {
 
     @MockitoBean
     private AuthorizationQueryService authorizationQueryService;
+
+    /**
+     * 评审 P2：隔离审计写入——HTTP 层用 mock 的服务与身份，但真实上下文里
+     * 审计切面与持久化组件仍在；mock 掉 {@link AuditLogWriter}，确保任何
+     * 意外触发的切面路径都不会向配置的真实 MySQL 写入虚假的成功审计。
+     */
+    @MockitoBean
+    private AuditLogWriter auditLogWriter;
 
     private MockMvc mockMvc;
 

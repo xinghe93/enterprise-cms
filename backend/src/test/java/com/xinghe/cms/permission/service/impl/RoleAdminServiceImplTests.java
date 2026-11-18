@@ -217,9 +217,11 @@ class RoleAdminServiceImplTests {
 
         ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
         verify(sysRoleMapper).updateById(captor.capture());
-        assertThat(captor.getValue().getRoleCode()).isEqualTo("EDITOR");
+        // 评审 P1：最小更新实体——SET 子句仅 role_name，不回写并发读到的旧编码/状态
+        assertThat(captor.getValue().getId()).isEqualTo(37L);
         assertThat(captor.getValue().getRoleName()).isEqualTo("新名称");
-        assertThat(captor.getValue().getStatus()).isEqualTo(0);
+        assertThat(captor.getValue().getRoleCode()).isNull();
+        assertThat(captor.getValue().getStatus()).isNull();
     }
 
     /** 修改：角色不存在 404，不执行写库。 */
@@ -273,9 +275,11 @@ class RoleAdminServiceImplTests {
 
         ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
         verify(sysRoleMapper).updateById(captor.capture());
+        // 评审 P1：最小更新实体——SET 子句仅 status，不回写并发读到的旧编码/名称
+        assertThat(captor.getValue().getId()).isEqualTo(37L);
         assertThat(captor.getValue().getStatus()).isEqualTo(0);
-        assertThat(captor.getValue().getRoleCode()).isEqualTo("EDITOR");
-        assertThat(captor.getValue().getRoleName()).isEqualTo("编辑");
+        assertThat(captor.getValue().getRoleCode()).isNull();
+        assertThat(captor.getValue().getRoleName()).isNull();
     }
 
     /** 契约：重复设置同一状态幂等返回 200，不重复写库。 */

@@ -2,6 +2,7 @@ package com.xinghe.cms.permission.service.impl;
 
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.permission.entity.SysRole;
 import com.xinghe.cms.permission.mapper.SysRoleMapper;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
@@ -30,6 +31,18 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>修改与启停遵循契约：修改只改 roleName（编码创建后不可改），启停只改
  * status（不删除 user-role / role-permission 历史关联）；重复设置同一状态
  * 幂等返回 200。时间字段由数据库维护（{@code ON UPDATE}），写后重新查询取回。</p>
+ *
+ * <p>并发列隔离（评审 P1）：两个写入口各自构造只含自己负责列的最小更新实体，
+ * 不复用 {@code selectById} 读出的实体整行回写，避免并发场景下把读到的旧值
+ * 写回互相覆盖（改名"复活"已停用角色、启停覆盖并发改名）。</p>
+ *
+ * <p>审计（评审 P1）：三个写操作由 D 的 {@code @AuditLog} 标注在本类的方法上
+ * ——{@link com.xinghe.cms.log.aspect.AuditLogAspect} 要求注解标在事务边界
+ * <b>之内</b>（标在 Controller 上时事务尚未开启，success 日志会在业务提交后
+ * 才写、写入失败也只记错误不回滚业务）。标注在 {@code @Transactional} 方法上
+ * 后，切面在事务内进入，success 日志经 {@code beforeCommit} 与业务一起提交，
+ * 写入失败则业务事务整体回滚；失败审计由切面在回滚后用独立事务补记 FAILURE。
+ * 操作编码取 OpenAPI {@code x-audit-operation}。</p>
  */
 @Service
 public class RoleAdminServiceImpl implements RoleAdminService {
@@ -48,6 +61,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
 
     @Override
     @Transactional
+    @AuditLog(operation = "role.create")
     public RoleView create(RoleCreateRequest request) {
         // 协作约定 8.1：先校验原始长度，再去空白。OpenAPI maxLength 语义为字符数，
         // 按 Unicode 码点统计，避免 String.length() 把增补字符（emoji）按两个代码单元重复计数
@@ -88,6 +102,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
 
     @Override
     @Transactional
+    @AuditLog(operation = "role.update")
     public RoleView update(Long id, RoleUpdateRequest request) {
         // 协作约定 8.1：先校验原始长度，再去空白（码点计数与创建一致）
         if (request.roleName().codePointCount(0, request.roleName().length()) > MAX_ROLE_NAME_LENGTH) {
@@ -103,9 +118,15 @@ public class RoleAdminServiceImpl implements RoleAdminService {
             throw new BusinessException(ResultCode.NOT_FOUND, "角色不存在");
         }
 
-        // 只改 roleName：编码、状态与关联一律不动（契约明文）
-        role.setRoleName(roleName);
-        sysRoleMapper.updateById(role);
+        // 评审 P1：只写本入口负责的列。不复用读出的实体整行回写——那会把并发读到的
+        // 旧 status 一并 UPDATE 回去（改名读到 status=1 后另一请求先停用，改名就把
+        // 停用前的旧状态写回，已停用角色被"复活"、鉴权再次放行其权限）。构造只含
+        // id + roleName 的最小更新实体，MyBatis-Plus updateById 默认跳过 null 字段，
+        // SET 子句仅 role_name，与启停入口互不覆盖。
+        SysRole change = new SysRole();
+        change.setId(role.getId());
+        change.setRoleName(roleName);
+        sysRoleMapper.updateById(change);
 
         // updatedAt 由数据库 ON UPDATE 维护，重新查询取回真实时间
         SysRole saved = sysRoleMapper.selectById(id);
@@ -117,6 +138,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
 
     @Override
     @Transactional
+    @AuditLog(operation = "role.status")
     public void setStatus(Long id, RoleStatusRequest request) {
         Integer status = request.status();
         // OpenAPI Status enum [0,1]；类型已由 StrictIntDeserializer 拦截，此处校验取值
@@ -134,8 +156,12 @@ public class RoleAdminServiceImpl implements RoleAdminService {
             return;
         }
 
-        // 只改 status：不删除 user-role / role-permission 历史关联（契约明文）
-        role.setStatus(status);
-        sysRoleMapper.updateById(role);
+        // 只改 status（契约明文：不删除 user-role / role-permission 历史关联）。
+        // 评审 P1：同理构造只含 id + status 的最小更新实体，SET 子句仅 status，
+        // 不会把并发读到的旧 roleCode/roleName 写回覆盖并发改名结果。
+        SysRole change = new SysRole();
+        change.setId(role.getId());
+        change.setStatus(status);
+        sysRoleMapper.updateById(change);
     }
 }

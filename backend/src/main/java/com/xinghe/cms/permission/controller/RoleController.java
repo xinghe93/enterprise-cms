@@ -5,7 +5,6 @@ import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.PageResult;
-import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
 import com.xinghe.cms.permission.request.RoleStatusRequest;
 import com.xinghe.cms.permission.request.RoleUpdateRequest;
@@ -115,14 +114,15 @@ public class RoleController {
      * 字符上限（码点计数，服务层校验）；未知字段由 Jackson 全局严格模式拦截 400；
      * 重复编码 409。新角色默认启用且未分配权限，返回完整 Role。
      *
-     * <p>审计：按契约由 D 的 {@code @AuditLog} 标记 HTTP 入口，操作编码取
+     * <p>审计：由 D 的 {@code @AuditLog} 标注在事务边界内的服务方法上
+     * （{@code AuditLogAspect} 要求注解不标在 Controller——事务尚未开启会使
+     * success 审计在业务提交后才单独写入，写入失败接口仍 200）；操作编码取
      * OpenAPI {@code x-audit-operation}。</p>
      *
      * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
      */
     @PostMapping
     @RequirePermission("role:create")
-    @AuditLog(operation = "role.create")
     public ApiResponse<RoleView> create(@Valid @RequestBody RoleCreateRequest request,
             HttpServletRequest httpRequest) {
         QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
@@ -134,14 +134,14 @@ public class RoleController {
      * 契约：只改 roleName，不改变编码、状态与关联；不存在 404；返回完整 Role。
      * 请求体未知字段由 Jackson 全局严格模式拦截 400。
      *
-     * <p>审计：按契约由 D 的 {@code @AuditLog} 标记 HTTP 入口，操作编码取
-     * OpenAPI {@code x-audit-operation}。</p>
+     * <p>审计：由 D 的 {@code @AuditLog} 标注在事务边界内的服务方法上，success
+     * 审计随业务事务一起提交（评审 P1）；操作编码取 OpenAPI
+     * {@code x-audit-operation}。</p>
      *
      * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
      */
     @PutMapping("/{id}")
     @RequirePermission("role:update")
-    @AuditLog(operation = "role.update")
     public ApiResponse<RoleView> update(@PathVariable String id,
             @Valid @RequestBody RoleUpdateRequest request,
             HttpServletRequest httpRequest) {
@@ -154,14 +154,14 @@ public class RoleController {
      * 契约：只改状态，不删除 user-role / role-permission 历史关联；重复设置
      * 同一状态幂等返回 200（data=null）；不存在 404。
      *
-     * <p>审计：按契约由 D 的 {@code @AuditLog} 标记 HTTP 入口，操作编码取
-     * OpenAPI {@code x-audit-operation}。</p>
+     * <p>审计：由 D 的 {@code @AuditLog} 标注在事务边界内的服务方法上，success
+     * 审计随业务事务一起提交（评审 P1）；操作编码取 OpenAPI
+     * {@code x-audit-operation}。</p>
      *
      * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
      */
     @PutMapping("/{id}/status")
     @RequirePermission("role:status")
-    @AuditLog(operation = "role.status")
     public ApiResponse<Void> setStatus(@PathVariable String id,
             @Valid @RequestBody RoleStatusRequest request,
             HttpServletRequest httpRequest) {
