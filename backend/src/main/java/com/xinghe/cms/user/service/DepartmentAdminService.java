@@ -40,6 +40,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * {@code findAllForUpdate()} 按 id 升序锁定整棵部门树，防环/父链校验与写入基于同一份
  * 受保护的最新快照。只锁当前节点会让两个根部门互换父节点的并发移动各自通过校验，
  * 提交后形成环使子树从响应中消失；固定加锁顺序同时避免死锁。</p>
+ *
+ * <p><strong>审计</strong>：4 个写动作在事务内经代理调用 {@link DepartmentAuditedActions}，
+ * 使 D 的 {@code @AuditLog} 切面看到已开启的事务，SUCCESS 随业务一起提交、写入失败
+ * 一并回滚（PR #40 审查 P2）；只读的树查询不审计。</p>
  */
 @Service
 public class DepartmentAdminService {
@@ -54,11 +58,13 @@ public class DepartmentAdminService {
 
     private final TransactionTemplate transactions;
     private final DepartmentAdminMapper mapper;
+    private final DepartmentAuditedActions auditedActions;
 
     public DepartmentAdminService(PlatformTransactionManager transactionManager,
-            DepartmentAdminMapper mapper) {
+            DepartmentAdminMapper mapper, DepartmentAuditedActions auditedActions) {
         this.transactions = new TransactionTemplate(transactionManager);
         this.mapper = mapper;
+        this.auditedActions = auditedActions;
     }
 
     /** status 为 null 时返回全部状态；否则返回匹配节点 + 必要祖先（祖先保持真实 status）。 */
@@ -73,109 +79,127 @@ public class DepartmentAdminService {
 
     /** 创建默认启用、children=[]；新父部门及祖先必须启用；deptCode 重复 409。 */
     public DepartmentVO create(DepartmentCreateRequest request) {
-        return transactions.execute(transaction -> {
-            // 父链校验必须基于加锁的当前读，避免并发删除/停用父部门后仍按旧快照写入。
-            // 根节点无父链可校验，不必锁树。
-            if (request.parentId() != null) {
-                requireEnabledChain(mapper.findAllForUpdate(), request.parentId());
-            }
-            try {
-                mapper.insert(request.parentId(), request.deptCode(),
-                        request.deptName(), request.sortOrder());
-            } catch (DuplicateKeyException exception) {
-                // 契约 8.1：唯一键冲突转 409，不能落到兜底 500。
-                throw new BusinessException(ResultCode.CONFLICT, "部门编码已存在");
-            } catch (DataIntegrityViolationException exception) {
-                // 并发删除父部门造成的已知外键引用冲突；不把所有 SQL 异常一概当冲突。
-                throw new BusinessException(ResultCode.CONFLICT, "父部门已变更，请重试");
-            }
-            DepartmentRow created = mapper.findByDeptCode(request.deptCode());
-            if (created == null) {
-                throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "创建结果不可读");
-            }
-            return leaf(created);
-        });
+        return transactions.execute(transaction ->
+                auditedActions.create(() -> doCreate(request)));
+    }
+
+    /** 实际创建动作：在事务内、审计切面内执行。 */
+    private DepartmentVO doCreate(DepartmentCreateRequest request) {
+        // 父链校验必须基于加锁的当前读，避免并发删除/停用父部门后仍按旧快照写入。
+        // 根节点无父链可校验，不必锁树。
+        if (request.parentId() != null) {
+            requireEnabledChain(mapper.findAllForUpdate(), request.parentId());
+        }
+        try {
+            mapper.insert(request.parentId(), request.deptCode(),
+                    request.deptName(), request.sortOrder());
+        } catch (DuplicateKeyException exception) {
+            // 契约 8.1：唯一键冲突转 409，不能落到兜底 500。
+            throw new BusinessException(ResultCode.CONFLICT, "部门编码已存在");
+        } catch (DataIntegrityViolationException exception) {
+            // 并发删除父部门造成的已知外键引用冲突；不把所有 SQL 异常一概当冲突。
+            throw new BusinessException(ResultCode.CONFLICT, "父部门已变更，请重试");
+        }
+        DepartmentRow created = mapper.findByDeptCode(request.deptCode());
+        if (created == null) {
+            throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "创建结果不可读");
+        }
+        return leaf(created);
     }
 
     /** 完整 PUT：不修改 deptCode / status；返回目标节点及实际完整子树（全部状态）。 */
     public DepartmentVO update(long id, DepartmentUpdateRequest request) {
-        return transactions.execute(transaction -> {
-            // 先按 id 升序锁住整棵树，后续的防环/父链校验与 updateNode 都基于同一份受保护快照。
-            // 只锁当前节点会让两个根互换父节点的并发移动各自通过校验，提交后形成环。
-            List<DepartmentRow> all = mapper.findAllForUpdate();
-            DepartmentRow locked = all.stream()
-                    .filter(row -> row.id() == id)
-                    .findFirst()
-                    .orElse(null);
-            if (locked == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
+        return transactions.execute(transaction ->
+                auditedActions.update(() -> doUpdate(id, request)));
+    }
+
+    /** 实际修改动作：在事务内、审计切面内执行。 */
+    private DepartmentVO doUpdate(long id, DepartmentUpdateRequest request) {
+        // 先按 id 升序锁住整棵树，后续的防环/父链校验与 updateNode 都基于同一份受保护快照。
+        // 只锁当前节点会让两个根互换父节点的并发移动各自通过校验，提交后形成环。
+        List<DepartmentRow> all = mapper.findAllForUpdate();
+        DepartmentRow locked = all.stream()
+                .filter(row -> row.id() == id)
+                .findFirst()
+                .orElse(null);
+        if (locked == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
+        }
+        boolean parentChanged = !Objects.equals(request.parentId(), locked.parentId());
+        if (parentChanged && request.parentId() != null) {
+            if (collectSubtree(all, id).contains(request.parentId())) {
+                throw new BusinessException(ResultCode.CONFLICT,
+                        "父部门不能是目标部门自身或其后代");
             }
-            boolean parentChanged = !Objects.equals(request.parentId(), locked.parentId());
-            if (parentChanged && request.parentId() != null) {
-                if (collectSubtree(all, id).contains(request.parentId())) {
-                    throw new BusinessException(ResultCode.CONFLICT,
-                            "父部门不能是目标部门自身或其后代");
-                }
-                requireEnabledChain(all, request.parentId());
-            }
-            try {
-                mapper.updateNode(id, request.parentId(),
-                        request.deptName(), request.sortOrder());
-            } catch (DataIntegrityViolationException exception) {
-                // 校验通过后父部门仍可能被未走本服务的路径删除，外键冲突按契约转 409。
-                throw new BusinessException(ResultCode.CONFLICT, "父部门已变更，请重试");
-            }
-            // 整树已在事务内锁定，当前节点必然存在且写入成功；回读当前读得到真实 updatedAt。
-            List<DepartmentRow> updated = mapper.findAllForUpdate();
-            DepartmentRow after = updated.stream()
-                    .filter(row -> row.id() == id)
-                    .findFirst()
-                    .orElse(null);
-            if (after == null) {
-                throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
-            }
-            List<DepartmentVO> forest = buildForest(updated, collectSubtree(updated, id), id);
-            if (forest.isEmpty()) {
-                throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
-            }
-            // 契约 8.1：不能用空 children 表示「未加载」，必须返回真实完整子树。
-            return forest.get(0);
-        });
+            requireEnabledChain(all, request.parentId());
+        }
+        try {
+            mapper.updateNode(id, request.parentId(),
+                    request.deptName(), request.sortOrder());
+        } catch (DataIntegrityViolationException exception) {
+            // 校验通过后父部门仍可能被未走本服务的路径删除，外键冲突按契约转 409。
+            throw new BusinessException(ResultCode.CONFLICT, "父部门已变更，请重试");
+        }
+        // 整树已在事务内锁定，当前节点必然存在且写入成功；回读当前读得到真实 updatedAt。
+        List<DepartmentRow> updated = mapper.findAllForUpdate();
+        DepartmentRow after = updated.stream()
+                .filter(row -> row.id() == id)
+                .findFirst()
+                .orElse(null);
+        if (after == null) {
+            throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
+        }
+        List<DepartmentVO> forest = buildForest(updated, collectSubtree(updated, id), id);
+        if (forest.isEmpty()) {
+            throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
+        }
+        // 契约 8.1：不能用空 children 表示「未加载」，必须返回真实完整子树。
+        return forest.get(0);
     }
 
     /** 只删除空部门：存在子部门或任何员工引用（含停用员工）返回 409，不级联删除。 */
     public void delete(long id) {
         transactions.execute(transaction -> {
-            if (mapper.findByIdForUpdate(id) == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
-            }
-            if (mapper.countChildren(id) > 0 || mapper.countUsers(id) > 0) {
-                throw new BusinessException(ResultCode.CONFLICT,
-                        "部门存在子部门或员工引用，无法删除");
-            }
-            if (mapper.deleteById(id) != 1) {
-                throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
-            }
+            auditedActions.delete(() -> doDelete(id));
             return null;
         });
+    }
+
+    /** 实际删除动作：在事务内、审计切面内执行。 */
+    private void doDelete(long id) {
+        if (mapper.findByIdForUpdate(id) == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
+        }
+        if (mapper.countChildren(id) > 0 || mapper.countUsers(id) > 0) {
+            throw new BusinessException(ResultCode.CONFLICT,
+                    "部门存在子部门或员工引用，无法删除");
+        }
+        if (mapper.deleteById(id) != 1) {
+            throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
+        }
     }
 
     /** 只改本节点 status，不级联子节点、员工或员工登录态；重复同状态不写库。 */
     public void changeStatus(long id, int status) {
         transactions.execute(transaction -> {
-            DepartmentRow locked = mapper.findByIdForUpdate(id);
-            if (locked == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
-            }
-            if (Objects.equals(locked.status(), status)) {
-                return null;
-            }
-            int rows = mapper.updateStatus(id, status);
-            if (rows == 0 && mapper.findByIdForUpdate(id) == null) {
-                throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
-            }
+            auditedActions.changeStatus(() -> doChangeStatus(id, status));
             return null;
         });
+    }
+
+    /** 实际启停动作：在事务内、审计切面内执行。 */
+    private void doChangeStatus(long id, int status) {
+        DepartmentRow locked = mapper.findByIdForUpdate(id);
+        if (locked == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
+        }
+        if (Objects.equals(locked.status(), status)) {
+            return;
+        }
+        int rows = mapper.updateStatus(id, status);
+        if (rows == 0 && mapper.findByIdForUpdate(id) == null) {
+            throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
+        }
     }
 
     /** 按 status 命中的节点 + 其整条祖先链；祖先 status 原样保留，不做伪装。 */
@@ -213,26 +237,38 @@ public class DepartmentAdminService {
                     .add(row);
         }
         childrenByParent.values().forEach(list -> list.sort(NODE_ORDER));
+        // 根节点同样受 keepIds 约束，避免指定 rootId 时绕过筛选/子树范围。
+        boolean rootAllowed = byId.containsKey(rootId)
+                && (keepIds == null || keepIds.contains(rootId));
         List<DepartmentRow> roots = rootId != null
-                ? (byId.containsKey(rootId) ? List.of(byId.get(rootId)) : List.of())
+                ? (rootAllowed ? List.of(byId.get(rootId)) : List.of())
                 : childrenByParent.getOrDefault(null, List.of());
         return roots.stream().map(row -> toVO(row, childrenByParent, new HashSet<>())).toList();
     }
 
+    /**
+     * 递归组装子树。{@code path} 是<strong>当前祖先路径</strong>（不是全局已访问集合）：
+     * 只在递归进入时加入、退出时移除，因此兄弟节点之间互不干扰，只有祖先链上再次
+     * 出现同一 ID 才是真环（DeepSeek 审查：全局 visited 会把兄弟间的重复引用误判成环）。
+     */
     private DepartmentVO toVO(DepartmentRow row, Map<Long, List<DepartmentRow>> childrenByParent,
-            Set<Long> visited) {
-        if (!visited.add(row.id())) {
+            Set<Long> path) {
+        if (!path.add(row.id())) {
             // 脏数据成环时不能无限递归；按业务冲突处理，不暴露 SQL/栈信息。
             throw new BusinessException(ResultCode.CONFLICT, "部门层级存在环");
         }
-        List<DepartmentVO> children = childrenByParent
-                .getOrDefault(row.id(), List.of()).stream()
-                .map(child -> toVO(child, childrenByParent, visited))
-                .toList();
-        return new DepartmentVO(
-                toId(row.id()), toId(row.parentId()), row.deptCode(), row.deptName(),
-                row.sortOrder(), row.status(), children,
-                toBusinessTime(row.createdAt()), toBusinessTime(row.updatedAt()));
+        try {
+            List<DepartmentVO> children = childrenByParent
+                    .getOrDefault(row.id(), List.of()).stream()
+                    .map(child -> toVO(child, childrenByParent, path))
+                    .toList();
+            return new DepartmentVO(
+                    toId(row.id()), toId(row.parentId()), row.deptCode(), row.deptName(),
+                    row.sortOrder(), row.status(), children,
+                    toBusinessTime(row.createdAt()), toBusinessTime(row.updatedAt()));
+        } finally {
+            path.remove(row.id());
+        }
     }
 
     private DepartmentVO leaf(DepartmentRow row) {

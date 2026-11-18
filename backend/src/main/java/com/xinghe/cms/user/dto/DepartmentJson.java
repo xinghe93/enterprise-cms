@@ -12,9 +12,9 @@ import tools.jackson.databind.JsonNode;
  * <p>与员工侧 {@code AdminJson} 同构但独立存在：两条功能分支都从最新 dev 开出，
  * 互相不能引用对方尚未合入的类，因此这里不复用、也不修改公共配置文件。</p>
  *
- * <p>契约 8.1：类型按 OpenAPI 严格匹配，未知字段 / null / 非法 ID / 非法数字一律 400；
- * 名称与编码先去掉首尾空白（{@link String#strip()} 覆盖 U+3000 全角空格，
- * {@code trim()} 只处理 U+0020 及以下的 ASCII 空白），再按最终值校验长度与非空。</p>
+ * <p>契约《接口与协作约定》第 235 行：类型及<strong>原始长度</strong>先按模型校验，
+ * 再对普通名称/编码去掉首尾空白并验证非空。OpenAPI 的 {@code pattern: "\\S"} 是
+ * 「至少含一个非空白字符」的部分匹配，所以只拒绝纯空白值，不限制内部空白。</p>
  */
 final class DepartmentJson {
 
@@ -44,14 +44,35 @@ final class DepartmentJson {
             return context.reportInputMismatch(target, "字段 %s 必须是 JSON 字符串", field);
         }
         String raw = value.textValue();
-        // strip() 按 Unicode 判定空白，能去掉 U+3000 全角空格；trim() 不能，
-        // 纯全角空格会因此通过非空校验（P2 审查）。先 strip 再按最终值校验长度。
-        String trimmed = raw.strip();
-        if (trimmed.isEmpty() || trimmed.length() > max) {
-            return context.reportInputMismatch(target, "字段 %s 长度必须在 1 到 %d 之间",
+        // 契约：先按原始值校验长度，不能靠裁剪首尾空格把超长值压进上限（P2 审查）。
+        if (raw.length() > max) {
+            return context.reportInputMismatch(target, "字段 %s 原始长度不能超过 %d",
                     field, max);
         }
+        // 统一首尾空白规则：String.strip() 只认 Character.isWhitespace，不认 U+00A0
+        // 不换行空格，纯 NBSP 值会绕过非空校验（P2 审查）；同时认 isSpaceChar 覆盖之。
+        String trimmed = stripEdges(raw);
+        if (trimmed.isEmpty()) {
+            return context.reportInputMismatch(target, "字段 %s 不能为空白", field);
+        }
         return trimmed;
+    }
+
+    /** 去掉首尾 Unicode 空白：isWhitespace 覆盖 U+3000，isSpaceChar 补上 U+00A0 等。 */
+    private static String stripEdges(String raw) {
+        int start = 0;
+        int end = raw.length();
+        while (start < end && isBlank(raw.charAt(start))) {
+            start++;
+        }
+        while (end > start && isBlank(raw.charAt(end - 1))) {
+            end--;
+        }
+        return raw.substring(start, end);
+    }
+
+    private static boolean isBlank(char c) {
+        return Character.isWhitespace(c) || Character.isSpaceChar(c);
     }
 
     /** 可为 null 的 ID 字段；required 控制字段本身是否必须出现。 */

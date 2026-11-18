@@ -48,7 +48,8 @@ class DepartmentAdminServiceTests {
     void setUp() {
         lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
                 .thenReturn(new SimpleTransactionStatus());
-        service = new DepartmentAdminService(transactionManager, mapper);
+        service = new DepartmentAdminService(transactionManager, mapper,
+                new DepartmentAuditedActions());
     }
 
     private DepartmentRow row(long id, Long parentId, int sort, int status) {
@@ -151,7 +152,9 @@ class DepartmentAdminServiceTests {
 
     @Test
     void updateRejectsSelfAndDescendantAsParent() {
-        when(mapper.findAllForUpdate()).thenReturn(tree()).thenReturn(tree());
+        // 每次调用都返回最新快照：连续 thenReturn 的重复行为是 Mockito 细节，
+        // 依赖它会在循环第三次调用时悄悄返回过期/空值（DeepSeek 审查）。
+        when(mapper.findAllForUpdate()).thenAnswer(invocation -> tree());
 
         for (Long parent : List.of(1L, 2L, 4L)) {
             BusinessException exception = assertThrows(BusinessException.class,
@@ -165,7 +168,7 @@ class DepartmentAdminServiceTests {
     @Test
     void updateUsesLockedHierarchySnapshot() {
         // 校验与写入必须基于 findAllForUpdate 的受保护快照，不能退回归普通快照读。
-        when(mapper.findAllForUpdate()).thenReturn(tree()).thenReturn(tree());
+        when(mapper.findAllForUpdate()).thenAnswer(invocation -> tree());
         when(mapper.updateNode(2L, 1L, "研发部门", 5)).thenReturn(1);
 
         service.update(2L, new DepartmentUpdateRequest(1L, "研发部门", 5));
@@ -209,7 +212,7 @@ class DepartmentAdminServiceTests {
 
     @Test
     void updateKeepsUnchangedDisabledParentAndReturnsFullSubtree() {
-        when(mapper.findAllForUpdate()).thenReturn(tree()).thenReturn(tree());
+        when(mapper.findAllForUpdate()).thenAnswer(invocation -> tree());
         when(mapper.updateNode(2L, 1L, "研发部门", 5)).thenReturn(1);
 
         DepartmentVO result = service.update(2L, new DepartmentUpdateRequest(1L, "研发部门", 5));

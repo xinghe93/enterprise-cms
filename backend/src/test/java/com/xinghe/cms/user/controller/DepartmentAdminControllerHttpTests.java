@@ -142,7 +142,13 @@ class DepartmentAdminControllerHttpTests {
                 "{\"deptCode\":\"DEV\",\"deptName\":null}",
                 "{\"deptCode\":\"  \",\"deptName\":\"研发部门\"}",
                 "{\"deptCode\":\"　\",\"deptName\":\"研发部门\"}",
-                "{\"deptCode\":\"DEV\",\"deptName\":\"　\"}",
+                // U+00A0 不换行空格：String.strip() 不认，必须按统一空白规则拒绝纯空白。
+                "{\"deptCode\":\"\u00a0\",\"deptName\":\"研发部门\"}",
+                "{\"deptCode\":\"DEV\",\"deptName\":\"\u00a0\u00a0\"}",
+                "{\"deptCode\":\"\u00a0DEV\u00a0\",\"deptName\":\"\u00a0\u00a0\"}",
+                // 原始长度先校验：裁剪首尾空格后恰好合规的超长原始值仍须 400。
+                "{\"deptCode\":\" " + "D".repeat(64) + " \",\"deptName\":\"研发部门\"}",
+                "{\"deptCode\":\"DEV\",\"deptName\":\" " + "研".repeat(100) + " \"}",
                 "{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\",\"status\":1}",
                 "{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\",\"parentId\":1}",
                 "{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\",\"parentId\":\"01\"}",
@@ -172,6 +178,28 @@ class DepartmentAdminControllerHttpTests {
         verify(departmentService).create(new DepartmentCreateRequest(null, "DEV", "研发部门", 0));
     }
 
+    /** 原始长度恰好到上限合法；首尾 Unicode 空白（含 NBSP/U+3000）按统一规则裁剪。 */
+    @Test
+    void createStripsUnicodeEdgesAndAcceptsExactRawLength() throws Exception {
+        when(departmentService.create(any(DepartmentCreateRequest.class))).thenReturn(node());
+        String maxCode = "D".repeat(64);
+        String maxName = "研".repeat(100);
+
+        perform(post(DEPARTMENTS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deptCode\":\"" + maxCode + "\",\"deptName\":\""
+                                + maxName + "\"}"), DEPARTMENTS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        perform(post(DEPARTMENTS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deptCode\":\"\u00a0DEV\u00a0\",\"deptName\":\"\u3000研发部门\u3000\"}"),
+                DEPARTMENTS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        verify(departmentService).create(new DepartmentCreateRequest(null, maxCode, maxName, 0));
+        verify(departmentService).create(new DepartmentCreateRequest(null, "DEV", "研发部门", 0));
+    }
+
     @Test
     void updateRequiresAllThreeFields() throws Exception {
         String path = DEPARTMENTS + "/5";
@@ -184,7 +212,8 @@ class DepartmentAdminControllerHttpTests {
                 "{\"parentId\":null,\"deptName\":\"研发部门\",\"sortOrder\":0,\"status\":1}",
                 "{\"parentId\":null,\"deptName\":\"研发部门\",\"sortOrder\":null}")) {
             perform(put(path).contentType(MediaType.APPLICATION_JSON).content(body), path)
-                    .andExpect(status().isBadRequest());
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
         }
         when(departmentService.update(anyLong(), any(DepartmentUpdateRequest.class)))
                 .thenReturn(node());
@@ -204,7 +233,8 @@ class DepartmentAdminControllerHttpTests {
                 "{\"status\":1.5}", "{\"status\":2}", "{\"status\":-1}",
                 "{\"status\":0,\"extra\":1}")) {
             perform(put(path).contentType(MediaType.APPLICATION_JSON).content(body), path)
-                    .andExpect(status().isBadRequest());
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
         }
         perform(put(path).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":0}"), path)

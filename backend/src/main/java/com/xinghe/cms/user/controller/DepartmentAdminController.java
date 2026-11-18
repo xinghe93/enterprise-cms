@@ -3,7 +3,6 @@ package com.xinghe.cms.user.controller;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.ResultCode;
-import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.security.annotation.RequirePermission;
 import com.xinghe.cms.user.dto.DepartmentCreateRequest;
 import com.xinghe.cms.user.dto.DepartmentStatusUpdateRequest;
@@ -39,8 +38,10 @@ import org.springframework.web.bind.annotation.RestController;
  * updateDepartment={@code department:update}、deleteDepartment={@code department:delete}、
  * setDepartmentStatus={@code department:status}。</p>
  *
- * <p><strong>审计</strong>：4 个写操作按 OpenAPI {@code x-audit-operation} 标注 D 提供的
- * {@link AuditLog}（department.create / update / delete / status）；部门树只读不审计。</p>
+ * <p><strong>审计</strong>：4 个写操作的审计不标在本类——切面必须在事务开启后进入才能把
+ * SUCCESS 写入业务事务；事务在 Service 的 {@code TransactionTemplate} 内开启，因此
+ * {@code @AuditLog}（department.create / update / delete / status）标在事务内经代理
+ * 调用的 {@code DepartmentAuditedActions} 上（PR #40 审查 P2）。只读的部门树不审计。</p>
  */
 @RestController
 @RequestMapping("/api/admin/departments")
@@ -66,7 +67,6 @@ public class DepartmentAdminController {
     /** 创建部门：默认启用、children=[]；parentId 省略/null 为根。 */
     @PostMapping
     @RequirePermission("department:create")
-    @AuditLog(operation = "department.create")
     public ApiResponse<DepartmentVO> createDepartment(
             @Valid @RequestBody DepartmentCreateRequest request) {
         return ApiResponse.success(departmentService.create(request));
@@ -75,7 +75,6 @@ public class DepartmentAdminController {
     /** 修改部门：完整 PUT，返回目标节点及实际完整子树。 */
     @PutMapping("/{id}")
     @RequirePermission("department:update")
-    @AuditLog(operation = "department.update")
     public ApiResponse<DepartmentVO> updateDepartment(@PathVariable("id") String id,
             @Valid @RequestBody DepartmentUpdateRequest request) {
         return ApiResponse.success(departmentService.update(parseId(id), request));
@@ -84,7 +83,6 @@ public class DepartmentAdminController {
     /** 删除空部门：存在子部门或任何员工引用返回 409。 */
     @DeleteMapping("/{id}")
     @RequirePermission("department:delete")
-    @AuditLog(operation = "department.delete")
     public ApiResponse<Void> deleteDepartment(@PathVariable("id") String id) {
         departmentService.delete(parseId(id));
         return ApiResponse.success();
@@ -93,7 +91,6 @@ public class DepartmentAdminController {
     /** 启停部门：只改本节点，不级联；重复同状态返回 200/data=null。 */
     @PutMapping("/{id}/status")
     @RequirePermission("department:status")
-    @AuditLog(operation = "department.status")
     public ApiResponse<Void> setDepartmentStatus(@PathVariable("id") String id,
             @Valid @RequestBody DepartmentStatusUpdateRequest request) {
         departmentService.changeStatus(parseId(id), request.status());
