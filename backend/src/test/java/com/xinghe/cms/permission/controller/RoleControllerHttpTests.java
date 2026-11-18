@@ -2,6 +2,8 @@ package com.xinghe.cms.permission.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -557,6 +559,29 @@ class RoleControllerHttpTests {
                 .andExpect(jsonPath("$.code").value(400));
 
         verifyNoInteractions(roleAdminService);
+    }
+
+    /**
+     * 评审 P2 回归：roleName 仅含 NBSP（JSON 转义 \u00A0）返回 400。
+     * HTTP 层的服务是 mock，NBSP 的契约空白判定本身由
+     * {@code RoleAdminServiceImplTests.updateNbspOnlyRoleNameReturns400} 覆盖；
+     * 此处验证服务层按契约拒绝（BAD_REQUEST）后经公共异常处理器正确映射为 400，
+     * 且请求体中的 NBSP 原样透传给服务层（不被 MVC 绑定悄悄改动）。
+     */
+    @Test
+    void updateNbspOnlyRoleNameReturns400() throws Exception {
+        doThrow(new BusinessException(ResultCode.BAD_REQUEST, "角色名称不能为空白"))
+                .when(roleAdminService).update(eq(37L), any(RoleUpdateRequest.class));
+
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleName\":\"\\u00A0\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        ArgumentCaptor<RoleUpdateRequest> captor = ArgumentCaptor.forClass(RoleUpdateRequest.class);
+        verify(roleAdminService).update(eq(37L), captor.capture());
+        assertThat(captor.getValue().roleName()).isEqualTo("\u00A0");
     }
 
     // ---------- 启停角色（PUT /api/admin/roles/{id}/status） ----------

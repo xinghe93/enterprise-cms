@@ -263,6 +263,61 @@ class RoleAdminServiceImplTests {
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
     }
 
+    /**
+     * 评审 P2 回归：roleName 仅含 NBSP（U+00A0）——@NotBlank 与 strip() 都放行
+     * （Java 空白判定不认 NBSP），必须按契约 \S 的 ECMAScript 空白判定返回 400。
+     */
+    @Test
+    void updateNbspOnlyRoleNameReturns400() {
+        assertThatThrownBy(() -> service.update(37L, new RoleUpdateRequest("\u00A0")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+
+        verify(sysRoleMapper, never()).selectById(any(Long.class));
+        verify(sysRoleMapper, never()).updateById(any(SysRole.class));
+    }
+
+    /** 评审 P2 回归：混合"不可见空白"（空格 + NBSP + 窄 NBSP + BOM）-only 同样拒绝，不存在绕过组合。 */
+    @Test
+    void updateMixedInvisibleWhitespaceOnlyRoleNameReturns400() {
+        assertThatThrownBy(() -> service.update(37L, new RoleUpdateRequest(" \u00A0\u202F\uFEFF\t")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+
+        verify(sysRoleMapper, never()).updateById(any(SysRole.class));
+    }
+
+    /** 评审 P2 回归：NBSP 不在首尾时（如 "A\u00A0B"）契约 \S 匹配，放行并原样写库。 */
+    @Test
+    void updateEmbeddedNbspIsAcceptedAsNonBlank() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(savedRole(37L, "EDITOR", "旧名称"),
+                savedRole(37L, "EDITOR", "A\u00A0B"));
+
+        service.update(37L, new RoleUpdateRequest("A\u00A0B"));
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getRoleName()).isEqualTo("A\u00A0B");
+    }
+
+    /** 评审 P2 回归：创建入口同样按契约空白判定——roleCode/roleName 仅含 NBSP → 400。 */
+    @Test
+    void createNbspOnlyFieldsReturn400() {
+        assertThatThrownBy(() -> service.create(new RoleCreateRequest("\u00A0", "名称")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+
+        assertThatThrownBy(() -> service.create(new RoleCreateRequest("CODE", "\u00A0")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.BAD_REQUEST);
+
+        verify(sysRoleMapper, never()).insert(any(SysRole.class));
+    }
+
     // ---------- 启停角色（PUT /{id}/status） ----------
 
     /** 启停成功：只改 status，编码与名称不动，不删除关联。 */

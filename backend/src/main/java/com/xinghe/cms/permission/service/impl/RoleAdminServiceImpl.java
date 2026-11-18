@@ -26,7 +26,8 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>字段规范化（协作约定 8.1，与查询接口一致）：先校验原始长度，再去除
  * 首尾空白并检查非空，写库使用规范化后的值——保证唯一性按去空白后的编码
  * 判断（库存量 {@code EDITOR} 时，提交 {@code " EDITOR "} 返回 409 而非
- * 创建出第二条记录）。</p>
+ * 创建出第二条记录）。非空校验采用契约空白判定（见 {@link #isContractBlank}），
+ * 仅含 NBSP 等 Java 空白判定不识别的字符的输入返回 400。</p>
  *
  * <p>修改与启停遵循契约：修改只改 roleName（编码创建后不可改），启停只改
  * status（不删除 user-role / role-permission 历史关联）；重复设置同一状态
@@ -73,10 +74,12 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         }
 
         // 再去除首尾空白并检查非空：写库用规范化后的值，roleCode 唯一性
-        // 按去空白后的编码判断（" EDITOR " 与已有 EDITOR 撞唯一索引 → 409）
+        // 按去空白后的编码判断（" EDITOR " 与已有 EDITOR 撞唯一索引 → 409）。
+        // 空白判定用契约语义（评审 P2）：OpenAPI pattern \S 按 ECMAScript 空白定义，
+        // NBSP（U+00A0）等字符 Java 的 strip() 不认，必须用 isContractBlank 拒绝
         String roleCode = request.roleCode().strip();
         String roleName = request.roleName().strip();
-        if (roleCode.isEmpty() || roleName.isEmpty()) {
+        if (isContractBlank(roleCode) || isContractBlank(roleName)) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色编码与名称不能为空白");
         }
 
@@ -109,7 +112,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色名称最长 100 个字符");
         }
         String roleName = request.roleName().strip();
-        if (roleName.isEmpty()) {
+        if (isContractBlank(roleName)) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色名称不能为空白");
         }
 
@@ -163,5 +166,23 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         change.setId(role.getId());
         change.setStatus(status);
         sysRoleMapper.updateById(change);
+    }
+
+    /**
+     * 契约空白判定（评审 P2）：与 OpenAPI pattern {@code \S} 的 ECMAScript 空白
+     * 语义一致。{@code String.strip()}/{@code Character.isWhitespace} 不把
+     * NBSP（U+00A0）、窄 NBSP（U+202F）、BOM（U+FEFF）当作空白，仅含这类字符
+     * 的名称会"看起来为空"却通过校验写库；{@code Character.isSpaceChar} 补齐
+     * NBSP 家族（Unicode 空格分隔符 Zs），U+FEFF 显式覆盖，与契约判定完全一致。
+     */
+    private static boolean isContractBlank(String value) {
+        for (int i = 0; i < value.length(); ) {
+            char c = value.charAt(i);
+            if (!(Character.isWhitespace(c) || Character.isSpaceChar(c) || c == '\uFEFF')) {
+                return false;
+            }
+            i += Character.charCount(value.codePointAt(i));
+        }
+        return true;
     }
 }
