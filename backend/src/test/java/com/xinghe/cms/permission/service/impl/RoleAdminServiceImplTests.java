@@ -8,6 +8,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.permission.entity.SysRole;
@@ -302,6 +303,41 @@ class RoleAdminServiceImplTests {
         assertThat(captor.getValue().getRoleName()).isEqualTo("A\u00A0B");
     }
 
+    /**
+     * 评审 P2 回归：首尾 NBSP 参与裁剪——{@code "\u00A0编辑\u00A0"} 写库为
+     * "编辑"（裁剪与判空同一套契约规则，协作约定 8.1 "去首尾空白"），
+     * 名称内部的空白（含 NBSP）原样保留。
+     */
+    @Test
+    void updateTrimsContractWhitespaceIncludingNbsp() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(savedRole(37L, "EDITOR", "旧名称"),
+                savedRole(37L, "EDITOR", "编辑"));
+
+        service.update(37L, new RoleUpdateRequest("\u00A0编辑\u00A0"));
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getRoleName()).isEqualTo("编辑");
+    }
+
+    /** 评审 P2 回归：创建同样裁剪首尾 NBSP——{@code "\u00A0CODE\u00A0"} 写库为 CODE。 */
+    @Test
+    void createTrimsContractWhitespaceIncludingNbsp() {
+        doAnswer(invocation -> {
+            SysRole entity = invocation.getArgument(0);
+            entity.setId(81L);
+            return 1;
+        }).when(sysRoleMapper).insert(any(SysRole.class));
+        when(sysRoleMapper.selectById(81L)).thenReturn(savedRole(81L, "CODE", "名称"));
+
+        service.create(new RoleCreateRequest("\u00A0CODE\u00A0", " 名称 "));
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).insert(captor.capture());
+        assertThat(captor.getValue().getRoleCode()).isEqualTo("CODE");
+        assertThat(captor.getValue().getRoleName()).isEqualTo("名称");
+    }
+
     /** 评审 P2 回归：创建入口同样按契约空白判定——roleCode/roleName 仅含 NBSP → 400。 */
     @Test
     void createNbspOnlyFieldsReturn400() {
@@ -320,7 +356,7 @@ class RoleAdminServiceImplTests {
 
     // ---------- 启停角色（PUT /{id}/status） ----------
 
-    /** 启停成功：只改 status，编码与名称不动，不删除关联。 */
+    /** 启停成功：条件更新只写 status，编码与名称不动，不删除关联。 */
     @Test
     void setStatusChangesOnlyStatus() {
         SysRole existing = savedRole(37L, "EDITOR", "编辑");
@@ -329,12 +365,18 @@ class RoleAdminServiceImplTests {
         service.setStatus(37L, new RoleStatusRequest(0));
 
         ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
-        verify(sysRoleMapper).updateById(captor.capture());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<SysRole>> wrapperCaptor =
+                ArgumentCaptor.forClass((Class<Wrapper<SysRole>>) (Class<?>) Wrapper.class);
+        verify(sysRoleMapper).update(captor.capture(), wrapperCaptor.capture());
         // 评审 P1：最小更新实体——SET 子句仅 status，不回写并发读到的旧编码/名称
-        assertThat(captor.getValue().getId()).isEqualTo(37L);
+        assertThat(captor.getValue().getId()).isNull();
         assertThat(captor.getValue().getStatus()).isEqualTo(0);
         assertThat(captor.getValue().getRoleCode()).isNull();
         assertThat(captor.getValue().getRoleName()).isNull();
+        // 评审 P2：条件更新带 status<>?，并发同目标启停请求跳过重复写入
+        String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
+        assertThat(sqlSegment).contains("id =").contains("status <>");
     }
 
     /** 契约：重复设置同一状态幂等返回 200，不重复写库。 */
@@ -345,6 +387,20 @@ class RoleAdminServiceImplTests {
         service.setStatus(37L, new RoleStatusRequest(1));
 
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
+        verify(sysRoleMapper, never()).update(any(SysRole.class), any(Wrapper.class));
+    }
+
+    /**
+     * 评审 P2：并发同目标启停——另一请求已把状态改到目标值，条件更新
+     * {@code WHERE status<>?} 影响 0 行，服务按幂等返回 200 不报错。
+     */
+    @Test
+    void setStatusConditionalUpdateWithZeroAffectedRowsStillReturns200() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(savedRole(37L, "EDITOR", "编辑"));
+
+        service.setStatus(37L, new RoleStatusRequest(0));
+
+        verify(sysRoleMapper).update(any(SysRole.class), any(Wrapper.class));
     }
 
     /** 启停：角色不存在 404。 */
@@ -358,6 +414,7 @@ class RoleAdminServiceImplTests {
                 .isEqualTo(ResultCode.NOT_FOUND);
 
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
+        verify(sysRoleMapper, never()).update(any(SysRole.class), any(Wrapper.class));
     }
 
     /** 启停：status 非 0/1（如 2）返回 400，不进入查询。 */

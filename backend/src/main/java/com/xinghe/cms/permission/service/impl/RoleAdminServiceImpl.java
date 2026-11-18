@@ -1,5 +1,6 @@
 package com.xinghe.cms.permission.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.annotation.AuditLog;
@@ -26,8 +27,9 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>字段规范化（协作约定 8.1，与查询接口一致）：先校验原始长度，再去除
  * 首尾空白并检查非空，写库使用规范化后的值——保证唯一性按去空白后的编码
  * 判断（库存量 {@code EDITOR} 时，提交 {@code " EDITOR "} 返回 409 而非
- * 创建出第二条记录）。非空校验采用契约空白判定（见 {@link #isContractBlank}），
- * 仅含 NBSP 等 Java 空白判定不识别的字符的输入返回 400。</p>
+ * 创建出第二条记录）。去首尾空白与非空校验采用同一套契约空白规则
+ * （见 {@link #stripContractWhitespace}）：仅含 NBSP 等字符的输入裁剪后为
+ * 空串返回 400，名称内部空格保留。</p>
  *
  * <p>修改与启停遵循契约：修改只改 roleName（编码创建后不可改），启停只改
  * status（不删除 user-role / role-permission 历史关联）；重复设置同一状态
@@ -35,7 +37,9 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>并发列隔离（评审 P1）：两个写入口各自构造只含自己负责列的最小更新实体，
  * 不复用 {@code selectById} 读出的实体整行回写，避免并发场景下把读到的旧值
- * 写回互相覆盖（改名"复活"已停用角色、启停覆盖并发改名）。</p>
+ * 写回互相覆盖（改名"复活"已停用角色、启停覆盖并发改名）。启停进一步用
+ * 条件更新 {@code WHERE status<>?}（评审 P2）：并发同目标启停请求中后到者
+ * 条件不匹配、影响行数为 0，跳过重复写入仍按幂等返回 200。</p>
  *
  * <p>审计（评审 P1）：三个写操作由 D 的 {@code @AuditLog} 标注在本类的方法上
  * ——{@link com.xinghe.cms.log.aspect.AuditLogAspect} 要求注解标在事务边界
@@ -75,11 +79,14 @@ public class RoleAdminServiceImpl implements RoleAdminService {
 
         // 再去除首尾空白并检查非空：写库用规范化后的值，roleCode 唯一性
         // 按去空白后的编码判断（" EDITOR " 与已有 EDITOR 撞唯一索引 → 409）。
-        // 空白判定用契约语义（评审 P2）：OpenAPI pattern \S 按 ECMAScript 空白定义，
-        // NBSP（U+00A0）等字符 Java 的 strip() 不认，必须用 isContractBlank 拒绝
-        String roleCode = request.roleCode().strip();
-        String roleName = request.roleName().strip();
-        if (isContractBlank(roleCode) || isContractBlank(roleName)) {
+        // 裁剪与判空使用同一套契约空白规则（评审 P2）：OpenAPI pattern \S 按
+        // ECMAScript 空白定义，NBSP（U+00A0）等字符 Java 的 strip() 不认，
+        // "只裁普通空白、判空用契约规则"会让 "\u00A0编辑\u00A0" 带着首尾 NBSP
+        // 落库——必须用 stripContractWhitespace 裁剪（协作约定 8.1 的
+        // "去首尾空白"），仅含这类字符的输入裁剪后为空串 → 400
+        String roleCode = stripContractWhitespace(request.roleCode());
+        String roleName = stripContractWhitespace(request.roleName());
+        if (roleCode.isEmpty() || roleName.isEmpty()) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色编码与名称不能为空白");
         }
 
@@ -111,8 +118,8 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         if (request.roleName().codePointCount(0, request.roleName().length()) > MAX_ROLE_NAME_LENGTH) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色名称最长 100 个字符");
         }
-        String roleName = request.roleName().strip();
-        if (isContractBlank(roleName)) {
+        String roleName = stripContractWhitespace(request.roleName());
+        if (roleName.isEmpty()) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色名称不能为空白");
         }
 
@@ -160,29 +167,42 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         }
 
         // 只改 status（契约明文：不删除 user-role / role-permission 历史关联）。
-        // 评审 P1：同理构造只含 id + status 的最小更新实体，SET 子句仅 status，
-        // 不会把并发读到的旧 roleCode/roleName 写回覆盖并发改名结果。
+        // 评审 P1：实体只含 status，SET 子句仅本入口负责的列，不回写并发读到的
+        // 旧 roleCode/roleName。
+        // 评审 P2：条件更新 UPDATE ... WHERE id=? AND status<>? —— 并发的同目标
+        // 启停请求（两个都先读到 status=1，第一个已提交 status=0）中，后到者不再
+        // 执行无条件重复写入：WHERE 条件不匹配影响行数为 0，按幂等返回 200
+        // （契约"重复同状态 200"）；角色不存在仍由前面的 selectById 判 404。
+        // 本迭代无删除角色入口，select 与 update 之间行消失的窗口不存在。
         SysRole change = new SysRole();
-        change.setId(role.getId());
         change.setStatus(status);
-        sysRoleMapper.updateById(change);
+        sysRoleMapper.update(change,
+                new UpdateWrapper<SysRole>().eq("id", role.getId()).ne("status", status));
     }
 
     /**
      * 契约空白判定（评审 P2）：与 OpenAPI pattern {@code \S} 的 ECMAScript 空白
      * 语义一致。{@code String.strip()}/{@code Character.isWhitespace} 不把
-     * NBSP（U+00A0）、窄 NBSP（U+202F）、BOM（U+FEFF）当作空白，仅含这类字符
-     * 的名称会"看起来为空"却通过校验写库；{@code Character.isSpaceChar} 补齐
-     * NBSP 家族（Unicode 空格分隔符 Zs），U+FEFF 显式覆盖，与契约判定完全一致。
+     * NBSP（U+00A0）、窄 NBSP（U+202F）、BOM（U+FEFF）当作空白；裁剪与判空
+     * 必须用同一套规则，否则 {@code "\u00A0编辑\u00A0"} 会带着首尾 NBSP 落库。
+     * {@code Character.isSpaceChar} 补齐 NBSP 家族（Unicode 空格分隔符 Zs），
+     * U+FEFF 显式覆盖。名称内部的空白不在首尾，原样保留。
      */
-    private static boolean isContractBlank(String value) {
-        for (int i = 0; i < value.length(); ) {
-            char c = value.charAt(i);
-            if (!(Character.isWhitespace(c) || Character.isSpaceChar(c) || c == '\uFEFF')) {
-                return false;
-            }
-            i += Character.charCount(value.codePointAt(i));
+    private static boolean isContractWhitespace(int codePoint) {
+        return Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)
+                || codePoint == '\uFEFF';
+    }
+
+    /** 去除首尾的契约空白（见 {@link #isContractWhitespace}），内部空白原样保留。 */
+    private static String stripContractWhitespace(String value) {
+        int start = 0;
+        int end = value.length();
+        while (start < end && isContractWhitespace(value.codePointAt(start))) {
+            start += Character.charCount(value.codePointAt(start));
         }
-        return true;
+        while (end > start && isContractWhitespace(value.codePointBefore(end))) {
+            end -= Character.charCount(value.codePointBefore(end));
+        }
+        return value.substring(start, end);
     }
 }
