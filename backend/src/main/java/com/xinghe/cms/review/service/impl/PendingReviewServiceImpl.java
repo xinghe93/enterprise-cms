@@ -1,0 +1,144 @@
+package com.xinghe.cms.review.service.impl;
+
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.xinghe.cms.common.contract.CurrentUser;
+import com.xinghe.cms.common.contract.TagView;
+import com.xinghe.cms.common.enums.ArticleStatus;
+import com.xinghe.cms.common.exception.BusinessException;
+import com.xinghe.cms.common.request.Ids;
+import com.xinghe.cms.common.response.PageResult;
+import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.content.service.CategoryService;
+import com.xinghe.cms.review.dto.PendingReviewQuery;
+import com.xinghe.cms.review.mapper.PendingReviewMapper;
+import com.xinghe.cms.review.mapper.PendingReviewRow;
+import com.xinghe.cms.review.service.ArticleTagService;
+import com.xinghe.cms.review.service.PendingReviewService;
+import com.xinghe.cms.review.vo.ArticleSummaryVO;
+import com.xinghe.cms.review.vo.ArticleTagVO;
+import com.xinghe.cms.security.CurrentUserProvider;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * 待审文章分页查询实现。
+ *
+ * <p>读取范围：契约规定的待审列表本身就是"审核能力"数据，因此不额外扩大范围；
+ * 审核人身份只取自 A 的安全入口 {@link CurrentUserProvider}，并用于排除自己的文章
+ * （禁止自审）。分类筛选先经 C 的 {@link CategoryService#descendantIds(Long)}
+ * 展开为"分类 + 全部后代"，引用不存在的分类时直接返回空分页。</p>
+ *
+ * <p>参数校验顺序：先校验关键词长度与作者 ID 格式，再解析分类。这样同一份非法请求
+ * 无论分类是否存在都会稳定返回 400（避免"分类不存在 → 空分页 200"吞掉参数错误）。</p>
+ */
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
+public class PendingReviewServiceImpl implements PendingReviewService {
+
+    private static final int MAX_KEYWORD_CODE_POINTS = 255;
+
+    private final CurrentUserProvider currentUserProvider;
+    private final CategoryService categoryService;
+    private final ArticleTagService articleTagService;
+    private final PendingReviewMapper pendingReviewMapper;
+
+    @Override
+    public PageResult<ArticleSummaryVO> pending(PendingReviewQuery query) {
+        CurrentUser currentUser = currentUserProvider.requireCurrentUser();
+        Page<PendingReviewRow> page = query.toPage();
+
+        // 先校验与分类无关的标量参数（关键词长度、作者 ID 格式）：非法请求必须
+        // 始终返回 400，不能因为 categoryId 指向不存在的分类而提前返回空分页。
+        String keyword = normalizeKeyword(query.getKeyword());
+        Long authorId = resolveOptionalId(query.getAuthorId());
+
+        Set<Long> categoryIds = resolveCategoryIds(query.getCategoryId());
+        if (categoryIds != null && categoryIds.isEmpty()) {
+            // 分类不存在或没有后代：契约要求空分页，不查库。
+            return new PageResult<>(List.of(), 0, page.getCurrent(), page.getSize());
+        }
+
+        Page<PendingReviewRow> result = pendingReviewMapper.selectPendingPage(
+                page, currentUser.userId(), categoryIds, authorId, keyword);
+
+        List<Long> articleIds = result.getRecords().stream().map(PendingReviewRow::id).toList();
+        Map<Long, List<TagView>> tagViews = articleTagService.findByArticleIds(articleIds);
+        List<ArticleSummaryVO> records = result.getRecords().stream()
+                .map(row -> toVO(row, tagViews.getOrDefault(row.id(), List.of())))
+                .toList();
+        return new PageResult<>(records, result.getTotal(), result.getCurrent(), result.getSize());
+    }
+
+    private Set<Long> resolveCategoryIds(String rawCategoryId) {
+        if (rawCategoryId == null || rawCategoryId.isBlank()) {
+            return null;
+        }
+        return categoryService.descendantIds(Ids.parse(rawCategoryId));
+    }
+
+    private static Long resolveOptionalId(String rawId) {
+        if (rawId == null || rawId.isBlank()) {
+            return null;
+        }
+        return Ids.parse(rawId);
+    }
+
+    /**
+     * 长度规则以 OpenAPI 的 {@code maxLength: 255} 为准：先按<b>原始值</b>的 code point 数校验，
+     * 超过 255 一律 400（不能先 strip 再校验，否则"原始超长、去空白后未超长"的请求会被放行）；
+     * 校验通过后再去首尾空白，空白串表示不筛选；
+     * 转义符为 '!'（{@code ! → !!}、{@code % → !%}、{@code _ → !_}），两侧加 % 做包含匹配。
+     */
+    private static String normalizeKeyword(String keyword) {
+        if (keyword == null) {
+            return null;
+        }
+        if (keyword.codePointCount(0, keyword.length()) > MAX_KEYWORD_CODE_POINTS) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "关键词长度不能超过 255");
+        }
+        String trimmed = keyword.strip();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        String escaped = trimmed.replace("!", "!!").replace("%", "!%").replace("_", "!_");
+        return "%" + escaped + "%";
+    }
+
+    private static ArticleSummaryVO toVO(PendingReviewRow row, List<TagView> tags) {
+        ArticleSummaryVO view = new ArticleSummaryVO();
+        view.setId(row.id());
+        view.setTitle(row.title());
+        view.setSummary(row.summary());
+        view.setCategoryId(row.categoryId());
+        view.setCategoryName(row.categoryName());
+        view.setAuthorId(row.authorId());
+        view.setAuthorName(row.authorName());
+        view.setStatus(ArticleStatus.valueOf(row.status()));
+        view.setVisibility(row.visibility());
+        view.setVersion(row.version());
+        view.setPublishedAt(row.publishedAt());
+        view.setCreatedAt(row.createdAt());
+        view.setUpdatedAt(row.updatedAt());
+        view.setTags(tags.stream()
+                .sorted(Comparator.comparing(TagView::id))
+                .map(PendingReviewServiceImpl::toTagVO)
+                .toList());
+        return view;
+    }
+
+    private static ArticleTagVO toTagVO(TagView tag) {
+        ArticleTagVO view = new ArticleTagVO();
+        view.setId(tag.id());
+        view.setTagName(tag.tagName());
+        view.setStatus(tag.status());
+        view.setCreatedAt(tag.createdAt());
+        view.setUpdatedAt(tag.updatedAt());
+        return view;
+    }
+}
