@@ -45,6 +45,7 @@ class AuthSessionServiceTests {
 
     private static final String EPOCH_KEY = "cms:auth:generation:7";
     private static final String SESSION_KEY = "cms:auth:session:t";
+    private static final String REVOKED_VERSION_KEY = "cms:auth:revoked-version:7";
 
     @Mock
     private StringRedisTemplate redis;
@@ -73,6 +74,12 @@ class AuthSessionServiceTests {
 
     /** REVOKE_IF_EPOCH 有 3 个可变参数。 */
     private void stubRevokeIfEpoch(Long result) {
+        doReturn(result).when(redis).execute(any(RedisScript.class), anyList(),
+                any(), any(), any());
+    }
+
+    /** REVOKE_UP_TO_VERSION 有 3 个可变参数（版本、候选纪元、TTL）。 */
+    private void stubRevokeUpToVersion(Long result) {
         doReturn(result).when(redis).execute(any(RedisScript.class), anyList(),
                 any(), any(), any());
     }
@@ -267,6 +274,29 @@ class AuthSessionServiceTests {
         stubRevokeIfEpoch(0L);
 
         assertFalse(sessions.revokeAllForUserIfEpoch(7L, "stale-epoch"));
+    }
+
+    /** 版本撤销把目标版本交给 Lua，由脚本判断是否轮换；不额外做第二次往返。 */
+    @Test
+    void revokeAllForUserUpToVersionPassesVersionToScript() {
+        stubRevokeUpToVersion(1L);
+
+        assertTrue(sessions.revokeAllForUserUpToVersion(7L, 1760000000000L));
+
+        ArgumentCaptor<String> replacement = ArgumentCaptor.forClass(String.class);
+        verify(redis).execute(any(RedisScript.class), eq(List.of(EPOCH_KEY, REVOKED_VERSION_KEY)),
+                eq("1760000000000"), replacement.capture(), eq("2592000"));
+        assertEquals(22, replacement.getValue().length(), "16 字节 base64url 随机纪元");
+        assertTrue(replacement.getValue().chars().noneMatch(Character::isWhitespace));
+        // 原子性：纪元轮换与版本记录都在 Lua 内完成，不能再有第二次 set 往返。
+        verify(values, never()).set(eq(EPOCH_KEY), anyString(), any(Duration.class));
+    }
+
+    @Test
+    void revokeAllForUserUpToVersionReportsSkippedRotation() {
+        stubRevokeUpToVersion(0L);
+
+        assertFalse(sessions.revokeAllForUserUpToVersion(7L, 100L));
     }
 
     @Test

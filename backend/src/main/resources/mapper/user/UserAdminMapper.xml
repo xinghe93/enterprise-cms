@@ -3,13 +3,28 @@
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.xinghe.cms.user.mapper.UserAdminMapper">
 
-    <!-- 必须在 UserStatusService 的写事务内调用：行锁保证「读状态 → 写状态」不被并发穿插。
+    <resultMap id="statusSnapshotMap" type="com.xinghe.cms.user.mapper.row.UserStatusSnapshot">
+        <constructor>
+            <arg column="status" javaType="java.lang.Integer"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
+
+    <!-- 必须在 UserStatusService 的写事务内调用：只锁 sys_user 员工行（不加任何 JOIN），
+         保证「读状态 → 写状态」不被并发穿插，且不会连带锁住部门行造成调岗死锁。
          登录链路的普通快照读不请求锁，因此不会阻塞登录。 -->
-    <select id="findStatusForUpdate" resultType="java.lang.Integer">
-        SELECT status
+    <select id="findStatusForUpdate" resultMap="statusSnapshotMap">
+        SELECT status, updated_at
         FROM sys_user
         WHERE id = #{userId}
         FOR UPDATE
+    </select>
+
+    <!-- 更新状态后在同一事务内回读版本；此时行锁仍持有，读到的 updated_at 即本次变更版本。 -->
+    <select id="findStatusVersion" resultMap="statusSnapshotMap">
+        SELECT status, updated_at
+        FROM sys_user
+        WHERE id = #{userId}
     </select>
 
     <!-- updated_at 由 001_init.sql 的 ON UPDATE CURRENT_TIMESTAMP(3) 自动维护，
@@ -19,6 +34,21 @@
         SET status = #{status}
         WHERE id = #{userId}
     </update>
+
+    <!-- 只锁员工行的资料映射：dept_name 不参与本查询（调用方只用 departmentId），
+         避免 LEFT JOIN sys_department 在 FOR UPDATE 下连带锁住部门行。 -->
+    <resultMap id="profileForUpdateMap" type="com.xinghe.cms.user.mapper.row.UserProfileRow">
+        <constructor>
+            <idArg column="id" javaType="java.lang.Long"/>
+            <arg column="username" javaType="java.lang.String"/>
+            <arg column="real_name" javaType="java.lang.String"/>
+            <arg column="department_id" javaType="java.lang.Long"/>
+            <arg column="dept_name" javaType="java.lang.String"/>
+            <arg column="status" javaType="java.lang.Integer"/>
+            <arg column="created_at" javaType="java.time.LocalDateTime"/>
+            <arg column="updated_at" javaType="java.time.LocalDateTime"/>
+        </constructor>
+    </resultMap>
 
     <resultMap id="profileMap" type="com.xinghe.cms.user.mapper.row.UserProfileRow">
         <constructor>
@@ -74,10 +104,13 @@
         </if>
     </sql>
 
-    <select id="findProfileForUpdate" resultMap="profileMap">
-        SELECT <include refid="profileColumns"/>
+    <!-- P2 审查：无 JOIN，FOR UPDATE 只锁 sys_user 员工行。dept_name 用 NULL 占位，
+         因为调用方 updateUser 只用 departmentId 做「原部门不变」比较，不需要部门名。 -->
+    <select id="findProfileForUpdate" resultMap="profileForUpdateMap">
+        SELECT u.id, u.username, u.real_name, u.department_id,
+               CAST(NULL AS CHAR) AS dept_name,
+               u.status, u.created_at, u.updated_at
         FROM sys_user u
-        LEFT JOIN sys_department d ON d.id = u.department_id
         WHERE u.id = #{userId}
         FOR UPDATE
     </select>

@@ -2,6 +2,7 @@ package com.xinghe.cms.user.mapper;
 
 import com.xinghe.cms.user.mapper.row.UserProfileRow;
 import com.xinghe.cms.user.mapper.row.UserRoleRow;
+import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -17,12 +18,16 @@ import org.apache.ibatis.annotations.Param;
 public interface UserAdminMapper {
 
     /**
-     * 事务内加行锁读取当前状态，避免两个并发启停请求各自基于旧快照写库。
+     * 事务内只锁 sys_user 行读取当前状态与 updated_at，避免两个并发启停请求各自基于旧快照写库，
+     * 也避免 JOIN 部门表连带锁住部门行造成调岗死锁（见 P2 审查意见）。
      * 登录链路的 {@code UserAuthMapper#findStatusById} 是普通快照读，不受此锁影响。
      *
-     * @return 0/1；用户不存在返回 {@code null}
+     * @return 状态与版本快照；用户不存在返回 {@code null}
      */
-    Integer findStatusForUpdate(@Param("userId") Long userId);
+    UserStatusSnapshot findStatusForUpdate(@Param("userId") Long userId);
+
+    /** 更新状态后在同一事务内回读 updated_at，作为本次状态变更的版本号。 */
+    UserStatusSnapshot findStatusVersion(@Param("userId") Long userId);
 
     /** 只改状态与数据库自动维护的 updated_at，返回受影响行数。 */
     int updateStatus(@Param("userId") Long userId, @Param("status") int status);

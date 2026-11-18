@@ -23,6 +23,7 @@ import com.xinghe.cms.user.dto.UserUpdateRequest;
 import com.xinghe.cms.user.mapper.UserAdminMapper;
 import com.xinghe.cms.user.mapper.row.UserProfileRow;
 import com.xinghe.cms.user.mapper.row.UserRoleRow;
+import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
 import com.xinghe.cms.user.vo.UserPageVO;
 import com.xinghe.cms.user.vo.UserVO;
 import java.time.LocalDateTime;
@@ -49,6 +50,8 @@ class UserAdminServiceTests {
 
     private static final long USER_ID = 7L;
     private static final LocalDateTime TIME = LocalDateTime.of(2026, 11, 2, 16, 0, 0);
+    /** replaceRoles 只用 findStatusForUpdate 判存在，版本字段不参与断言。 */
+    private static final UserStatusSnapshot ACTIVE = new UserStatusSnapshot(1, TIME);
 
     @Mock
     private PlatformTransactionManager transactionManager;
@@ -166,7 +169,7 @@ class UserAdminServiceTests {
 
     @Test
     void replaceRolesValidatesThenReplacesInOneTransaction() {
-        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(1);
+        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(ACTIVE);
         when(roleDirectory.lockAssignableRoles(List.of(2L, 3L))).thenReturn(List.of(
                 new RoleRef(2L, "EDITOR", "内容编辑"), new RoleRef(3L, "REVIEWER", "审核员")));
         when(mapper.findRoleIdsByUserId(USER_ID)).thenReturn(List.of(1L));
@@ -181,7 +184,7 @@ class UserAdminServiceTests {
 
     @Test
     void replaceRolesSameSetStillValidatesButDoesNotRewrite() {
-        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(1);
+        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(ACTIVE);
         when(roleDirectory.lockAssignableRoles(List.of(2L)))
                 .thenReturn(List.of(new RoleRef(2L, "EDITOR", "内容编辑")));
         when(mapper.findRoleIdsByUserId(USER_ID)).thenReturn(List.of(2L));
@@ -195,7 +198,7 @@ class UserAdminServiceTests {
 
     @Test
     void replaceRolesDisabledRoleRollsBackWithoutWrites() {
-        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(1);
+        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(ACTIVE);
         when(roleDirectory.lockAssignableRoles(List.of(2L)))
                 .thenThrow(new BusinessException(ResultCode.CONFLICT, "角色已停用"));
 

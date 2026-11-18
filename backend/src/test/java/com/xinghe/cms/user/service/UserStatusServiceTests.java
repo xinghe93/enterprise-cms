@@ -18,6 +18,9 @@ import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.user.mapper.UserAdminMapper;
+import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,13 +35,17 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
  * 启停接口的事务/会话顺序回归。
  *
  * <p>用真实 {@code TransactionTemplate} + 打桩的 {@link PlatformTransactionManager}，
- * 确定性验证契约 3.1 与 78 行：数据库提交之后才撤销会话；回滚不触碰 Redis；
- * 依赖故障必须向上抛出，不能伪装成成功。</p>
+ * 确定性验证：数据库提交之后才按版本撤销会话；回滚不触碰 Redis；
+ * 撤销失败向上抛出；重复状态与过期撤销由带版本方法幂等跳过，
+ * 使失败后可重试且延迟撤销不误伤新会话。</p>
  */
 @ExtendWith(MockitoExtension.class)
 class UserStatusServiceTests {
 
     private static final long USER_ID = 7L;
+    private static final LocalDateTime T0 = LocalDateTime.of(2026, 11, 16, 10, 0, 0);
+    private static final LocalDateTime T1 = T0.plusMinutes(1);
+    private static final long V1 = T1.toInstant(ZoneOffset.UTC).toEpochMilli();
 
     @Mock
     private PlatformTransactionManager transactionManager;
@@ -59,9 +66,10 @@ class UserStatusServiceTests {
     }
 
     @Test
-    void disableCommitsDatabaseBeforeRevokingSessions() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(1);
+    void disableCommitsDatabaseBeforeRevokingSessionsByVersion() {
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, T0));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(1);
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, T1));
         // 提交这一刻会话还没被撤销，确定性排除「先刷 Redis 再提交」。
         doAnswer(invocation -> {
             verifyNoInteractions(sessions);
@@ -74,31 +82,37 @@ class UserStatusServiceTests {
         order.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
         order.verify(userMapper).findStatusForUpdate(USER_ID);
         order.verify(userMapper).updateStatus(USER_ID, 0);
+        order.verify(userMapper).findStatusVersion(USER_ID);
         order.verify(transactionManager).commit(txStatus);
-        order.verify(sessions).revokeAllForUser(USER_ID);
+        order.verify(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
     }
 
     @Test
     void enableAlsoRotatesEpochSoOldTokensNeverComeBack() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(0);
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(0, T0));
         when(userMapper.updateStatus(USER_ID, 1)).thenReturn(1);
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(1, T1));
 
         service.changeStatus(USER_ID, 1);
 
         InOrder order = inOrder(transactionManager, sessions);
         order.verify(transactionManager).commit(txStatus);
-        order.verify(sessions).revokeAllForUser(USER_ID);
+        order.verify(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
     }
 
-    /** 契约 249：重复设置同一状态返回 200，不写库、不插关联，也不能踢掉管理员自己的会话。 */
+    /**
+     * 重复状态仍调用带版本撤销（由 Lua 按版本幂等跳过），不写库。
+     * 这样若此前撤销失败、记录版本没抬高，重试可补偿撤销，不再被「状态相同」短路。
+     */
     @Test
-    void sameStatusIsNoOpButTransactionStillCommits() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(0);
+    void sameStatusRetriesRevokeByCurrentVersionWithoutWriting() {
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(0, T1));
 
         service.changeStatus(USER_ID, 0);
 
         verify(userMapper, never()).updateStatus(anyLong(), anyInt());
-        verifyNoInteractions(sessions);
+        verify(userMapper, never()).findStatusVersion(anyLong());
+        verify(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
         verify(transactionManager).commit(txStatus);
     }
 
@@ -118,7 +132,7 @@ class UserStatusServiceTests {
     /** 条件更新影响 0 行不能静默按成功返回（契约 280）。 */
     @Test
     void zeroAffectedRowsReturns409AndDoesNotRevoke() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(1);
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, T0));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(0);
 
         BusinessException exception = assertThrows(BusinessException.class,
@@ -141,14 +155,16 @@ class UserStatusServiceTests {
     }
 
     /**
-     * 撤销失败时事务已提交、异常必须向上抛成 500，不能被 afterCommit 静默吞掉。
-     * 过滤器的条件撤销是此场景的兜底，但接口绝不能返回 200 伪装成功。
+     * 撤销失败时事务已提交、异常必须向上抛成 500，且版本记录未被抬高（由带版本方法保证），
+     * 因此重试能补偿，不会被契约的「相同状态返回 200」短路。
      */
     @Test
     void revokeFailurePropagatesInsteadOfFakingSuccess() {
-        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(1);
+        when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, T0));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(1);
-        doThrow(new IllegalStateException("Redis 不可用")).when(sessions).revokeAllForUser(USER_ID);
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, T1));
+        doThrow(new IllegalStateException("Redis 不可用"))
+                .when(sessions).revokeAllForUserUpToVersion(USER_ID, V1);
 
         assertThrows(IllegalStateException.class, () -> service.changeStatus(USER_ID, 0));
 

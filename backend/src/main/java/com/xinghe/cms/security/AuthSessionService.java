@@ -50,6 +50,11 @@ public class AuthSessionService {
     private static final String SESSION_PREFIX = "cms:auth:session:";
     /** 沿用已有键名；值是一次性随机串，不做自增。 */
     private static final String EPOCH_PREFIX = "cms:auth:generation:";
+    /**
+     * 记录「已为哪个状态版本执行过全量撤销」，值来自 DB 的 updated_at 毫秒。
+     * 用于让账号状态变更后的撤销幂等、可重试：只有当传入版本高于已记录版本时才轮换纪元。
+     */
+    private static final String REVOKED_VERSION_PREFIX = "cms:auth:revoked-version:";
     private static final Duration EPOCH_TTL = Duration.ofDays(30);
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Base64.Encoder ENCODER = Base64.getUrlEncoder().withoutPadding();
@@ -94,6 +99,21 @@ public class AuthSessionService {
                     + "if not current or current == '' then return 0 end\n"
                     + "if current ~= ARGV[1] then return 0 end\n"
                     + "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])\n"
+                    + "return 1", Long.class);
+
+    /**
+     * 按状态版本幂等撤销：KEYS[1] 纪元键、KEYS[2] 已撤销版本键；
+     * ARGV 依次为目标版本、候选新纪元、TTL 秒。
+     * 只有目标版本高于已记录版本时才轮换纪元并抬高记录，否则返回 0 不做任何写操作。
+     * 一段 Lua 内完成比较与写入，保证「比较版本 → 轮换 → 记录」不可被打断：
+     * 撤销失败（事务提交后 Redis 抛异常）时版本记录不会被抬高，重试可补偿；
+     * 版本更低的过期撤销到来时因不高于记录值而被忽略，不会误伤重新登录的新会话。
+     */
+    private static final DefaultRedisScript<Long> REVOKE_UP_TO_VERSION = new DefaultRedisScript<>(
+            "local recorded = redis.call('GET', KEYS[2])\n"
+                    + "if recorded and tonumber(recorded) >= tonumber(ARGV[1]) then return 0 end\n"
+                    + "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])\n"
+                    + "redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[3])\n"
                     + "return 1", Long.class);
 
     private final StringRedisTemplate redis;
@@ -205,6 +225,28 @@ public class AuthSessionService {
     public boolean revokeAllForUserIfEpoch(Long userId, String observedEpoch) {
         Long result = redis.execute(REVOKE_IF_EPOCH, List.of(EPOCH_PREFIX + userId),
                 observedEpoch, newEpoch(), Long.toString(EPOCH_TTL.getSeconds()));
+        return result != null && result == 1L;
+    }
+
+    /**
+     * 按状态版本全量撤销（账号启停专用，可重试、幂等、抗过期）。
+     *
+     * <p>{@code version} 取自数据库事务内读到的 {@code updated_at} 毫秒，随每次状态变更单调递增。
+     * 只有该版本高于 Redis 记录的「已撤销版本」时才轮换纪元：
+     * <ul>
+     * <li>撤销失败后相同状态重试：记录未抬高，重试版本仍更高 → 补偿撤销，不再被「状态相同」短路；</li>
+     * <li>重复设置同一状态且此前已成功撤销：版本不高于记录 → 跳过，不重复踢人；</li>
+     * <li>延迟到达的旧状态撤销（如停用请求被阻塞到重新启用并重新登录之后）：其版本低于
+     * 重新启用的版本记录 → 跳过，不误伤新令牌。</li>
+     * </ul>
+     * Redis 异常一律向上抛，由调用方转 500，不伪装成功。</p>
+     *
+     * @return 是否真的轮换；false 表示版本未超过已记录值，本次为幂等跳过
+     */
+    public boolean revokeAllForUserUpToVersion(Long userId, long version) {
+        Long result = redis.execute(REVOKE_UP_TO_VERSION,
+                List.of(EPOCH_PREFIX + userId, REVOKED_VERSION_PREFIX + userId),
+                Long.toString(version), newEpoch(), Long.toString(EPOCH_TTL.getSeconds()));
         return result != null && result == 1L;
     }
 

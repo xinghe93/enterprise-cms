@@ -3,6 +3,8 @@ package com.xinghe.cms.user.controller;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.log.annotation.AuditLog;
+import com.xinghe.cms.security.annotation.RequirePermission;
 import com.xinghe.cms.user.dto.UserCreateRequest;
 import com.xinghe.cms.user.dto.UserListQuery;
 import com.xinghe.cms.user.dto.UserRolesUpdateRequest;
@@ -38,17 +40,16 @@ import org.springframework.web.bind.annotation.RestController;
  * {@link #parseId(String)} 内抛 {@code BusinessException(BAD_REQUEST)}，行为确定且
  * 不触碰公共文件。</p>
  *
- * <p><strong>权限注解待接入</strong>：B 的 {@code @RequirePermission} + AOP 在 PR #23
- * （{@code feature/role-query}）上，尚未合入 dev。当前分支从 dev 开出，
- * 不能 import 不存在的类，否则编译不过；PR #23 合入后按 OpenAPI 的
- * {@code x-permission} 逐方法追加注解并补越权 403 用例，不要自行另造一套权限注解：
+ * <p><strong>权限</strong>：6 个入口按 OpenAPI {@code x-permission} 标注 B 提供的
+ * {@link RequirePermission}（{@code com.xinghe.cms.security.annotation}），由
+ * {@code RequirePermissionAspect} 在方法执行前校验有效权限：未登录/停用 401，缺权限 403。
  * listUsers={@code user:list}、createUser={@code user:create}、getUser={@code user:read}、
  * updateUser={@code user:update}、setUserStatus={@code user:status}、
  * setUserRoles={@code user:assign-role}。</p>
  *
- * <p><strong>审计注解待接入</strong>：D 的 {@code @AuditLog} 在 PR #35 待合；写操作合并后
- * 按 OpenAPI {@code x-audit-operation} 补注解（user.create / user.update / user.status /
- * user.assign-role），只读查询不加审计。</p>
+ * <p><strong>审计</strong>：4 个写操作按 OpenAPI {@code x-audit-operation} 标注 D 提供的
+ * {@link AuditLog}（user.create / user.update / user.status / user.assign-role）；
+ * 只读查询不审计。</p>
  */
 @RestController
 @RequestMapping("/api/admin/users")
@@ -72,24 +73,30 @@ public class UserAdminController {
 
     /** 员工分页（OpenAPI listUsers）：所有可选条件 AND，省略不筛选。 */
     @GetMapping
+    @RequirePermission("user:list")
     public ApiResponse<UserPageVO> listUsers(@RequestParam Map<String, String> params) {
         return ApiResponse.success(userAdminService.listUsers(parseListQuery(params)));
     }
 
     /** 创建员工（OpenAPI createUser）：默认启用、无角色。 */
     @PostMapping
+    @RequirePermission("user:create")
+    @AuditLog(operation = "user.create")
     public ApiResponse<UserVO> createUser(@Valid @RequestBody UserCreateRequest request) {
         return ApiResponse.success(userAdminService.createUser(request));
     }
 
     /** 员工详情（OpenAPI getUser）：目标不存在返回 404。 */
     @GetMapping("/{id}")
+    @RequirePermission("user:read")
     public ApiResponse<UserVO> getUser(@PathVariable("id") String id) {
         return ApiResponse.success(userAdminService.getUser(parseId(id)));
     }
 
     /** 修改员工（OpenAPI updateUser）：完整 PUT，realName/departmentId 都必填。 */
     @PutMapping("/{id}")
+    @RequirePermission("user:update")
+    @AuditLog(operation = "user.update")
     public ApiResponse<UserVO> updateUser(@PathVariable("id") String id,
             @Valid @RequestBody UserUpdateRequest request) {
         return ApiResponse.success(userAdminService.updateUser(parseId(id), request));
@@ -97,6 +104,8 @@ public class UserAdminController {
 
     /** 全量替换角色（OpenAPI setUserRoles）：成功 data=null。 */
     @PutMapping("/{id}/roles")
+    @RequirePermission("user:assign-role")
+    @AuditLog(operation = "user.assign-role")
     public ApiResponse<Void> setUserRoles(@PathVariable("id") String id,
             @Valid @RequestBody UserRolesUpdateRequest request) {
         userAdminService.replaceRoles(parseId(id), request);
@@ -108,6 +117,8 @@ public class UserAdminController {
      * 会话撤销在数据库事务提交之后由 {@link UserStatusService} 完成。
      */
     @PutMapping("/{id}/status")
+    @RequirePermission("user:status")
+    @AuditLog(operation = "user.status")
     public ApiResponse<Void> setUserStatus(
             @PathVariable("id") String id,
             @Valid @RequestBody UserStatusUpdateRequest request) {

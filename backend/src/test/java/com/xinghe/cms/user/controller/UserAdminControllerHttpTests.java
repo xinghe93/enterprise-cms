@@ -9,14 +9,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.xinghe.cms.common.contract.AuthorizationSnapshot;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.log.service.AuditLogWriter;
+import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.security.BearerTokenAuthenticationFilter;
 import com.xinghe.cms.user.mapper.UserAuthMapper;
 import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
 import com.xinghe.cms.user.service.UserStatusService;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +43,9 @@ import org.springframework.web.context.WebApplicationContext;
 class UserAdminControllerHttpTests {
 
     private static final String TOKEN = "good-token";
+    private static final Set<String> ALL_PERMISSIONS = Set.of(
+            "user:list", "user:create", "user:read", "user:update", "user:status",
+            "user:assign-role");
 
     @Autowired
     private WebApplicationContext context;
@@ -49,6 +56,11 @@ class UserAdminControllerHttpTests {
     private AuthSessionService sessions;
     @MockitoBean
     private UserAuthMapper userAuthMapper;
+    /** 权限 AOP / 审计 AOP 都要查库，本机测试无 MySQL，按契约替换为可控桩。 */
+    @MockitoBean
+    private AuthorizationQueryService authorizationQueryService;
+    @MockitoBean
+    private AuditLogWriter auditLogWriter;
 
     private MockMvc mockMvc;
 
@@ -58,6 +70,8 @@ class UserAdminControllerHttpTests {
                 .thenReturn(new AuthSessionService.SessionIdentity(9L, "epoch"));
         when(userAuthMapper.findStatusById(9L))
                 .thenReturn(new CurrentUserStatusRow("admin", null, 1));
+        when(authorizationQueryService.getForUser(9L))
+                .thenReturn(new AuthorizationSnapshot(Set.of(), ALL_PERMISSIONS));
         mockMvc = MockMvcBuilders.webAppContextSetup(context)
                 .addFilters(context.getBean(BearerTokenAuthenticationFilter.class))
                 .build();
@@ -136,6 +150,19 @@ class UserAdminControllerHttpTests {
         performPut("7", "{\"status\":0}", false)
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
+
+        verifyNoInteractions(userStatusService);
+    }
+
+    /** P1 权限回归：普通员工无任何功能权限时调用启停接口必须 403，业务服务不得执行。 */
+    @Test
+    void missingPermissionReturns403WithoutEnteringService() throws Exception {
+        when(authorizationQueryService.getForUser(9L))
+                .thenReturn(new AuthorizationSnapshot(Set.of(), Set.of()));
+
+        performPut("7", "{\"status\":0}", true)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
 
         verifyNoInteractions(userStatusService);
     }
