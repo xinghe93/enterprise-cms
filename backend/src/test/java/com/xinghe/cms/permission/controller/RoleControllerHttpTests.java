@@ -2,11 +2,13 @@ package com.xinghe.cms.permission.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -17,6 +19,8 @@ import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
+import com.xinghe.cms.permission.request.RoleStatusRequest;
+import com.xinghe.cms.permission.request.RoleUpdateRequest;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.permission.service.RoleAdminService;
@@ -69,7 +73,7 @@ class RoleControllerHttpTests {
                 .thenReturn(new CurrentUser(37L, "admin01", null));
         when(authorizationQueryService.getForUser(37L))
                 .thenReturn(new AuthorizationSnapshot(Set.of("ADMIN"),
-                        Set.of("role:list", "role:read", "role:create")));
+                        Set.of("role:list", "role:read", "role:create", "role:update", "role:status")));
 
         mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
     }
@@ -445,6 +449,193 @@ class RoleControllerHttpTests {
                                 """))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(403));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    // ---------- 修改角色（PUT /api/admin/roles/{id}） ----------
+
+    /** 修改成功：200 与完整 Role，服务收到路径 ID 解析出的数值与请求体字段。 */
+    @Test
+    void updateRoleReturnsFullView() throws Exception {
+        when(roleAdminService.update(37L, new RoleUpdateRequest("新名称")))
+                .thenReturn(new RoleView("37", "EDITOR", "新名称", 1,
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0),
+                        java.time.LocalDateTime.of(2026, 11, 18, 8, 50)));
+
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.id").value("37"))
+                .andExpect(jsonPath("$.data.roleCode").value("EDITOR"))
+                .andExpect(jsonPath("$.data.roleName").value("新名称"))
+                .andExpect(jsonPath("$.data.status").value(1));
+
+        verify(roleAdminService).update(37L, new RoleUpdateRequest("新名称"));
+    }
+
+    /** 修改：角色不存在 404。 */
+    @Test
+    void updateNonexistentRoleReturns404() throws Exception {
+        when(roleAdminService.update(org.mockito.ArgumentMatchers.eq(999L),
+                org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"));
+
+        mockMvc.perform(put("/api/admin/roles/999")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称"}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+    }
+
+    /** 修改：请求体只允许 roleName——带上 roleCode 视为未知字段，400。 */
+    @Test
+    void updateRejectsUnknownBodyField() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称","roleCode":"HACK"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 修改：缺失必填字段 400。 */
+    @Test
+    void updateMissingRoleNameReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 修改：字符串形式的数字 roleName（type: string）被严格反序列化拒绝 400。 */
+    @Test
+    void updateNonStringRoleNameReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":123}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 修改接口不接受任何查询参数。 */
+    @Test
+    void updateRejectsUnknownQueryParam() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .param("status", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    // ---------- 启停角色（PUT /api/admin/roles/{id}/status） ----------
+
+    /** 启停成功：200 且 data=null（NullDataResponse）。 */
+    @Test
+    void setStatusReturnsNullDataResponse() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":0}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        verify(roleAdminService).setStatus(37L, new RoleStatusRequest(0));
+    }
+
+    /** 契约：重复设置同一状态幂等返回 200（幂等逻辑在服务层，HTTP 层验证透传）。 */
+    @Test
+    void settingSameStatusStillReturns200() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":1}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        verify(roleAdminService).setStatus(37L, new RoleStatusRequest(1));
+    }
+
+    /** 启停：角色不存在 404。 */
+    @Test
+    void setStatusNonexistentRoleReturns404() throws Exception {
+        doThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"))
+                .when(roleAdminService).setStatus(org.mockito.ArgumentMatchers.eq(999L),
+                        org.mockito.ArgumentMatchers.any());
+
+        mockMvc.perform(put("/api/admin/roles/999/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":1}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+    }
+
+    /** 启停：status 非 0/1 由服务层按契约拒绝为 400。 */
+    @Test
+    void setStatusBeyondEnumReturns400() throws Exception {
+        doThrow(new BusinessException(ResultCode.BAD_REQUEST, "状态取值仅支持 0（停用）或 1（启用）"))
+                .when(roleAdminService).setStatus(org.mockito.ArgumentMatchers.eq(37L),
+                        org.mockito.ArgumentMatchers.any());
+
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":2}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    /** 启停：字符串形式 "1"（type: integer）被严格反序列化拒绝 400。 */
+    @Test
+    void setStatusNonIntegerBodyReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":"1"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 启停：缺 status 字段 400。 */
+    @Test
+    void setStatusMissingFieldReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
 
         verifyNoInteractions(roleAdminService);
     }
