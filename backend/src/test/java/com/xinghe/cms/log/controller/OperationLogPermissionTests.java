@@ -1,30 +1,30 @@
 package com.xinghe.cms.log.controller;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 import com.xinghe.cms.common.contract.AuthorizationSnapshot;
-import com.xinghe.cms.common.contract.CurrentUser;
-import com.xinghe.cms.common.exception.BusinessException;
-import com.xinghe.cms.common.exception.GlobalExceptionHandler;
 import com.xinghe.cms.common.response.PageResult;
-import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.dto.OperationLogQuery;
 import com.xinghe.cms.log.service.OperationLogService;
-import com.xinghe.cms.log.support.LogPermissionGuard;
 import com.xinghe.cms.log.vo.OperationLogVO;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
-import com.xinghe.cms.security.CurrentUserProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.context.support.StaticApplicationContext;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
-import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
+import org.springframework.web.context.WebApplicationContext;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -32,126 +32,149 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 /**
  * 日志查询接口的功能权限验收：匿名 401、无权限员工 403、有权限用户 200。
  *
- * <p>使用 standalone MockMvc 装配真实 Controller、真实 {@link LogPermissionGuard} 与
- * 真实 A 的 {@link CurrentUserProvider}，只把授权快照与日志服务替换为替身；这样不必
- * 启动完整 Spring 上下文，也不会被 Bearer 过滤器拦截（其鉴权行为由真实联调验证）。</p>
+ * <p>启动完整 Spring 上下文以走真实的 {@code @RequirePermission} AOP 与
+ * A 的 {@link com.xinghe.cms.security.CurrentUserProvider}，只把授权快照与日志服务
+ * 替换为替身。MVC 层不注册 Bearer 过滤器（MockMvc 不挂容器过滤器），
+ * 身份通过 {@link TestAuthenticationFilter} 写入请求属性模拟。</p>
  */
+@SpringBootTest
+@Import(OperationLogPermissionTests.TestConfig.class)
 class OperationLogPermissionTests {
 
-    private static final long EMPLOYEE_ID = 7L;
+    @Autowired
+    private WebApplicationContext context;
 
-    private static final long ADMIN_ID = 9L;
+    @Autowired
+    private JsonMapper jsonMapper;
 
+    @Autowired
     private StubOperationLogService stubService;
 
+    @Autowired
     private StubAuthorizationQueryService stubAuthorization;
 
-    private MockMvc mockMvc;
+    /** 不带身份：模拟匿名/会话失效。 */
+    private MockMvc unauthenticatedMvc;
+
+    /** 带身份：模拟已登录用户。 */
+    private MockMvc authenticatedMvc;
 
     @BeforeEach
     void setUp() {
-        stubService = new StubOperationLogService();
-        stubAuthorization = new StubAuthorizationQueryService();
-        LogPermissionGuard guard = new LogPermissionGuard(new CurrentUserProvider(), stubAuthorization);
-        LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
-        validator.setApplicationContext(new StaticApplicationContext());
-        validator.afterPropertiesSet();
-        mockMvc = MockMvcBuilders
-                .standaloneSetup(new OperationLogController(stubService, guard))
-                .setControllerAdvice(new GlobalExceptionHandler())
-                .setValidator(validator)
+        unauthenticatedMvc = MockMvcBuilders.webAppContextSetup(context).build();
+        authenticatedMvc = MockMvcBuilders.webAppContextSetup(context)
+                .addFilters(new TestAuthenticationFilter())
                 .build();
+        stubService.reset();
+        stubAuthorization.reset();
     }
 
     @Test
     void anonymousListReturnsUnauthorized() throws Exception {
-        MvcResult result = mockMvc.perform(get("/api/admin/logs")).andReturn();
+        MvcResult result = unauthenticatedMvc.perform(get("/api/admin/logs")).andReturn();
 
-        assertThat(result.getResponse().getStatus()).isEqualTo(401);
+        assertError(result, 401, "请先登录");
         assertThat(stubService.pageCalled).isFalse();
     }
 
     @Test
     void anonymousDetailReturnsUnauthorized() throws Exception {
-        MvcResult result = mockMvc.perform(get("/api/admin/logs/7")).andReturn();
+        MvcResult result = unauthenticatedMvc.perform(get("/api/admin/logs/7")).andReturn();
 
-        assertThat(result.getResponse().getStatus()).isEqualTo(401);
+        assertError(result, 401, "请先登录");
+        assertThat(stubService.detailCalled).isFalse();
     }
 
     @Test
     void employeeWithoutPermissionCannotReadList() throws Exception {
-        stubAuthorization.grant(EMPLOYEE_ID, Set.of());
+        stubAuthorization.permissionCodes = Set.of();
 
-        MvcResult result = mockMvc.perform(getAs(EMPLOYEE_ID, "/api/admin/logs")).andReturn();
+        MvcResult result = authenticatedMvc.perform(get("/api/admin/logs")).andReturn();
 
-        assertThat(result.getResponse().getStatus()).isEqualTo(403);
+        assertError(result, 403, "缺少访问权限: log:list");
         assertThat(stubService.pageCalled).isFalse();
     }
 
     @Test
     void employeeWithoutPermissionCannotReadDetail() throws Exception {
-        stubAuthorization.grant(EMPLOYEE_ID, Set.of());
+        stubAuthorization.permissionCodes = Set.of();
 
-        MvcResult result = mockMvc.perform(getAs(EMPLOYEE_ID, "/api/admin/logs/7")).andReturn();
+        MvcResult result = authenticatedMvc.perform(get("/api/admin/logs/7")).andReturn();
 
-        assertThat(result.getResponse().getStatus()).isEqualTo(403);
+        assertError(result, 403, "缺少访问权限: log:read");
         assertThat(stubService.detailCalled).isFalse();
     }
 
     @Test
     void detailRequiresReadPermissionEvenWithListPermission() throws Exception {
-        stubAuthorization.grant(ADMIN_ID, Set.of("log:list"));
+        stubAuthorization.permissionCodes = Set.of("log:list");
 
-        MvcResult result = mockMvc.perform(getAs(ADMIN_ID, "/api/admin/logs/7")).andReturn();
+        MvcResult listResult = authenticatedMvc.perform(get("/api/admin/logs")).andReturn();
+        assertThat(listResult.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.pageCalled).isTrue();
 
-        assertThat(result.getResponse().getStatus()).isEqualTo(403);
+        MvcResult detailResult = authenticatedMvc.perform(get("/api/admin/logs/7")).andReturn();
+        assertError(detailResult, 403, "缺少访问权限: log:read");
         assertThat(stubService.detailCalled).isFalse();
     }
 
     @Test
-    void listAllowsUserWithListPermission() throws Exception {
-        stubAuthorization.grant(ADMIN_ID, Set.of("log:list"));
-
-        MvcResult result = mockMvc.perform(getAs(ADMIN_ID, "/api/admin/logs")).andReturn();
-
-        assertThat(result.getResponse().getStatus()).isEqualTo(200);
-        assertThat(stubService.pageCalled).isTrue();
-    }
-
-    @Test
     void detailAllowsUserWithReadPermission() throws Exception {
-        stubAuthorization.grant(ADMIN_ID, Set.of("log:read"));
+        stubAuthorization.permissionCodes = Set.of("log:read");
 
-        MvcResult result = mockMvc.perform(getAs(ADMIN_ID, "/api/admin/logs/7")).andReturn();
+        MvcResult result = authenticatedMvc.perform(get("/api/admin/logs/7")).andReturn();
 
         assertThat(result.getResponse().getStatus()).isEqualTo(200);
         assertThat(stubService.detailCalled).isTrue();
         assertThat(stubService.lastDetailId).isEqualTo(7L);
+        JsonNode data = body(result).get("data");
+        assertThat(data.get("id").isString()).isTrue();
+        assertThat(data.get("id").asString()).isEqualTo("7");
     }
 
-    private MockHttpServletRequestBuilder getAs(long userId, String path) {
-        return get(path).requestAttr(CurrentUserProvider.REQUEST_ATTRIBUTE,
-                new CurrentUser(userId, "it_user", null));
+    private JsonNode body(MvcResult result) throws Exception {
+        return jsonMapper.readTree(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+    }
+
+    private void assertError(MvcResult result, int status, String message) throws Exception {
+        assertThat(result.getResponse().getStatus()).isEqualTo(status);
+        JsonNode json = body(result);
+        assertThat(json.get("code").asInt()).isEqualTo(status);
+        assertThat(json.get("message").asString()).isEqualTo(message);
+        assertThat(json.get("data").isNull()).isTrue();
+        assertThat(json.get("timestamp").isTextual()).isTrue();
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class TestConfig {
+
+        @Bean
+        @Primary
+        StubOperationLogService stubOperationLogService() {
+            return new StubOperationLogService();
+        }
+
+        @Bean
+        @Primary
+        StubAuthorizationQueryService stubAuthorizationQueryService() {
+            return new StubAuthorizationQueryService();
+        }
     }
 
     /**
-     * 可配置授权快照的替身：未登记的用户按 A 的语义视为未认证。
+     * 可配置权限码的授权快照替身：用户始终视为已认证，只调整权限集合。
      */
     static class StubAuthorizationQueryService implements AuthorizationQueryService {
 
-        private final Map<Long, Set<String>> grants = new HashMap<>();
+        private Set<String> permissionCodes = Set.of();
 
-        void grant(long userId, Set<String> permissionCodes) {
-            grants.put(userId, permissionCodes);
+        void reset() {
+            permissionCodes = Set.of();
         }
 
         @Override
         public AuthorizationSnapshot getForUser(Long userId) {
-            Set<String> permissionCodes = grants.get(userId);
-            if (permissionCodes == null) {
-                throw new BusinessException(ResultCode.UNAUTHORIZED);
-            }
-            return new AuthorizationSnapshot(Set.of(), permissionCodes);
+            return new AuthorizationSnapshot(Set.of("EMPLOYEE"), permissionCodes);
         }
     }
 
@@ -177,6 +200,12 @@ class OperationLogPermissionTests {
             OperationLogVO vo = new OperationLogVO();
             vo.setId(id);
             return vo;
+        }
+
+        void reset() {
+            pageCalled = false;
+            detailCalled = false;
+            lastDetailId = null;
         }
     }
 }
