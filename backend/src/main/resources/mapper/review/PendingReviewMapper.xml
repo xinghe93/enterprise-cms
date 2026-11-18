@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xinghe.cms.review.mapper.PendingReviewMapper">
+
+    <!--
+      待审文章列表：cms_article JOIN cms_category JOIN sys_user 的单条多表查询。
+      固定条件：未删除、状态为 PENDING_REVIEW、排除审核人自己的文章（禁止自审）。
+      排序：updated_at ASC, id ASC（先提交先审）；分页与 count 由
+      MyBatis-Plus PaginationInnerInterceptor 追加，SQL 不写 LIMIT。
+      关键词按字面包含匹配，转义符为 '!'（写入侧已把 ! % _ 转义）。
+    -->
+    <select id="selectPendingPage" resultType="com.xinghe.cms.review.mapper.PendingReviewRow">
+        SELECT a.id,
+               a.title,
+               a.summary,
+               a.category_id,
+               c.category_name,
+               a.author_id,
+               u.real_name AS author_name,
+               a.status,
+               a.visibility,
+               a.version,
+               a.published_at,
+               a.created_at,
+               a.updated_at
+        FROM cms_article a
+        INNER JOIN cms_category c ON c.id = a.category_id
+        INNER JOIN sys_user u ON u.id = a.author_id
+        WHERE a.is_deleted = 0
+          AND a.status = 'PENDING_REVIEW'
+          AND a.author_id &lt;&gt; #{reviewerId}
+        <if test="categoryIds != null">
+            AND a.category_id IN
+            <foreach collection="categoryIds" item="categoryId" open="(" close=")" separator=",">
+                #{categoryId}
+            </foreach>
+        </if>
+        <if test="authorId != null">
+            AND a.author_id = #{authorId}
+        </if>
+        <if test="keyword != null">
+            AND (a.title LIKE #{keyword} ESCAPE '!' OR a.summary LIKE #{keyword} ESCAPE '!')
+        </if>
+        ORDER BY a.updated_at ASC, a.id ASC
+    </select>
+</mapper>
