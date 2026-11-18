@@ -10,13 +10,16 @@
  * 权限由后端 AOP 校验，这里不做前端隐藏，避免用界面过滤替代鉴权。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ElButton, ElTag } from 'element-plus'
+import { ElButton, ElDialog, ElTag } from 'element-plus'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
 
 const userApi = createUserApi(api)
 const tree = ref([])
+// 上级候选必须基于完整树：表格被 statusFilter 筛选后，启用分支可能被隐藏，
+// 导致编辑停用部门时无法移动到合法启用分支。两棵树职责分离。
+const fullTree = ref([])
 const loading = ref(false)
 const loadFailed = ref(false)
 const statusFilter = ref('')
@@ -26,25 +29,34 @@ const pendingDelete = ref(null)
 const formError = ref('')
 
 const rows = computed(() => flattenDepartments(sortDepartmentTree(tree.value)))
-const candidates = computed(() => parentOptions(tree.value, {
+const candidates = computed(() => parentOptions(fullTree.value, {
   editingId: editor.value?.mode === 'edit' ? editor.value.node.id : null,
   keepParentId: editor.value?.mode === 'edit' ? editor.value.node.parentId ?? null : null,
 }))
 
+let treeRequestId = 0
+
 async function loadTree() {
-  if (loading.value) return
+  const requestId = ++treeRequestId
   loading.value = true
   loadFailed.value = false
   try {
-    tree.value = await userApi.getDepartmentTree({
-      status: statusFilter.value === '' ? '' : Number(statusFilter.value),
-    })
+    // 筛选后的树用于表格，完整树用于上级候选，两者都要拒绝过期响应。
+    const [filtered, full] = await Promise.all([
+      userApi.getDepartmentTree({ status: statusFilter.value === '' ? '' : Number(statusFilter.value) }),
+      userApi.getDepartmentTree(),
+    ])
+    if (requestId !== treeRequestId) return
+    tree.value = filtered
+    fullTree.value = full
   } catch {
+    if (requestId !== treeRequestId) return
     // api/client.js 已统一弹出后端错误；内联只给出可重试的中性状态，不重复弹窗。
     loadFailed.value = true
     tree.value = []
+    fullTree.value = []
   } finally {
-    loading.value = false
+    if (requestId === treeRequestId) loading.value = false
   }
 }
 
@@ -83,7 +95,9 @@ function validateForm() {
   const order = Number(form.sortOrder)
   if (!Number.isInteger(order) || order < 0 || order > 2147483647) return '排序值需为 0～2147483647 的整数'
   if (form.parentId && !isValidId(form.parentId)) return '上级部门 ID 非法'
-  if (form.parentId && !candidates.value.some((option) => option.id === form.parentId)) {
+  // 完整 PUT 切换父节点时目标与全部祖先必须启用；原父不变可保留停用引用（keepParentId）。
+  // 候选来自完整树，不受表格 statusFilter 影响；ID 统一按字符串比较，避免类型不一致误拒。
+  if (form.parentId && !candidates.value.some((option) => String(option.id) === String(form.parentId))) {
     return '上级部门不可为自身、后代或停用分支'
   }
   return ''
@@ -127,6 +141,7 @@ async function save() {
 
 async function toggleStatus(node) {
   if (submitting.value) return
+  if (node.status !== 0 && node.status !== 1) return
   submitting.value = true
   try {
     await userApi.setDepartmentStatus(node.id, node.status === 1 ? 0 : 1)
@@ -228,58 +243,55 @@ onMounted(loadTree)
       <p v-if="loading" class="org-loading">正在加载部门树…</p>
     </div>
 
-    <div v-if="editor" class="org-overlay" @click.self="closeEditor">
-      <section class="org-dialog" role="dialog" aria-modal="true" aria-labelledby="dept-dialog-title">
-        <header class="org-dialog-head">
-          <h2 id="dept-dialog-title">{{ editor.mode === 'create' ? '新建部门' : '编辑部门' }}</h2>
-          <button type="button" class="org-icon-btn" aria-label="关闭弹窗" @click="closeEditor">×</button>
-        </header>
-        <div class="org-dialog-body">
-          <label class="org-field">
-            <span>部门编码 <em>*</em></span>
-            <input v-model.trim="editor.form.deptCode" maxlength="64" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
-            <small v-if="editor.mode === 'edit'">编码创建后不可修改；更新请求不提交该字段。</small>
-          </label>
-          <label class="org-field">
-            <span>部门名称 <em>*</em></span>
-            <input v-model.trim="editor.form.deptName" maxlength="100" placeholder="如 销售部" />
-          </label>
-          <label class="org-field">
-            <span>上级部门</span>
-            <select v-model="editor.form.parentId">
-              <option value="">根部门（无上级）</option>
-              <option v-for="option in candidates" :key="option.id" :value="option.id">{{ option.label }}</option>
-            </select>
-            <small>不可选择自身或后代；切换上级时目标及所有祖先必须启用。原上级不变时可保留停用引用。</small>
-          </label>
-          <label class="org-field">
-            <span>排序值 <em>*</em></span>
-            <input v-model="editor.form.sortOrder" type="number" min="0" max="2147483647" step="1" />
-          </label>
-          <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
-        </div>
-        <footer class="org-dialog-foot">
-          <ElButton :disabled="submitting" @click="closeEditor">取消</ElButton>
-          <ElButton type="primary" :disabled="submitting" @click="save">{{ submitting ? '保存中…' : '保存' }}</ElButton>
-        </footer>
-      </section>
-    </div>
+    <ElDialog
+      v-if="editor"
+      :model-value="true"
+      :title="editor.mode === 'create' ? '新建部门' : '编辑部门'"
+      width="min(480px, calc(100vw - 32px))"
+      :show-close="!submitting" :close-on-click-modal="false" :close-on-press-escape="!submitting"
+      @update:model-value="(open) => { if (!open) closeEditor() }"
+    >
+      <label class="org-field">
+        <span>部门编码 <em>*</em></span>
+        <input v-model.trim="editor.form.deptCode" maxlength="64" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
+        <small v-if="editor.mode === 'edit'">编码创建后不可修改；更新请求不提交该字段。</small>
+      </label>
+      <label class="org-field">
+        <span>部门名称 <em>*</em></span>
+        <input v-model.trim="editor.form.deptName" maxlength="100" placeholder="如 销售部" />
+      </label>
+      <label class="org-field">
+        <span>上级部门</span>
+        <select v-model="editor.form.parentId">
+          <option value="">根部门（无上级）</option>
+          <option v-for="option in candidates" :key="option.id" :value="option.id">{{ option.label }}</option>
+        </select>
+        <small>不可选择自身或后代；切换上级时目标及所有祖先必须启用。原上级不变时可保留停用引用。</small>
+      </label>
+      <label class="org-field">
+        <span>排序值 <em>*</em></span>
+        <input v-model="editor.form.sortOrder" type="number" min="0" max="2147483647" step="1" />
+      </label>
+      <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
+      <template #footer>
+        <ElButton :disabled="submitting" @click="closeEditor">取消</ElButton>
+        <ElButton type="primary" :loading="submitting" :disabled="submitting" @click="save">{{ submitting ? '保存中…' : '保存' }}</ElButton>
+      </template>
+    </ElDialog>
 
-    <div v-if="pendingDelete" class="org-overlay" @click.self="pendingDelete = null">
-      <section class="org-dialog org-dialog-sm" role="dialog" aria-modal="true" aria-labelledby="dept-delete-title">
-        <header class="org-dialog-head">
-          <h2 id="dept-delete-title">删除部门</h2>
-          <button type="button" class="org-icon-btn" aria-label="关闭弹窗" @click="pendingDelete = null">×</button>
-        </header>
-        <div class="org-dialog-body">
-          <p>确认删除「{{ pendingDelete.deptName }}」（{{ pendingDelete.deptCode }}）？</p>
-          <p class="org-note">该部门下若仍有子部门或任何员工引用（含停用员工），服务端会返回 409 并保留数据。</p>
-        </div>
-        <footer class="org-dialog-foot">
-          <ElButton :disabled="submitting" @click="pendingDelete = null">取消</ElButton>
-          <ElButton type="primary" :disabled="submitting" @click="confirmDelete">确认删除</ElButton>
-        </footer>
-      </section>
-    </div>
+    <ElDialog
+      v-if="pendingDelete"
+      :model-value="true"
+      title="删除部门" width="min(430px, calc(100vw - 32px))"
+      :show-close="!submitting" :close-on-click-modal="false" :close-on-press-escape="!submitting"
+      @update:model-value="(open) => { if (!open) pendingDelete = null }"
+    >
+      <p>确认删除「{{ pendingDelete.deptName }}」（{{ pendingDelete.deptCode }}）？</p>
+      <p class="org-note">该部门下若仍有子部门或任何员工引用（含停用员工），服务端会返回 409 并保留数据。</p>
+      <template #footer>
+        <ElButton :disabled="submitting" @click="pendingDelete = null">取消</ElButton>
+        <ElButton type="primary" :loading="submitting" :disabled="submitting" @click="confirmDelete">确认删除</ElButton>
+      </template>
+    </ElDialog>
   </section>
 </template>

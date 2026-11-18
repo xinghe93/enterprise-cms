@@ -12,17 +12,17 @@
  * 权限由后端 AOP 校验，界面不做权限隐藏。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ElButton, ElTag } from 'element-plus'
+import { ElButton, ElDialog, ElTag } from 'element-plus'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { createRoleApi } from '../../api/role.js'
-import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
+import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree } from '../../utils/organization.js'
 
 const userApi = createUserApi(api)
 const roleApi = createRoleApi(api)
 const departments = ref([])
 const assignableRoles = ref([])
-const rolesLoaded = ref(false)
+const rolesLoadFailed = ref(false)
 const users = ref([])
 const total = ref(0)
 const filters = ref({ keyword: '', departmentId: '', status: '', current: 1, size: 10 })
@@ -41,6 +41,8 @@ const assignmentOptions = computed(() => parentOptions(departments.value, {
   keepParentId: dialog.value?.user?.departmentId ?? null,
 }))
 
+let usersRequestId = 0
+
 async function loadDepartments() {
   try {
     departments.value = await userApi.getDepartmentTree()
@@ -49,19 +51,26 @@ async function loadDepartments() {
   }
 }
 
+/**
+ * 每次打开角色弹窗都重新拉取完整启用角色目录：
+ *  - 候选成功加载一次后一直复用，会漏掉其他管理员新增的角色，保存时把详情里的新关联误删；
+ *  - 加载失败必须显式标记，由调用方禁用保存并允许重试，不能用空候选继续执行全量替换。
+ */
 async function ensureRoles() {
-  if (rolesLoaded.value) return
+  rolesLoadFailed.value = false
   try {
     const page = await roleApi.listAssignableRoles()
     assignableRoles.value = page?.records ?? []
-    rolesLoaded.value = true
+    return true
   } catch {
     assignableRoles.value = []
+    rolesLoadFailed.value = true
+    return false
   }
 }
 
 async function loadUsers() {
-  if (loading.value) return
+  const requestId = ++usersRequestId
   loading.value = true
   loadFailed.value = false
   try {
@@ -72,15 +81,18 @@ async function loadUsers() {
       current: filters.value.current,
       size: filters.value.size,
     })
+    // 只接收与当前筛选条件对应的最新响应，防止旧请求后到覆盖新条件的结果。
+    if (requestId !== usersRequestId) return
     users.value = page?.records ?? []
     total.value = Number(page?.total ?? 0)
     filters.value.current = Number(page?.current ?? filters.value.current)
   } catch {
+    if (requestId !== usersRequestId) return
     loadFailed.value = true
     users.value = []
     total.value = 0
   } finally {
-    loading.value = false
+    if (requestId === usersRequestId) loading.value = false
   }
 }
 
@@ -107,9 +119,24 @@ function closeDialog() {
   formError.value = ''
 }
 
-function openDepartmentDialog(user) {
+async function openDepartmentDialog(user) {
+  if (submitting.value) return
+  submitting.value = true
   formError.value = ''
-  dialog.value = { type: 'department', user, form: { departmentId: user.departmentId ?? '' } }
+  try {
+    // 列表可能是他人修改姓名之前加载的快照；完整 PUT 会回写 realName，
+    // 因此打开弹窗时重新读取详情，避免把他人已提交的姓名覆盖成旧值。
+    const detail = await userApi.getUser(user.id)
+    dialog.value = {
+      type: 'department',
+      user: { ...user, id: detail?.id ?? user.id, realName: detail?.realName ?? user.realName },
+      form: { departmentId: detail?.departmentId ?? user.departmentId ?? '' },
+    }
+  } catch {
+    // 公共层已提示 404 / 500，保持弹窗关闭。
+  } finally {
+    submitting.value = false
+  }
 }
 
 async function openRoleDialog(user) {
@@ -118,13 +145,12 @@ async function openRoleDialog(user) {
   formError.value = ''
   try {
     const detail = await userApi.getUser(user.id)
-    await ensureRoles()
-    const available = new Set(assignableRoles.value.map((role) => role.id))
-    const assigned = detail?.roles ?? []
-    // 只把「启用且在候选中」的角色作为可保留项；停用项在下一次全量替换时被移除。
-    selectedRoleIds.value = assigned.filter((role) => available.has(role.id)).map((role) => role.id)
-    removedRoles.value = assigned.filter((role) => !available.has(role.id))
+    const ok = await ensureRoles()
+    const { selectedRoleIds: selected, removedRoles: removed } = partitionAssignedRoles(detail?.roles, assignableRoles.value)
+    selectedRoleIds.value = selected
+    removedRoles.value = removed
     dialog.value = { type: 'role', user }
+    if (!ok) formError.value = '启用角色目录加载失败，为避免误删现有角色已禁止保存，请重试'
   } catch {
     // 公共层已提示 404 / 500，保持弹窗关闭状态。
   } finally {
@@ -132,10 +158,34 @@ async function openRoleDialog(user) {
   }
 }
 
+/** 候选目录加载失败后的重试：成功才允许保存，并重新按完整目录计算可保留项。 */
+async function retryRoles() {
+  if (submitting.value || !dialog.value || dialog.value.type !== 'role') return
+  submitting.value = true
+  formError.value = ''
+  try {
+    const ok = await ensureRoles()
+    if (!ok) {
+      formError.value = '启用角色目录仍加载失败，请稍后重试'
+      return
+    }
+    const detail = await userApi.getUser(dialog.value.user.id)
+    const { selectedRoleIds: selected, removedRoles: removed } = partitionAssignedRoles(detail?.roles, assignableRoles.value)
+    selectedRoleIds.value = selected
+    removedRoles.value = removed
+  } catch {
+    formError.value = '重试失败，请稍后再试'
+  } finally {
+    submitting.value = false
+  }
+}
+
 function toggleRole(id) {
-  const index = selectedRoleIds.value.indexOf(id)
+  if (rolesLoadFailed.value) return
+  const key = String(id)
+  const index = selectedRoleIds.value.indexOf(key)
   if (index >= 0) selectedRoleIds.value.splice(index, 1)
-  else selectedRoleIds.value.push(id)
+  else selectedRoleIds.value.push(key)
 }
 
 async function saveDepartment() {
@@ -145,7 +195,7 @@ async function saveDepartment() {
     formError.value = '部门 ID 非法，请重新选择'
     return
   }
-  if (departmentId && !assignmentOptions.value.some((option) => option.id === departmentId)) {
+  if (departmentId && !assignmentOptions.value.some((option) => String(option.id) === String(departmentId))) {
     formError.value = '新选部门及其所有祖先必须启用；原部门不变时可保留'
     return
   }
@@ -153,8 +203,11 @@ async function saveDepartment() {
   submitting.value = true
   formError.value = ''
   try {
-    // 完整 PUT：realName 必须一起提交，不能省略或用空值覆盖。
-    await userApi.updateUser(user.id, { realName: user.realName, departmentId: departmentId || null })
+    // 完整 PUT：realName 用刚读取的最新值；departmentId 契约要求十进制字符串。
+    await userApi.updateUser(user.id, {
+      realName: user.realName,
+      departmentId: departmentId ? String(departmentId) : null,
+    })
     dialog.value = null
     await loadUsers()
   } catch (error) {
@@ -165,12 +218,13 @@ async function saveDepartment() {
 }
 
 async function saveRoles() {
-  if (submitting.value) return
+  if (submitting.value || rolesLoadFailed.value) return
   submitting.value = true
   formError.value = ''
   try {
-    // 全量替换：空数组即清空，api 层负责去重与 100 项上限校验。
-    await userApi.setUserRoles(dialog.value.user.id, selectedRoleIds.value)
+    // 全量替换：空数组即清空；先在本地归一化，超限/非法 ID 不发请求。
+    const roleIds = normalizeRoleIds(selectedRoleIds.value)
+    await userApi.setUserRoles(dialog.value.user.id, roleIds)
     dialog.value = null
     await loadUsers()
   } catch (error) {
@@ -271,51 +325,55 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="dialog" class="org-overlay" @click.self="closeDialog">
-      <section class="org-dialog" role="dialog" aria-modal="true" :aria-labelledby="`assign-title-${dialog.type}`">
-        <header class="org-dialog-head">
-          <h2 :id="`assign-title-${dialog.type}`">
-            {{ dialog.type === 'department' ? '分配部门' : '分配角色' }} · {{ dialog.user.realName }}（{{ dialog.user.username }}）
-          </h2>
-          <button type="button" class="org-icon-btn" aria-label="关闭弹窗" @click="closeDialog">×</button>
-        </header>
+    <ElDialog
+      v-if="dialog"
+      :model-value="true"
+      :title="`${dialog.type === 'department' ? '分配部门' : '分配角色'} · ${dialog.user.realName}（${dialog.user.username}）`"
+      width="min(520px, calc(100vw - 32px))"
+      :show-close="!submitting" :close-on-click-modal="false" :close-on-press-escape="!submitting"
+      @update:model-value="(open) => { if (!open) closeDialog() }"
+    >
+      <div v-if="dialog?.type === 'department'">
+        <label class="org-field">
+          <span>所属部门</span>
+          <select v-model="dialog.form.departmentId">
+            <option value="">无部门（清除原部门）</option>
+            <option v-for="option in assignmentOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
+          </select>
+          <small>新选部门及所有祖先必须启用；保持原部门不变时可保留停用引用。</small>
+        </label>
+        <p class="org-note">修改员工是完整更新，提交时会同时带上刚读取的最新姓名「{{ dialog.user.realName }}」。</p>
+        <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
+      </div>
 
-        <div v-if="dialog.type === 'department'" class="org-dialog-body">
-          <label class="org-field">
-            <span>所属部门</span>
-            <select v-model="dialog.form.departmentId">
-              <option value="">无部门（清除原部门）</option>
-              <option v-for="option in assignmentOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
-            </select>
-            <small>新选部门及所有祖先必须启用；保持原部门不变时可保留停用引用。</small>
+      <div v-else>
+        <p class="org-note">角色为全量替换：取消勾选即移除，最多 100 项；保存后重新加载列表以刷新回显。</p>
+        <div v-if="removedRoles.length" class="org-alert" role="status">
+          以下已分配角色当前不可分配（停用或不存在），保存后将被移除：
+          {{ removedRoles.map((role) => role.roleName).join('、') }}
+        </div>
+        <ElButton v-if="rolesLoadFailed" link type="danger" :disabled="submitting" @click="retryRoles">启用角色目录加载失败，点击重试</ElButton>
+        <div v-if="!assignableRoles.length" class="org-empty">暂无可分配的启用角色。</div>
+        <div v-else class="org-check-list">
+          <label v-for="role in assignableRoles" :key="role.id" class="org-check-item">
+            <input
+              type="checkbox" :disabled="rolesLoadFailed"
+              :checked="selectedRoleIds.includes(String(role.id))" @change="toggleRole(role.id)"
+            />
+            <span>{{ role.roleName }}</span><span class="org-mono">{{ role.roleCode }}</span>
           </label>
-          <p class="org-note">修改员工是完整更新，提交时会同时带上当前姓名「{{ dialog.user.realName }}」。</p>
-          <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
         </div>
+        <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
+      </div>
 
-        <div v-else class="org-dialog-body">
-          <p class="org-note">角色为全量替换：取消勾选即移除，最多 100 项；保存后重新加载列表以刷新回显。</p>
-          <div v-if="removedRoles.length" class="org-alert" role="status">
-            以下已分配角色当前不可分配（停用或不存在），保存后将被移除：
-            {{ removedRoles.map((role) => role.roleName).join('、') }}
-          </div>
-          <div v-if="!assignableRoles.length" class="org-empty">暂无可分配的启用角色。</div>
-          <div v-else class="org-check-list">
-            <label v-for="role in assignableRoles" :key="role.id" class="org-check-item">
-              <input type="checkbox" :checked="selectedRoleIds.includes(role.id)" @change="toggleRole(role.id)" />
-              <span>{{ role.roleName }}</span><span class="org-mono">{{ role.roleCode }}</span>
-            </label>
-          </div>
-          <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
-        </div>
-
-        <footer class="org-dialog-foot">
-          <ElButton :disabled="submitting" @click="closeDialog">取消</ElButton>
-          <ElButton type="primary" :disabled="submitting" @click="dialog.type === 'department' ? saveDepartment() : saveRoles()">
-            {{ submitting ? '保存中…' : '保存' }}
-          </ElButton>
-        </footer>
-      </section>
-    </div>
+      <template #footer>
+        <ElButton :disabled="submitting" @click="closeDialog">取消</ElButton>
+        <ElButton
+          type="primary" :loading="submitting"
+          :disabled="submitting || (dialog?.type === 'role' && rolesLoadFailed)"
+          @click="dialog?.type === 'department' ? saveDepartment() : saveRoles()"
+        >{{ submitting ? '保存中…' : '保存' }}</ElButton>
+      </template>
+    </ElDialog>
   </section>
 </template>

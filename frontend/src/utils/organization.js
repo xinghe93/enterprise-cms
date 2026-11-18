@@ -114,3 +114,19 @@ export function normalizeRoleIds(ids) {
   }
   return unique
 }
+
+/**
+ * 按完整启用角色目录拆分员工详情里的已分配角色：
+ *  - selected：启用且在完整目录中，作为可保留项；
+ *  - removed：停用或不在目录中，全量替换后会被移除并提示用户。
+ * ID 统一转字符串比较，避免详情与目录类型不一致导致误判；候选必须完整，否则会把
+ * 第二页的启用角色误当成 removed，保存时误删。
+ */
+export function partitionAssignedRoles(assigned = [], assignable = []) {
+  const available = new Set(assignable.map((role) => String(role.id ?? role)))
+  const list = Array.isArray(assigned) ? assigned : []
+  return {
+    selectedRoleIds: list.filter((role) => available.has(String(role.id ?? role))).map((role) => String(role.id ?? role)),
+    removedRoles: list.filter((role) => !available.has(String(role.id ?? role))),
+  }
+}

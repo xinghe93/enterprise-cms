@@ -7,10 +7,29 @@
  */
 import { compactParams } from '../utils/organization.js'
 
+const PAGE_SIZE = 100
+
 export function createRoleApi(client) {
   return {
     listRoles: (params = {}) => client.get('/admin/roles', { params: compactParams(params) }),
-    /** 分配弹窗用：只取启用角色，size 上限 100，避免把停用项重新提交造成 409。 */
-    listAssignableRoles: () => client.get('/admin/roles', { params: { current: 1, size: 100, status: 1 } }),
+    /**
+     * 分配弹窗用：分页拉全部启用角色，只保留 records 数组。
+     * 不能只取第一页——员工若持有第二页的启用角色，用不完整候选做全量替换会误删该角色。
+     * 按 total/current 推进并设页数上限，防止服务端分页信息异常时无限请求。
+     */
+    listAssignableRoles: async () => {
+      const records = []
+      const maxPages = 100
+      for (let current = 1; current <= maxPages; current += 1) {
+        const page = await client.get('/admin/roles', {
+          params: { current, size: PAGE_SIZE, status: 1 },
+        })
+        const rows = page?.records ?? []
+        records.push(...rows)
+        const total = Number(page?.total ?? 0)
+        if (rows.length < PAGE_SIZE || records.length >= total || total <= 0) break
+      }
+      return { records, total: records.length }
+    },
   }
 }

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   collectSubtreeIds, compactParams, findDepartment, flattenDepartments, isValidId,
-  normalizeRoleIds, parentOptions, sortDepartmentTree,
+  normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree,
 } from '../src/utils/organization.js'
 
 const node = (id, parentId, deptName, sortOrder, status, children = []) => ({
@@ -90,4 +90,29 @@ test('角色全量替换去重、限 100 项、空数组表示清空', () => {
   assert.throws(() => normalizeRoleIds('3'), TypeError)
   assert.throws(() => normalizeRoleIds(['0']), TypeError)
   assert.throws(() => normalizeRoleIds(Array.from({ length: 101 }, (_, i) => String(i + 1))), RangeError)
+})
+
+test('角色回显按完整启用目录拆分，类型不一致不误判、停用项进待移除', () => {
+  // 详情中的 id 可能是数字，目录里的 id 是字符串；统一转字符串后才不会把有效项误删。
+  const assigned = [
+    { id: '2', roleName: '编辑' },
+    { id: 9, roleName: '管理员' },
+    { id: '5', roleName: '已停用', status: 0 },
+    { id: '101', roleName: '第二页角色' },
+  ]
+  const assignable = [{ id: '2' }, { id: '9' }, { id: '101' }]
+  const { selectedRoleIds, removedRoles } = partitionAssignedRoles(assigned, assignable)
+  assert.deepEqual(selectedRoleIds.sort(), ['101', '2', '9'])
+  assert.deepEqual(removedRoles.map((role) => role.roleName), ['已停用'])
+})
+
+test('候选目录为空或被截断时不会把第二页启用角色当作可保留项', () => {
+  const assigned = [{ id: '101', roleName: '第二页角色', status: 1 }]
+  // 目录只加载到第一页（100 项以内），101 被误判为 removed——这正是必须分页拉全的原因。
+  const truncated = partitionAssignedRoles(assigned, [{ id: '2' }])
+  assert.deepEqual(truncated.selectedRoleIds, [])
+  assert.equal(truncated.removedRoles.length, 1)
+  const complete = partitionAssignedRoles(assigned, [{ id: '2' }, { id: '101' }])
+  assert.deepEqual(complete.selectedRoleIds, ['101'])
+  assert.equal(complete.removedRoles.length, 0)
 })

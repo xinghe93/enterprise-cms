@@ -120,14 +120,33 @@ test('409 业务冲突原样透传为 ApiError，不被伪装成成功', async (
   )
 })
 
-test('角色候选固定只取启用项，且按 B 的分页契约传参', async () => {
-  const ctx = recording({ data: { records: [{ id: '2', status: 1 }], total: 1, current: 1, size: 100 } })
-  const roleApi = createRoleApi(ctx.client)
-  await roleApi.listAssignableRoles()
-  assert.equal(ctx.last().url, '/admin/roles')
-  assert.deepEqual(ctx.last().params, { current: 1, size: 100, status: 1 })
-  await roleApi.listRoles({ keyword: '编辑', status: 1 })
-  assert.deepEqual(ctx.last().params, { keyword: '编辑', status: 1 })
+test('角色候选翻页拉取全部启用项，避免第二页角色被全量替换误删', async () => {
+  const calls = []
+  const client = createApiClient({
+    adapter: async (config) => {
+      calls.push({ ...config.params })
+      const current = config.params.current
+      const all = Array.from({ length: 205 }, (_, i) => ({ id: String(i + 1), status: 1 }))
+      return {
+        data: envelope(200, {
+          records: all.slice((current - 1) * 100, current * 100),
+          total: all.length, current, size: 100,
+        }),
+        status: 200, statusText: '', headers: {}, config,
+      }
+    },
+  })
+  const page = await createRoleApi(client).listAssignableRoles()
+  assert.equal(page.records.length, 205)
+  assert.deepEqual(calls, [
+    { current: 1, size: 100, status: 1 },
+    { current: 2, size: 100, status: 1 },
+    { current: 3, size: 100, status: 1 },
+  ])
+
+  await createRoleApi(client).listRoles({ keyword: '编辑', status: 1 })
+  assert.equal(calls.at(-1).keyword, '编辑')
+  assert.equal(calls.at(-1).status, 1)
 })
 
 test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', () => {
