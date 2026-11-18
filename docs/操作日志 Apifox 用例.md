@@ -183,7 +183,7 @@ pm.test("时间毫秒精度", () => {
 
 1. **手动执行：** 在 Apifox 按 L-01～L-25 顺序执行，保存请求/响应截图；错误用例至少截一张完整响应体。
 2. **场景运行：** 把 L-01～L-25 加入"操作日志回归"测试场景，一条命令跑完，保存运行报告截图。
-3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（62 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
+3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（63 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
 4. **回归时机：** 修改查询参数、错误提示、VO 字段、权限注解后必须重跑 L 组用例；接入业务写接口后补跑 A 组用例。
 5. **自动化替代：** 本地已提供 `课程设计/项目指导/scripts/run_e2e.ps1`，导入种子后自动启动 jar、执行 L-01～L-25 并清理数据，可作为 Apifox 之外的回归手段（脚本须以 UTF-8 带 BOM 保存，Windows PowerShell 5.1 才能正确解析中文；`docker exec mysql` 导入种子需加 `--default-character-set=utf8mb4`）。
 
@@ -191,10 +191,10 @@ pm.test("时间毫秒精度", () => {
 
 | 偏差 | 影响 | 处理 |
 | --- | --- | --- |
-| 权限注解未接入（B 的权限数据层、A 的身份入口已合入） | 未登录已被 A 的 Bearer 过滤器拦截为 401（实测）；普通员工仍可读全局审计数据（缺 403） | **已解决（C15）**：两个入口改为 `@RequirePermission`，`OperationLogPermissionTests` 覆盖 401/403/200 |
+| 权限注解（历史，已解决） | 早期为实现 403 由 D 自建 `LogPermissionGuard`，与 B 的统一注解重复 | **已替换（PR #52）**：两个入口改为 `@RequirePermission("log:list")`/`("log:read")`；匿名 401、缺权限 403、有权限 200 由 `OperationLogPermissionTests` 覆盖，旧 guard 已删除 |
 | 伪造 Token 返回 500 | 带 `Authorization: Bearer fake-token` 请求返回 500 `系统繁忙` 而非 401 | 属 A 的会话校验边界问题，已记录在其 PR #20 复审上下文，不在 D 模块修改 |
 | 审计事务分支未在真实业务事务验证 | 仅测试桩 + 手工同步环境覆盖 | 已由 `AuditLogTransactionProxyTests` 经真实 Spring 事务代理覆盖成功/失败/流转异常三路径；真实 MySQL 业务事务待写接口联调 |
-| 完整构建受宿主机 Mockito attach 限制 | 19 个 A/B/C 的 Mockito 测试类在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 174 项全过（本模块 62 项）；环境问题需组长/B 统一处理 |
+| 完整构建受宿主机 Mockito attach 限制 | 19 个 A/B/C 的 Mockito 测试类在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 203 项全过（本模块 63 项）；环境问题需组长/B 统一处理 |
 
 ## 7. 本次执行记录（2026-11-09 第三轮，C7）
 
@@ -221,6 +221,6 @@ pm.test("时间毫秒精度", () => {
   6 项覆盖匿名 401（列表/详情）、无权限 403（列表/详情）、`log:list` 只放行列表、
   `log:read` 放行详情且返回字符串 ID；`OperationLogControllerTests` 通过
   `TestAuthenticationFilter` 注入已认证用户，20 项参数/契约断言保持不变。
-- 验证：本模块 **62 项**全过；全量排除 19 个 Mockito 受限类后 **174 项**全过并出 jar。
+- 验证：本模块 **63 项**全过；全量排除 19 个 Mockito 受限类后 **203 项**全过并出 jar。
 - 待补：真实 MySQL + `POST /api/auth/login` 取得 Token 后，用 Apifox 或
   `run_e2e.ps1` 补"匿名 401 / 普通员工 403 / 管理员 200"三条端到端验收（脚本需先取 Token）。

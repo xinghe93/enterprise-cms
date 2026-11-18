@@ -127,9 +127,20 @@ class OperationLogPermissionTests {
         assertThat(result.getResponse().getStatus()).isEqualTo(200);
         assertThat(stubService.detailCalled).isTrue();
         assertThat(stubService.lastDetailId).isEqualTo(7L);
+        assertThat(stubAuthorization.lastUserId).isEqualTo(TestAuthenticationFilter.USER_ID);
         JsonNode data = body(result).get("data");
         assertThat(data.get("id").isString()).isTrue();
         assertThat(data.get("id").asString()).isEqualTo("7");
+    }
+
+    @Test
+    void authorizationSnapshotIsQueriedByAuthenticatedUserId() throws Exception {
+        stubAuthorization.permissionCodes = Set.of("log:list");
+
+        MvcResult result = authenticatedMvc.perform(get("/api/admin/logs")).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubAuthorization.lastUserId).isEqualTo(TestAuthenticationFilter.USER_ID);
     }
 
     private JsonNode body(MvcResult result) throws Exception {
@@ -139,6 +150,10 @@ class OperationLogPermissionTests {
     private void assertError(MvcResult result, int status, String message) throws Exception {
         assertThat(result.getResponse().getStatus()).isEqualTo(status);
         JsonNode json = body(result);
+        assertThat(json.has("code")).isTrue();
+        assertThat(json.has("message")).isTrue();
+        assertThat(json.has("data")).isTrue();
+        assertThat(json.has("timestamp")).isTrue();
         assertThat(json.get("code").asInt()).isEqualTo(status);
         assertThat(json.get("message").asString()).isEqualTo(message);
         assertThat(json.get("data").isNull()).isTrue();
@@ -162,18 +177,22 @@ class OperationLogPermissionTests {
     }
 
     /**
-     * 可配置权限码的授权快照替身：用户始终视为已认证，只调整权限集合。
+     * 可配置权限码的授权快照替身：用户始终视为已认证，只调整权限集合；
+     * 同时记录实际查询使用的 userId，用于验证权限快照按认证身份取用。
      */
     static class StubAuthorizationQueryService implements AuthorizationQueryService {
 
         private Set<String> permissionCodes = Set.of();
+        private Long lastUserId;
 
         void reset() {
             permissionCodes = Set.of();
+            lastUserId = null;
         }
 
         @Override
         public AuthorizationSnapshot getForUser(Long userId) {
+            this.lastUserId = userId;
             return new AuthorizationSnapshot(Set.of("EMPLOYEE"), permissionCodes);
         }
     }
