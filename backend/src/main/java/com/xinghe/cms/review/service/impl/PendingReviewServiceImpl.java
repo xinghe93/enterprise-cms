@@ -32,6 +32,9 @@ import org.springframework.transaction.annotation.Transactional;
  * 审核人身份只取自 A 的安全入口 {@link CurrentUserProvider}，并用于排除自己的文章
  * （禁止自审）。分类筛选先经 C 的 {@link CategoryService#descendantIds(Long)}
  * 展开为"分类 + 全部后代"，引用不存在的分类时直接返回空分页。</p>
+ *
+ * <p>参数校验顺序：先校验关键词长度与作者 ID 格式，再解析分类。这样同一份非法请求
+ * 无论分类是否存在都会稳定返回 400（避免"分类不存在 → 空分页 200"吞掉参数错误）。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -50,13 +53,16 @@ public class PendingReviewServiceImpl implements PendingReviewService {
         CurrentUser currentUser = currentUserProvider.requireCurrentUser();
         Page<PendingReviewRow> page = query.toPage();
 
+        // 先校验与分类无关的标量参数（关键词长度、作者 ID 格式）：非法请求必须
+        // 始终返回 400，不能因为 categoryId 指向不存在的分类而提前返回空分页。
+        String keyword = normalizeKeyword(query.getKeyword());
+        Long authorId = resolveOptionalId(query.getAuthorId());
+
         Set<Long> categoryIds = resolveCategoryIds(query.getCategoryId());
         if (categoryIds != null && categoryIds.isEmpty()) {
             // 分类不存在或没有后代：契约要求空分页，不查库。
             return new PageResult<>(List.of(), 0, page.getCurrent(), page.getSize());
         }
-        Long authorId = resolveOptionalId(query.getAuthorId());
-        String keyword = normalizeKeyword(query.getKeyword());
 
         Page<PendingReviewRow> result = pendingReviewMapper.selectPendingPage(
                 page, currentUser.userId(), categoryIds, authorId, keyword);

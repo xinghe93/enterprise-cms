@@ -155,6 +155,30 @@ class PendingReviewServiceTests {
     }
 
     @Test
+    void rejectsOverlongKeywordEvenWhenCategoryDoesNotExist() {
+        PendingReviewQuery query = query();
+        query.setCategoryId("999999");
+        query.setKeyword("请".repeat(256));
+
+        assertThatThrownBy(() -> service.pending(query))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("关键词长度不能超过 255");
+        assertThat(mapperCalled.get()).isFalse();
+    }
+
+    @Test
+    void rejectsMalformedAuthorIdEvenWhenCategoryDoesNotExist() {
+        PendingReviewQuery query = query();
+        query.setCategoryId("999999");
+        query.setAuthorId("0x1");
+
+        assertThatThrownBy(() -> service.pending(query))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("资源 ID 格式不正确");
+        assertThat(mapperCalled.get()).isFalse();
+    }
+
+    @Test
     void assemblesTagsInAscendingOrderIncludingDisabled() {
         rows = List.of(row(990201L, "待审文章", ROOT_CATEGORY_ID, 991201L));
         total = 1;
