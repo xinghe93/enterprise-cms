@@ -149,6 +149,53 @@ test('角色候选翻页拉取全部启用项，避免第二页角色被全量�
   assert.equal(calls.at(-1).status, 1)
 })
 
+test('角色目录：不足一页但 total 更大时继续翻页，不按页长度提前截断', async () => {
+  // 服务端某页只返回 2 条（不足 size=100）但声明 total=5：必须继续取下一页。
+  const calls = []
+  const client = createApiClient({
+    adapter: async (config) => {
+      calls.push(config.params.current)
+      const byPage = { 1: [1, 2], 2: [3, 4], 3: [5] }
+      return {
+        data: envelope(200, { records: (byPage[config.params.current] ?? []).map((n) => ({ id: String(n) })), total: 5, current: config.params.current, size: 100 }),
+        status: 200, statusText: '', headers: {}, config,
+      }
+    },
+  })
+  const page = await createRoleApi(client).listAssignableRoles()
+  assert.deepEqual(page.records.map((r) => r.id), ['1', '2', '3', '4', '5'])
+  assert.deepEqual(calls, [1, 2, 3])
+})
+
+test('角色目录异常一律抛错而非静默返回空/残缺候选（避免全量替换误删角色）', async () => {
+  const mock = (data) => createApiClient({
+    adapter: async (config) => ({ data: envelope(200, data), status: 200, statusText: '', headers: {}, config }),
+  })
+  const roleApi = createRoleApi(mock({ records: [], total: 0 }))
+  // 真的零角色是合法结果，返回空但不能抛错。
+  assert.deepEqual((await roleApi.listAssignableRoles()).records, [])
+
+  // total 缺失 / 非法：抛错，交由上层禁用保存。
+  await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }] })).listAssignableRoles(), /分页数据异常/)
+  await assert.rejects(createRoleApi(mock({ records: [], total: '5' })).listAssignableRoles(), /分页数据异常/)
+
+  // 首页空页但 total>0：提前截断，抛错。
+  await assert.rejects(createRoleApi(mock({ records: [], total: 5 })).listAssignableRoles(), /提前返回空页/)
+
+  // 翻页间 total 变化：抛错。
+  let n = 0
+  const changing = createApiClient({
+    adapter: async (config) => {
+      n += 1
+      return {
+        data: envelope(200, { records: [{ id: String(n) }], total: n === 1 ? 2 : 3, current: config.params.current, size: 100 }),
+        status: 200, statusText: '', headers: {}, config,
+      }
+    },
+  })
+  await assert.rejects(createRoleApi(changing).listAssignableRoles(), /总数不一致/)
+})
+
 test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', () => {
   const routerSource = readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
   const viewsSource = readFileSync(new URL('../src/router/viewComponents.js', import.meta.url), 'utf8')

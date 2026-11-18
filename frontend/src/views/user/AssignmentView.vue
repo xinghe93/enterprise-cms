@@ -189,6 +189,8 @@ function toggleRole(id) {
 }
 
 async function saveDepartment() {
+  // 保存按钮与弹窗由 v-if 控制，但 closeDialog 可在异步回调里先执行；防御性判空避免解构崩溃。
+  if (!dialog.value || dialog.value.type !== 'department') return
   const { user, form } = dialog.value
   const departmentId = form.departmentId
   if (departmentId && !isValidId(departmentId)) {
@@ -218,7 +220,7 @@ async function saveDepartment() {
 }
 
 async function saveRoles() {
-  if (submitting.value || rolesLoadFailed.value) return
+  if (submitting.value || rolesLoadFailed.value || !dialog.value || dialog.value.type !== 'role') return
   submitting.value = true
   formError.value = ''
   try {

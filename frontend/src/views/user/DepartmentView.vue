@@ -13,7 +13,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElButton, ElDialog, ElTag } from 'element-plus'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
-import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
+import { findDepartment, flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
 
 const userApi = createUserApi(api)
 const tree = ref([])
@@ -29,6 +29,15 @@ const pendingDelete = ref(null)
 const formError = ref('')
 
 const rows = computed(() => flattenDepartments(sortDepartmentTree(tree.value)))
+/**
+ * 是否存在子部门必须基于完整树判断。表格树受 statusFilter 筛选，
+ * 筛选后子部门可能被隐藏，若用 row.node.children 判断会误放行「有子部门却可点删除」，
+ * 用户在确认后才拿到后端 409。
+ */
+function hasChildren(node) {
+  const full = findDepartment(fullTree.value, node.id)
+  return Boolean(full?.children?.length)
+}
 const candidates = computed(() => parentOptions(fullTree.value, {
   editingId: editor.value?.mode === 'edit' ? editor.value.node.id : null,
   keepParentId: editor.value?.mode === 'edit' ? editor.value.node.parentId ?? null : null,
@@ -228,8 +237,8 @@ onMounted(loadTree)
                 <button
                   type="button"
                   class="is-danger"
-                  :disabled="submitting || (row.node.children && row.node.children.length > 0)"
-                  :title="row.node.children && row.node.children.length > 0 ? '存在子部门，不能删除' : '删除空部门'"
+                  :disabled="submitting || hasChildren(row.node)"
+                  :title="hasChildren(row.node) ? '存在子部门，不能删除' : '删除空部门'"
                   @click="askDelete(row.node)"
                 >删除</button>
               </div>

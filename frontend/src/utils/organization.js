@@ -107,6 +107,13 @@ export function parentOptions(nodes, { editingId = null, keepParentId = null } =
 /** 角色全量替换：转字符串、去重、逐个校验、上限 100；空数组表示清空。 */
 export function normalizeRoleIds(ids) {
   if (!Array.isArray(ids)) throw new TypeError('roleIds 必须是数组')
+  // 先逐项校验原始值：null/undefined 转 String 会变成 'null'/'undefined'，
+  // 既掩盖真实来源又让错误信息难以定位，这里显式拒绝并指出位置。
+  ids.forEach((id, index) => {
+    if (id === null || id === undefined) {
+      throw new TypeError(`角色 ID 第 ${index + 1} 项为空，请重新选择`)
+    }
+  })
   const unique = [...new Set(ids.map(String))]
   if (unique.length > 100) throw new RangeError('角色最多 100 项')
   for (const id of unique) {

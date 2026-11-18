@@ -90,6 +90,9 @@ test('角色全量替换去重、限 100 项、空数组表示清空', () => {
   assert.throws(() => normalizeRoleIds('3'), TypeError)
   assert.throws(() => normalizeRoleIds(['0']), TypeError)
   assert.throws(() => normalizeRoleIds(Array.from({ length: 101 }, (_, i) => String(i + 1))), RangeError)
+  // null/undefined 显式报错并指出位置，不能变成 'null'/'undefined' 的含糊错误。
+  assert.throws(() => normalizeRoleIds(['3', null]), (error) => error instanceof TypeError && /第 2 项/.test(error.message))
+  assert.throws(() => normalizeRoleIds([undefined]), (error) => error instanceof TypeError && /第 1 项/.test(error.message))
 })
 
 test('角色回显按完整启用目录拆分，类型不一致不误判、停用项进待移除', () => {
