@@ -117,7 +117,10 @@ public class TagService {
     }
 
     private static String normalizeName(String tagName) {
-        if (tagName == null || tagName.isBlank() || tagName.codePointCount(0, tagName.length()) > MAX_NAME_LENGTH) {
+        // OpenAPI also treats non-breaking spaces and U+FEFF as whitespace.
+        if (tagName == null || tagName.codePointCount(0, tagName.length()) > MAX_NAME_LENGTH
+                || tagName.codePoints().allMatch(cp -> Character.isWhitespace(cp)
+                        || Character.isSpaceChar(cp) || cp == 0xFEFF)) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "标签名称不能为空且长度不能超过 64");
         }
         return tagName.strip();
