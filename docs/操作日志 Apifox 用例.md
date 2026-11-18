@@ -208,3 +208,18 @@ pm.test("时间毫秒精度", () => {
 - 追加验证（启动 jar 后匿名请求）：`GET /api/admin/logs` → **401 `请先登录`**；`GET /api/admin/logs/1` → **401 `请先登录`**；带 `Authorization: Bearer fake-token` → 500（A 的会话校验边界问题，已写入第 6 节）。
 - 结论：认证层已生效，D 模块仍缺权限层（403），因此在 B 交付 `@RequirePermission` 前本 PR 保持 open、不请求合并；L-01～L-25 查询用例本身不依赖登录状态，接入权限后需补"匿名 401 / 普通员工 403 / 管理员 200"三条验收。
 - 测试与构建：本模块 **48 项**全过（新增"认证上下文取 userId""伪造请求参数无效"两项），全量排除 A/B 的 7 个 Mockito 类后 **119 项**全过。
+
+## 9. 真实登录态用例与执行记录（2026-11-19，C16）
+
+**登录方式**：`POST /api/auth/login`，body `{"username":"admin","password":"<环境变量注入>"}`，取 `data.accessToken`；后续请求 Header `Authorization: Bearer <token>`。
+
+| 组 | 用例 | 期望 |
+| --- | --- | --- |
+| 匿名 | `GET /api/admin/logs`、`GET /api/admin/logs/1` | 401「请先登录」 |
+| 无权限 | editor 列表/详情 | 403（dev 文案「无访问权限」；PR #52 合入后「缺少访问权限: log:list」） |
+| 有权限 | admin 列表/详情 | 200，`id` 为字符串、业务时间毫秒精度 |
+| 参数 | `size=101`、`result=OTHER`、起止时间相等、`foo=bar` | 400 对应提示语 |
+| 待审 | admin `GET /api/admin/reviews/pending` | 200，`authorId` 均不等于当前用户 |
+| 审计 | `POST /api/admin/tags` 成功 / 重名 | 200 且 `sys_operation_log` 新增 SUCCESS / 409 且新增 FAILURE |
+
+**执行记录（2026-11-19）**：脚本 `课程设计/项目指导/scripts/run_e2e_review_log.ps1` + 种子 `database/004_seed_review_log_demo.sql`；真实库 `enterprise_cms`、真实登录态；**26 PASS / 0 FAIL / 1 SKIP**（审核/发布/审核历史/标签命令依赖 PR #30 未合入 dev，自动记为 SKIP）；证据 `课程设计/项目指导/evidence/e2e_review_log_20261118_225431.txt`；脚本结束自动清理本次演示数据并复查无残留。
