@@ -17,6 +17,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElButton, ElDialog, ElTag } from 'element-plus'
+// 弹窗样式不能依赖其他页面的懒加载组件顺带加载（老师审查 #4）。
+import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree, validateAccountForm } from '../../utils/organization.js'
@@ -210,7 +212,7 @@ onMounted(() => {
     <div class="org-toolbar">
       <label class="org-inline-field">
         <span>关键字</span>
-        <input v-model="filters.keyword" maxlength="64" placeholder="登录账号 / 姓名" @keyup.enter="search" />
+        <input v-model="filters.keyword" maxlength="100" placeholder="登录账号 / 姓名" @keyup.enter="search" />
       </label>
       <label class="org-inline-field">
         <span>部门</span>

@@ -11,6 +11,8 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElButton, ElDialog, ElTag } from 'element-plus'
+// 弹窗样式不能依赖其他页面的懒加载组件顺带加载（老师审查 #4）。
+import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { findDepartment, flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
@@ -49,24 +51,22 @@ async function loadTree() {
   const requestId = ++treeRequestId
   loading.value = true
   loadFailed.value = false
-  try {
-    // 筛选后的树用于表格，完整树用于上级候选，两者都要拒绝过期响应。
-    const [filtered, full] = await Promise.all([
-      userApi.getDepartmentTree({ status: statusFilter.value === '' ? '' : Number(statusFilter.value) }),
-      userApi.getDepartmentTree(),
-    ])
-    if (requestId !== treeRequestId) return
-    tree.value = filtered
-    fullTree.value = full
-  } catch {
-    if (requestId !== treeRequestId) return
+  // 筛选后的树用于表格，完整树用于上级候选。两个请求相互独立：
+  // 用 allSettled 分开兜底，一侧失败不清空另一侧已成功的数据（DeepSeek 审查 #8）。
+  const [filteredResult, fullResult] = await Promise.allSettled([
+    userApi.getDepartmentTree({ status: statusFilter.value === '' ? '' : Number(statusFilter.value) }),
+    userApi.getDepartmentTree(),
+  ])
+  if (requestId !== treeRequestId) return
+  const filtered = filteredResult.status === 'fulfilled' ? filteredResult.value : null
+  const full = fullResult.status === 'fulfilled' ? fullResult.value : null
+  tree.value = filtered ?? []
+  fullTree.value = full ?? []
+  if (filtered === null || full === null) {
     // api/client.js 已统一弹出后端错误；内联只给出可重试的中性状态，不重复弹窗。
     loadFailed.value = true
-    tree.value = []
-    fullTree.value = []
-  } finally {
-    if (requestId === treeRequestId) loading.value = false
   }
+  if (requestId === treeRequestId) loading.value = false
 }
 
 function openCreate(parentId = '') {
@@ -98,7 +98,7 @@ function closeEditor() {
 }
 
 function validateForm() {
-  const { form, mode } = editor.value
+  const { form, mode, node } = editor.value
   if (mode === 'create' && (!form.deptCode || form.deptCode.length > 64)) return '部门编码必填且不超过 64 字'
   if (!form.deptName || form.deptName.length > 100) return '部门名称必填且不超过 100 字'
   const order = Number(form.sortOrder)
@@ -106,7 +106,10 @@ function validateForm() {
   if (form.parentId && !isValidId(form.parentId)) return '上级部门 ID 非法'
   // 完整 PUT 切换父节点时目标与全部祖先必须启用；原父不变可保留停用引用（keepParentId）。
   // 候选来自完整树，不受表格 statusFilter 影响；ID 统一按字符串比较，避免类型不一致误拒。
-  if (form.parentId && !candidates.value.some((option) => String(option.id) === String(form.parentId))) {
+  // 保持原父引用不变时跳过候选校验：完整树偶发加载失败不应拦下合法的
+  // 「只改名称/排序」编辑（DeepSeek 审查 #7）；只有切换父节点才必须校验候选。
+  const keepParentId = mode === 'edit' ? node?.parentId ?? '' : ''
+  if (form.parentId && form.parentId !== keepParentId && !candidates.value.some((option) => String(option.id) === String(form.parentId))) {
     return '上级部门不可为自身、后代或停用分支'
   }
   return ''
@@ -205,7 +208,7 @@ onMounted(loadTree)
       <ElButton :disabled="loading" @click="loadTree">刷新</ElButton>
     </div>
 
-    <p v-if="loadFailed" class="org-alert" role="alert">部门树未加载，请确认服务与登录态后重试。</p>
+    <p v-if="loadFailed" class="org-alert" role="alert">部门树未加载完成，请确认服务与登录态后重试。</p>
 
     <div class="org-card">
       <table class="org-table">
