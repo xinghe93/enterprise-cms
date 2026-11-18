@@ -7,7 +7,9 @@
  */
 export const moduleViews = {
   departments: () => import('../views/user/DepartmentView.vue'),
-  users: () => import('../views/user/AssignmentView.vue'),
+  // 员工账号新建/编辑/启停（功能①）；原分配页保留在 assignments 入口。
+  users: () => import('../views/user/AccountView.vue'),
+  assignments: () => import('../views/user/AssignmentView.vue'),
   // C 的 #31 分类与标签页：从 router/index.js 的硬编码分支迁入映射表，保持单一入口。
   categories: () => import('../views/content/TaxonomyView.vue'),
   // C 的 #42 文章管理与知识门户页：dev 上原先由 router/index.js 的 contentRoutes 硬编码，

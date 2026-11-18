@@ -123,6 +123,43 @@ export function normalizeRoleIds(ids) {
 }
 
 /**
+ * 校验员工账号表单（功能① 账号管理页）。返回错误文案，空串表示通过。
+ *
+ * 与后端反序列化器保持一致（UserCreateRequestDeserializer / UserUpdateRequestDeserializer）：
+ *  - username 1～64、password 8～128、realName 1～100，按 Unicode 空白 strip 后判非空；
+ *  - 纯空白（含 U+3000 全角空格）视为非法，与后端 strip() 判定一致；
+ *  - departmentId 可空，非空必须是合法十进制 ID。
+ *
+ * mode=create 校验全部四项；mode=edit 只校验 realName 与 departmentId（完整 PUT）。
+ * allowedDepartmentIds 为可选部门 ID 集合，传入时校验所选部门在候选内。
+ */
+export function validateAccountForm(mode, form, allowedDepartmentIds = null) {
+  if (mode !== 'create' && mode !== 'edit') return '未知的编辑模式'
+  const value = (key) => (typeof form?.[key] === 'string' ? form[key].trim() : '')
+  const blank = (s) => s.length === 0 || !/[^\s\u3000]/.test(s)
+
+  if (mode === 'create') {
+    const username = value('username')
+    if (blank(username) || username.length > 64) return '登录账号必填且不超过 64 字'
+    const password = typeof form?.password === 'string' ? form.password : ''
+    if (password.length < 8 || password.length > 128) return '密码长度需为 8～128 字'
+  }
+
+  const realName = value('realName')
+  if (blank(realName) || realName.length > 100) return '姓名必填且不超过 100 字'
+
+  const departmentId = form?.departmentId
+  if (departmentId !== '' && departmentId !== null && departmentId !== undefined) {
+    const id = String(departmentId)
+    if (!isValidId(id)) return '所属部门 ID 非法'
+    if (allowedDepartmentIds && !allowedDepartmentIds.has(id)) {
+      return '所属部门不可选：仅能选择启用部门或保留原部门'
+    }
+  }
+  return ''
+}
+
+/**
  * 按完整启用角色目录拆分员工详情里的已分配角色：
  *  - selected：启用且在完整目录中，作为可保留项；
  *  - removed：停用或不在目录中，全量替换后会被移除并提示用户。

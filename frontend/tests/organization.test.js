@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   collectSubtreeIds, compactParams, findDepartment, flattenDepartments, isValidId,
-  normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree,
+  normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree, validateAccountForm,
 } from '../src/utils/organization.js'
 
 const node = (id, parentId, deptName, sortOrder, status, children = []) => ({
@@ -118,4 +118,38 @@ test('候选目录为空或被截断时不会把第二页启用角色当作可�
   const complete = partitionAssignedRoles(assigned, [{ id: '2' }, { id: '101' }])
   assert.deepEqual(complete.selectedRoleIds, ['101'])
   assert.equal(complete.removedRoles.length, 0)
+})
+
+test('账号表单：新建校验账号/密码/姓名/部门，长度与纯空白按后端契约判定', () => {
+  const allowed = new Set(['3'])
+  const valid = { username: 'zhangsan', password: 'Passw0rd!', realName: '张三', departmentId: '3' }
+  assert.equal(validateAccountForm('create', valid, allowed), '')
+
+  // 必填项与长度：与 UserCreateRequestDeserializer 一致（1-64 / 8-128 / 1-100）。
+  assert.match(validateAccountForm('create', { ...valid, username: '' }), /登录账号/)
+  assert.match(validateAccountForm('create', { ...valid, username: 'x'.repeat(65) }), /登录账号/)
+  assert.match(validateAccountForm('create', { ...valid, password: 'short' }), /密码/)
+  assert.match(validateAccountForm('create', { ...valid, password: 'x'.repeat(129) }), /密码/)
+  assert.match(validateAccountForm('create', { ...valid, realName: '' }), /姓名/)
+  assert.match(validateAccountForm('create', { ...valid, realName: 'x'.repeat(101) }), /姓名/)
+
+  // 纯空白（含 U+3000 全角空格）必须拒绝，与后端 strip() 判定一致。
+  assert.match(validateAccountForm('create', { ...valid, realName: '　　　' }), /姓名/)
+  assert.match(validateAccountForm('create', { ...valid, username: '   ' }), /登录账号/)
+
+  // 部门可空；非空必须是合法 ID 且在候选集合内。
+  assert.equal(validateAccountForm('create', { ...valid, departmentId: '' }), '')
+  assert.equal(validateAccountForm('create', { ...valid, departmentId: null }), '')
+  assert.match(validateAccountForm('create', { ...valid, departmentId: '0' }), /部门 ID/)
+  assert.match(validateAccountForm('create', { ...valid, departmentId: '9' }, allowed), /所属部门不可选/)
+})
+
+test('账号表单：编辑只校验姓名与部门，不要求账号/密码，保留原停用部门引用', () => {
+  const allowed = new Set(['3'])
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, allowed), '')
+  // 编辑模式不校验 username/password——它们不在完整 PUT 的请求体里。
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '', username: '', password: '' }), '')
+  assert.match(validateAccountForm('edit', { realName: '', departmentId: '3' }), /姓名/)
+  assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, allowed), /所属部门不可选/)
+  assert.match(validateAccountForm('unknown', { realName: '张三' }), /模式/)
 })
