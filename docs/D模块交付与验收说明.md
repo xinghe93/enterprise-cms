@@ -81,7 +81,7 @@
 
 | 项 | 现状 | 待办 |
 | --- | --- | --- |
-| 日志接口权限实现 | dev 上为 `LogPermissionGuard`（403 文案「无访问权限」）；PR #52 已改为 B 的 `@RequirePermission`（「缺少访问权限: log:list」） | #52 合并后行为不变，文档同步 |
+| 日志接口权限实现 | `@RequirePermission("log:list")`/`@RequirePermission("log:read")`（PR #52 已合入 dev，旧 `LogPermissionGuard` 已删除），403 文案「缺少访问权限: …」 | 无待办 |
 | 审核/发布命令 | 代码在 PR #30（含权限注解与事务内审计 bean），dev 尚未合入 | 合并后重跑 e2e 与压测，把 SKIP 组转 PASS |
 | 前端权限门控 | 前端日志页/审核页已做软门控（`permissionCodes` 为空时放行），`permissionCodes` 依赖 A 的 `/auth/me` 下发 | 请 A 在 `/auth/me` 返回权限码后收紧 |
 | 演示种子 | `004_seed_review_log_demo.sql` 在 PR #9（`feature/D/e2e-seed`） | 合并后从仓库直接导入 |
