@@ -5,6 +5,8 @@ import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.user.mapper.UserAdminMapper;
 import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -50,6 +52,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class UserStatusService {
 
+    private static final Logger log = LoggerFactory.getLogger(UserStatusService.class);
+
     /** 一次启停的结果：撤销用的版本号，以及是否为真正的 0→1 启用迁移。 */
     record StatusTransition(long version, boolean enabling) {
     }
@@ -82,7 +86,16 @@ public class UserStatusService {
         // 且不抬高记录，重试可补偿；同状态重复请求因 status_version 未变化而被跳过，
         // 资料更新也不抬升该版本，绝不会误踢启用账号的正常会话。
         if (!transition.enabling()) {
-            sessions.revokeAllForUserUpToVersion(userId, transition.version());
+            try {
+                sessions.revokeAllForUserUpToVersion(userId, transition.version());
+            } catch (RuntimeException exception) {
+                // 数据库状态已经提交，不能回滚也不能伪装成功：按契约向上抛成 500。
+                // 这里用明确日志标出「部分成功」及补偿方式：版本记录未抬高，同状态重试
+                // 会再次调用带版本撤销；期间任何旧请求都会被认证过滤器按停用状态拒绝并兜底撤销。
+                log.error("员工 {} 状态已提交但会话撤销失败（版本 {}），请重试同状态接口补偿；"
+                        + "在此之前旧会话由认证过滤器拒绝", userId, transition.version(), exception);
+                throw exception;
+            }
         }
     }
 

@@ -120,8 +120,13 @@ public class AuthSessionService {
      * 过期后任何一次同状态请求都会把记录当 0 而补一次轮换，误踢启用账号的正常会话。</p>
      */
     private static final DefaultRedisScript<Long> REVOKE_UP_TO_VERSION = new DefaultRedisScript<>(
-            "local recorded = tonumber(redis.call('GET', KEYS[2])) or 0\n"
-                    + "if recorded >= tonumber(ARGV[1]) then return 0 end\n"
+            // 目标版本必须显式校验：若 ARGV[1] 是非数字，直接比较会让 Lua 抛错并中断
+            // 脚本；虽然不会误轮换，但错误信息不含语义，运维难以判断。这里先转成数字，
+            // 非法时返回 Redis 错误，调用方按依赖故障转 500，绝不使用默认值继续比较。
+            "local target = tonumber(ARGV[1])\n"
+                    + "if not target then return redis.error_reply('invalid revoke version') end\n"
+                    + "local recorded = tonumber(redis.call('GET', KEYS[2])) or 0\n"
+                    + "if recorded >= target then return 0 end\n"
                     + "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])\n"
                     + "redis.call('SET', KEYS[2], ARGV[1])\n"
                     + "return 1", Long.class);
@@ -256,6 +261,11 @@ public class AuthSessionService {
      * @return 是否真的轮换；false 表示版本未超过已记录值，本次为幂等跳过
      */
     public boolean revokeAllForUserUpToVersion(Long userId, long version) {
+        if (version < 0) {
+            // status_version 是 BIGINT UNSIGNED，正常路径不可能为负。提前拒绝脏值，
+            // 避免把非法版本送进 Lua 后以难以定位的脚本错误失败（DeepSeek 待核实项）。
+            throw new IllegalArgumentException("会话撤销版本不能为负数");
+        }
         Long result = redis.execute(REVOKE_UP_TO_VERSION,
                 List.of(EPOCH_PREFIX + userId, REVOKED_VERSION_PREFIX + userId),
                 Long.toString(version), newEpoch(), Long.toString(EPOCH_TTL.getSeconds()));

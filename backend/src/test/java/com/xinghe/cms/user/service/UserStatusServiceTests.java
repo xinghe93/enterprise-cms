@@ -10,6 +10,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -207,5 +208,27 @@ class UserStatusServiceTests {
 
         verify(transactionManager).commit(txStatus);
         verify(transactionManager, never()).rollback(txStatus);
+    }
+
+    /**
+     * 提交后撤销失败后的同状态重试必须能补偿：状态未变但不写库，仍按同一版本撤销；
+     * 版本记录未抬高，Lua 会真正轮换纪元（DeepSeek 审查「响应与状态不一致」）。
+     */
+    @Test
+    void disableRevokeFailureCanBeCompensatedBySameStatusRetry() {
+        when(userMapper.findStatusForUpdate(USER_ID))
+                .thenReturn(new UserStatusSnapshot(1, V1))
+                .thenReturn(new UserStatusSnapshot(0, V2));
+        when(userMapper.updateStatus(USER_ID, 0)).thenReturn(1);
+        when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, V2));
+        when(sessions.revokeAllForUserUpToVersion(USER_ID, V2))
+                .thenThrow(new IllegalStateException("Redis 不可用"))
+                .thenReturn(false);
+
+        assertThrows(IllegalStateException.class, () -> service.changeStatus(USER_ID, 0));
+        service.changeStatus(USER_ID, 0);
+
+        verify(userMapper, times(1)).updateStatus(USER_ID, 0);
+        verify(sessions, times(2)).revokeAllForUserUpToVersion(USER_ID, V2);
     }
 }

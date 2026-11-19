@@ -45,6 +45,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * 之后再次解析同一 Token，用户 ID 与纪元都必须和首次一致才放行；期间纪元被轮换时
  * 第二次解析返回 null，本次请求按 401 拒绝。</p>
  *
+ * <p>复核会话带来的额外 Redis 读取是消除「状态已启用但旧会话仍有效」竞态的必要代价：
+ * 状态在 MySQL、纪元在 Redis，两者没有跨存储原子读，无法通过一次查询同时确认；
+ * 两次解析都复用同一个 Token，解析内部的 Redis/数据异常统一由本过滤器外层捕获转 500，
+ * 绝不会因第二次解析失败而放行请求。</p>
+ *
  * <p>账号启停接口仍须在数据库事务提交后调用 {@code revokeAllForUser}，不得先刷新
  * Redis 再提交数据库。Redis/数据库故障返回 500，不放行、不吞异常。</p>
  */

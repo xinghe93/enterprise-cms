@@ -56,6 +56,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/admin/users")
 public class UserAdminController {
 
+    /** 防御性深分页上限：超出后 OFFSET 会让数据库扫描过多行，按 400 拒绝。 */
+    private static final long MAX_LIST_OFFSET = 1_000_000L;
+
     /** 与 OpenAPI {@code Id} schema 一致：十进制正整数字符串，无前导零，最长 19 位。 */
     private static final Pattern ID_PATTERN = Pattern.compile("^[1-9][0-9]{0,18}$");
 
@@ -131,11 +134,17 @@ public class UserAdminController {
         }
         long current = parsePositiveLong(params.get("current"), 1L, Long.MAX_VALUE);
         long size = parsePositiveLong(params.get("size"), 10L, 100L);
+        long offset;
         try {
             // LIMIT/OFFSET 不能溢出 Long；越界按 400 而不是让 SQL 报错变 500。
-            Math.multiplyExact(current - 1, size);
+            offset = Math.multiplyExact(current - 1, size);
         } catch (ArithmeticException exception) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "分页偏移量超出允许范围");
+        }
+        if (offset > MAX_LIST_OFFSET) {
+            // 契约只限制 current 最小值，但极大 OFFSET 会让 MySQL 扫描/跳过过多行；
+            // 管理端不可能合法翻到百万行以后，提前拒绝以消除深分页放大风险。
+            throw new BusinessException(ResultCode.BAD_REQUEST, "分页页码过大");
         }
         String keyword = params.get("keyword");
         if (keyword != null) {

@@ -2,6 +2,7 @@ package com.xinghe.cms.user.controller;
 
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
@@ -28,6 +29,7 @@ import com.xinghe.cms.user.dto.UserUpdateRequest;
 import com.xinghe.cms.user.mapper.UserAuthMapper;
 import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
 import com.xinghe.cms.user.service.UserAdminService;
+import com.xinghe.cms.user.service.UserAuditedActions;
 import com.xinghe.cms.user.service.UserStatusService;
 import com.xinghe.cms.user.vo.UserPageVO;
 import com.xinghe.cms.user.vo.UserVO;
@@ -38,6 +40,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -64,6 +67,8 @@ class UserAdminEndpointsHttpTests {
 
     @Autowired
     private WebApplicationContext context;
+    @Autowired
+    private UserAuditedActions auditedActions;
 
     @MockitoBean
     private UserAdminService userAdminService;
@@ -92,6 +97,13 @@ class UserAdminEndpointsHttpTests {
         mockMvc = MockMvcBuilders.webAppContextSetup(context)
                 .addFilters(context.getBean(BearerTokenAuthenticationFilter.class))
                 .build();
+    }
+
+    /** 审计步骤必须是 Spring AOP 代理，否则四个写入口会静默漏记审计（DeepSeek 审查 #8）。 */
+    @Test
+    void auditedActionsAreProxied() {
+        assertTrue(AopUtils.isAopProxy(auditedActions),
+                "UserAuditedActions 必须由审计切面代理，@AuditLog 才能进入事务内分支");
     }
 
     private UserVO user() {
@@ -123,6 +135,8 @@ class UserAdminEndpointsHttpTests {
 
         verify(userAdminService).createUser(
                 new UserCreateRequest("editor_demo", "12345678", "演示编辑", null));
+        // 认证过滤器必须按 Token 对应的用户查询数据库状态（DeepSeek 待核实项）。
+        verify(userAuthMapper).findStatusById(9L);
     }
 
     /** 合法 departmentId 的正向用例：字符串 ID 反序列化为 Long 并原样传给 Service。 */
@@ -153,13 +167,26 @@ class UserAdminEndpointsHttpTests {
                 "{\"username\":\"u\",\"password\":\"1234567\",\"realName\":\"n\"}",
                 "{\"username\":\"   \",\"password\":\"12345678\",\"realName\":\"n\"}",
                 "{\"username\":\"u\",\"password\":\"12345678\",\"realName\":\"n\",\"departmentId\":1}",
-                "{\"username\":\"u\",\"password\":\"12345678\",\"realName\":\"n\",\"departmentId\":\"0\"}",
-                "{\"username\":\"u\",\"password\":\"12345678\",\"realName\":\"n\",\"roleIds\":[]}");
+                "{\"username\":\"u\",\"password\":\"12345678\",\"realName\":\"n\",\"departmentId\":\"0\"}");
         for (String body : invalid) {
             perform(post(USERS).contentType(MediaType.APPLICATION_JSON).content(body), USERS)
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value(400));
         }
+        verifyNoInteractions(userAdminService);
+    }
+
+    /**
+     * additionalProperties=false 单独断言：其它字段全部合法，仅因 roleIds 未知而 400。
+     * 公共异常处理器刻意不回显字段名，因此用「请求未进入 Service」证明拒绝点正确。
+     */
+    @Test
+    void createUserRejectsUnknownRoleIdsFieldAlone() throws Exception {
+        perform(post(USERS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"u\",\"password\":\"12345678\","
+                                + "\"realName\":\"n\",\"roleIds\":[]}"), USERS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
         verifyNoInteractions(userAdminService);
     }
 
@@ -199,7 +226,6 @@ class UserAdminEndpointsHttpTests {
                 "{\"roleIds\":[\"1\",\"1\"]}",
                 "{\"roleIds\":[\"0\"]}",
                 "{\"roleIds\":[\"9999999999999999999\"]}",
-                "{\"roleIds\":[],\"extra\":1}",
                 "{\"roleIds\":" + tooMany + "}")) {
             perform(put(path).contentType(MediaType.APPLICATION_JSON).content(body), path)
                     .andExpect(status().isBadRequest());
@@ -209,6 +235,17 @@ class UserAdminEndpointsHttpTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data").value(nullValue()));
         verify(userAdminService).replaceRoles(7L, new UserRolesUpdateRequest(List.of()));
+    }
+
+    /** 未知字段单独断言：roleIds 本身合法，仅因 extra 未知而 400，且不进入 Service。 */
+    @Test
+    void rolesRejectUnknownFieldAlone() throws Exception {
+        String path = USERS + "/7/roles";
+        perform(put(path).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleIds\":[],\"extra\":1}"), path)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        verifyNoInteractions(userAdminService);
     }
 
     @Test
@@ -239,6 +276,15 @@ class UserAdminEndpointsHttpTests {
         // 19 位页码 * 100 溢出 LIMIT/OFFSET，必须在 Controller 变 400。
         perform(get(USERS).param("current", "9999999999999999999").param("size", "100"), USERS)
                 .andExpect(status().isBadRequest());
+        verifyNoInteractions(userAdminService);
+    }
+
+    /** 不溢出但极深的 OFFSET 也要拒绝，避免数据库为无效页码扫描大量行。 */
+    @Test
+    void hugeButValidPageReturns400BeforeReachingService() throws Exception {
+        perform(get(USERS).param("current", "1000001").param("size", "10"), USERS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
         verifyNoInteractions(userAdminService);
     }
 

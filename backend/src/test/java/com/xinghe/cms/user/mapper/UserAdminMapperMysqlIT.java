@@ -3,6 +3,9 @@ package com.xinghe.cms.user.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
+import java.util.ArrayList;
+import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -34,6 +37,17 @@ class UserAdminMapperMysqlIT {
     @Autowired
     private UserAdminMapper mapper;
 
+    /** 显式记录插入的主键；即使测试事务配置异常，也在 @AfterEach 中精确清理这些行。 */
+    private final List<Long> insertedIds = new ArrayList<>();
+
+    @AfterEach
+    void cleanUpInsertedUsers() {
+        for (Long id : insertedIds) {
+            jdbc.update("DELETE FROM sys_user WHERE id = ?", id);
+        }
+        insertedIds.clear();
+    }
+
     private long insertUser(String username, int status) {
         jdbc.update("""
                 INSERT INTO sys_user (username, password_hash, real_name, status)
@@ -42,6 +56,7 @@ class UserAdminMapperMysqlIT {
         Long id = jdbc.queryForObject(
                 "SELECT id FROM sys_user WHERE username = ?", Long.class, username);
         assertThat(id).isNotNull();
+        insertedIds.add(id);
         return id;
     }
 
@@ -57,7 +72,11 @@ class UserAdminMapperMysqlIT {
         assertThat(snapshot.statusVersion()).isZero();
     }
 
-    /** updateStatus 每次真实状态变化 +1；资料更新不抬升撤销版本（004 迁移脚本语义）。 */
+    /**
+     * updateStatus 每次真实状态变化 +1；资料更新不抬升撤销版本（004 迁移脚本语义）。
+     * 注意Mapper 的 SQL 不判断同状态——「重复设置同一状态不写库」由 UserStatusService
+     * 的同状态短路保证，并由 UserStatusServiceTests 覆盖，避免把业务语义错放进 SQL。
+     */
     @Test
     void updateStatusBumpsIndependentVersionOncePerChange() {
         long id = insertUser("it_status_version_probe", 1);

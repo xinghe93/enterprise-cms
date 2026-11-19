@@ -311,6 +311,14 @@ class AuthSessionServiceTests {
         verify(values, never()).set(anyString(), anyString());
     }
 
+    /** 脏版本必须在进入 Lua 前拒绝，避免脚本比较报错且无明确上下文。 */
+    @Test
+    void revokeAllForUserUpToVersionRejectsNegativeVersion() {
+        assertThrows(IllegalArgumentException.class,
+                () -> sessions.revokeAllForUserUpToVersion(7L, -1L));
+        verify(redis, never()).execute(any(RedisScript.class), anyList(), any(), any(), any());
+    }
+
     @Test
     void revokeDeletesOnlyGivenSession() {
         sessions.revoke("t");

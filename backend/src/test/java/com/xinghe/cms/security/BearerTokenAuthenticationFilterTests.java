@@ -1,6 +1,7 @@
 package com.xinghe.cms.security;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -86,7 +87,7 @@ class BearerTokenAuthenticationFilterTests {
         AtomicBoolean continued = new AtomicBoolean(false);
         filter.doFilter(request, response, (req, res) -> continued.set(true));
         assertEquals(401, response.getStatus(), "编码变体不得绕过 /api/ 前缀判断");
-        assertTrue(!continued.get());
+        assertFalse(continued.get(), "旧会话不得放行到后续过滤器");
     }
 
     @Test
@@ -102,7 +103,7 @@ class BearerTokenAuthenticationFilterTests {
         assertEquals("请先登录", json.get("message"));
         assertNull(json.get("data"));
         assertTrue(json.containsKey("timestamp"));
-        assertTrue(!continued.get());
+        assertFalse(continued.get(), "旧会话不得放行到后续过滤器");
     }
 
     @Test
@@ -147,7 +148,7 @@ class BearerTokenAuthenticationFilterTests {
                 (req, res) -> continued.set(true));
 
         assertEquals(401, response.getStatus(), "旧请求本身仍返回 401");
-        assertTrue(!continued.get());
+        assertFalse(continued.get(), "旧会话不得放行到后续过滤器");
         verify(sessions).revokeAllForUserIfEpoch(7L, "epoch-observed");
         verify(sessions, never()).revokeAllForUser(any());
     }
@@ -209,7 +210,7 @@ class BearerTokenAuthenticationFilterTests {
         filter.doFilter(request, response, (req, res) -> continued.set(true));
 
         assertEquals(401, response.getStatus(), "旧会话不得凭重新启用后的状态放行");
-        assertTrue(!continued.get());
+        assertFalse(continued.get(), "旧会话不得放行到后续过滤器");
         assertNull(request.getAttribute(CurrentUserProvider.REQUEST_ATTRIBUTE));
         assertNull(request.getAttribute(CurrentUserProvider.TOKEN_ATTRIBUTE));
         verify(sessions, times(2)).resolveIdentity("old-token");
@@ -225,6 +226,28 @@ class BearerTokenAuthenticationFilterTests {
                 (req, res) -> continued.set(true));
         assertEquals(500, response.getStatus());
         assertEquals(500, body(response).get("code"));
-        assertTrue(!continued.get());
+        assertFalse(continued.get(), "旧会话不得放行到后续过滤器");
+    }
+
+    /** 第二次（状态确认后）解析失败也必须拒绝：复核不能成为绕过认证的缺口。 */
+    @Test
+    void reconfirmFailureReturnsServerErrorInsteadOfPassingThrough() throws Exception {
+        when(sessions.resolveIdentity("reconfirm-token"))
+                .thenReturn(new SessionIdentity(7L, "epoch-0"))
+                .thenThrow(new IllegalStateException("redis unavailable"));
+        when(userMapper.findStatusById(7L))
+                .thenReturn(new CurrentUserStatusRow("u", null, 1));
+        MockHttpServletRequest request = request("/api/auth/me", "Bearer reconfirm-token");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean continued = new AtomicBoolean(false);
+
+        filter.doFilter(request, response, (req, res) -> continued.set(true));
+
+        assertEquals(500, response.getStatus(), "复核解析异常不得静默放行");
+        assertEquals(500, body(response).get("code"));
+        assertFalse(continued.get(), "复核失败不得放行到后续过滤器");
+        assertNull(request.getAttribute(CurrentUserProvider.REQUEST_ATTRIBUTE));
+        assertNull(request.getAttribute(CurrentUserProvider.TOKEN_ATTRIBUTE));
+        verify(sessions, times(2)).resolveIdentity("reconfirm-token");
     }
 }

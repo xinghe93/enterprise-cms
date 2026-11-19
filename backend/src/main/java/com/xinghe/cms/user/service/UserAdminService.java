@@ -129,6 +129,8 @@ public class UserAdminService {
             throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
         }
         // 时间由数据库生成后回读，不接受客户端伪造时间；新建账号 roles 恒为 []。
+        // 按 username 回读安全：sys_user 的 uk_user_username 唯一键与该查询使用同一列、
+        // 同一排序规则（utf8mb4_0900_ai_ci），能插入的行必然是该精确匹配唯一行。
         UserProfileRow created = mapper.findProfileByUsername(request.username());
         if (created == null) {
             throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "创建结果不可读");
@@ -185,6 +187,8 @@ public class UserAdminService {
     }
 
     private void doReplaceRoles(long userId, UserRolesUpdateRequest request) {
+        // FOR UPDATE 锁定 sys_user 行直到事务结束：并发的角色全量替换会在这一行上串行化，
+        // 因此后续「读现有集合 → 删除 → 插入」基于同一最新快照，不会相互覆盖。
         if (mapper.findStatusForUpdate(userId) == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
         }
