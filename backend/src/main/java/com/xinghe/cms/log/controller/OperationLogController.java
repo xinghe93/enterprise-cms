@@ -10,8 +10,8 @@ import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.dto.OperationLogQuery;
 import com.xinghe.cms.log.service.OperationLogService;
-import com.xinghe.cms.log.support.LogPermissionGuard;
 import com.xinghe.cms.log.vo.OperationLogVO;
+import com.xinghe.cms.security.annotation.RequirePermission;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -24,11 +24,10 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * 操作日志查询接口。
  *
- * <p>权限：列表要求 {@code log:list}、详情要求 {@code log:read}。B 的
- * {@code @RequirePermission} 与 AOP 尚未合入 dev，这里通过 {@link LogPermissionGuard}
- * 用 A/B 已交付的公共入口显式校验：未登录 401、已登录但缺少权限码 403。
- * B 的注解合入后，这两个调用可直接替换为 {@code @RequirePermission("log:list")}
- * / {@code @RequirePermission("log:read")}，行为保持不变。</p>
+ * <p>权限：列表要求 {@code log:list}、详情要求 {@code log:read}，由 B 的
+ * {@link RequirePermission} 与 {@code RequirePermissionAspect} 统一校验：
+ * 匿名/会话失效 401、已登录但缺少权限码 403、有权限 200。
+ * 参数校验（未知参数、重复传值、十进制、19 位 ID 等）仍在本类内完成。</p>
  */
 @RestController
 @RequestMapping("/api/admin/logs")
@@ -55,16 +54,14 @@ public class OperationLogController {
 
     private final OperationLogService operationLogService;
 
-    private final LogPermissionGuard logPermissionGuard;
-
     /**
      * 日志分页查询：条件全部为 AND，默认 createdAt DESC、id DESC。
      */
+    @RequirePermission("log:list")
     @GetMapping
     public ApiResponse<PageResult<OperationLogVO>> page(@Valid @ModelAttribute OperationLogQuery query,
                                                         HttpServletRequest request) {
         rejectUnknownQueryParams(request, LIST_QUERY_PARAMS);
-        logPermissionGuard.require("log:list");
         return ApiResponse.success(operationLogService.page(query));
     }
 
@@ -72,11 +69,11 @@ public class OperationLogController {
      * 日志详情：不存在时由 Service 抛出 NOT_FOUND，统一异常处理返回 404。
      * 路径参数按十进制字符串接收，避免 Spring 把 0x1 解析成 1。
      */
+    @RequirePermission("log:read")
     @GetMapping("/{id}")
     public ApiResponse<OperationLogVO> detail(@PathVariable String id, HttpServletRequest request) {
         rejectUnknownQueryParams(request, DETAIL_QUERY_PARAMS);
         Long logId = parseLogId(id);
-        logPermissionGuard.require("log:read");
         return ApiResponse.success(operationLogService.detail(logId));
     }
 
