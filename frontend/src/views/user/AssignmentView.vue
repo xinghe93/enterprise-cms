@@ -40,6 +40,9 @@ const removedRoles = ref([])
 // 只有「员工详情 + 启用角色目录」两项请求都成功、勾选状态有效时才允许保存；
 // 否则全量替换会以空勾选提交 roleIds: []，静默清空员工已有角色（老师审查 #2）。
 const rolesReady = ref(false)
+// 目录与详情分别记录失败：任一失败都要保留弹窗内的重试入口（老师审查 #2）。
+// 只看 rolesLoadFailed 时，目录重试成功但详情失败会同时丢掉重试按钮，只能关弹窗重开。
+const roleDetailFailed = ref(false)
 const formError = ref('')
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.value.size)))
@@ -126,6 +129,7 @@ function closeDialog() {
   dialog.value = null
   formError.value = ''
   rolesReady.value = false
+  roleDetailFailed.value = false
 }
 
 async function openDepartmentDialog(user) {
@@ -161,6 +165,7 @@ async function openRoleDialog(user) {
   if (submitting.value) return
   submitting.value = true
   formError.value = ''
+  roleDetailFailed.value = false
   try {
     const detail = await userApi.getUser(user.id)
     const ok = await ensureRoles()
@@ -188,6 +193,7 @@ function applyRoleSelection(detail) {
   selectedRoleIds.value = selected
   removedRoles.value = removed
   rolesReady.value = true
+  roleDetailFailed.value = false
 }
 
 /** 候选目录加载失败后的重试：目录与详情都重新成功才解锁保存并重建勾选。 */
@@ -207,6 +213,9 @@ async function retryRoles() {
     applyRoleSelection(detail)
   } catch {
     rolesReady.value = false
+    // 详情失败也要留下重试入口：此时 ensureRoles 已把 rolesLoadFailed 清空，
+    // 若不再单独标记，保存禁用且重试按钮消失，只能关闭弹窗重开（老师审查 #2）。
+    roleDetailFailed.value = true
     formError.value = '重试失败，请稍后再试'
   } finally {
     submitting.value = false
@@ -391,9 +400,9 @@ onMounted(() => {
           以下已分配角色当前不可分配（停用或不存在），保存后将被移除：
           {{ removedRoles.map((role) => role.roleName).join('、') }}
         </div>
-        <ElButton v-if="rolesLoadFailed" link type="danger" :disabled="submitting" @click="retryRoles">启用角色目录加载失败，点击重试</ElButton>
-        <div v-if="!rolesLoadFailed && !assignableRoles.length" class="org-empty">暂无可分配的启用角色。</div>
-        <div v-else-if="!rolesLoadFailed" class="org-check-list">
+        <ElButton v-if="rolesLoadFailed || roleDetailFailed" link type="danger" :disabled="submitting" @click="retryRoles">角色信息加载失败，点击重试</ElButton>
+        <div v-else-if="!assignableRoles.length" class="org-empty">暂无可分配的启用角色。</div>
+        <div v-else class="org-check-list">
           <label v-for="role in assignableRoles" :key="role.id" class="org-check-item">
             <input
               type="checkbox" :disabled="!rolesReady"

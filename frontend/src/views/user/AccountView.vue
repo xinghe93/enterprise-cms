@@ -37,6 +37,7 @@ const pendingStatus = ref(null) // { user, next }
 const formError = ref('')
 const fullTree = ref([])
 const treeLoaded = ref(false)
+const treeFailed = ref(false)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.value.size)))
 const departmentFilterOptions = computed(() => flattenDepartments(sortDepartmentTree(fullTree.value)))
@@ -51,11 +52,19 @@ let usersRequestId = 0
 async function loadTree() {
   try {
     fullTree.value = await userApi.getDepartmentTree()
+    treeFailed.value = false
   } catch {
     fullTree.value = []
+    treeFailed.value = true
   } finally {
     treeLoaded.value = true
   }
+}
+
+/** 刷新同时重试部门树与员工列表：树加载失败后必须给用户就地恢复的入口（老师审查 #3）。 */
+function refresh() {
+  void loadTree()
+  void loadUsers()
 }
 
 async function loadUsers() {
@@ -138,7 +147,9 @@ function closeDialog() {
 async function save() {
   if (submitting.value || !dialog.value) return
   const { mode, form, user } = dialog.value
-  const message = validateAccountForm(mode, form, allowedDepartmentIds.value)
+  // 编辑时详情里的原部门是权威值：树加载失败也要允许「只改姓名、保留原部门」保存。
+  const message = validateAccountForm(mode, form, allowedDepartmentIds.value,
+    mode === 'edit' ? (user?.departmentId ?? null) : null)
   if (message) {
     formError.value = message
     return
@@ -234,10 +245,11 @@ onMounted(() => {
       <ElButton @click="search">查询</ElButton>
       <span class="org-toolbar-hint">部门筛选含本部门及全部后代</span>
       <ElButton type="primary" :disabled="loading || !treeLoaded" @click="openCreate">新建员工</ElButton>
-      <ElButton :disabled="loading" @click="loadUsers">刷新</ElButton>
+      <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
+    <p v-if="treeFailed" class="org-alert" role="alert">部门树未加载，点击「刷新」可重试；编辑时仍可保留员工详情返回的部门并只改姓名。</p>
 
     <div class="org-card">
       <table class="org-table">
@@ -319,6 +331,10 @@ onMounted(() => {
         <span>所属部门</span>
         <select v-model="dialog.form.departmentId">
           <option value="">无部门（清除原部门）</option>
+          <!-- 树加载失败时详情里的原部门不在候选中：显式显示「保留原部门」，
+               避免下拉框空白却仍提交该 ID，让用户知道保存会原样回写。 -->
+          <option v-if="dialog.mode === 'edit' && treeFailed && dialog.form.departmentId"
+            :value="dialog.form.departmentId">保留原部门（ID: {{ dialog.form.departmentId }}）</option>
           <option v-for="option in departmentOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
         </select>
         <small>仅可选择启用部门；原部门停用时可保留不变。</small>

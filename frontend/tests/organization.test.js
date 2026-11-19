@@ -144,6 +144,20 @@ test('账号表单：新建校验账号/密码/姓名/部门，长度与纯空�
   assert.match(validateAccountForm('create', { ...valid, departmentId: '9' }, allowed), /所属部门不可选/)
 })
 
+test('账号表单：部门树加载失败时编辑可保留详情原部门，换部门仍拒绝', () => {
+  const emptyTree = new Set()
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, emptyTree, '3'), '',
+    '只改姓名、保留详情原部门应允许保存')
+  assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, emptyTree, '3'),
+    /所属部门不可选/, '换成其他部门时候选缺失，无法验证启用链，仍须拒绝')
+  assert.match(validateAccountForm('create',
+    { username: 'zhangsan', password: 'Passw0rd!', realName: '张三', departmentId: '3' },
+    emptyTree, '3'), /所属部门不可选/, '新建没有详情原部门可依据')
+  // 候选完整时仍按原规则校验，不能因传入 retained 而放宽。
+  assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, new Set(['3']), '3'),
+    /所属部门不可选/)
+})
+
 test('账号表单：编辑只校验姓名与部门，不要求账号/密码，保留原停用部门引用', () => {
   const allowed = new Set(['3'])
   assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, allowed), '')
