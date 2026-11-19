@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.log.aspect.AuditLogAspect;
 import com.xinghe.cms.log.entity.OperationLog;
@@ -127,19 +128,61 @@ class RoleAdminAuditTransactionTests {
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
     }
 
-    /** 幂等跳写库（同状态 200）仍记 SUCCESS 审计：操作成功即成功，不取决于是否写库。 */
+    /**
+     * 评审 P2：幂等无状态变更路径（重复同状态）不产生任何审计——切面未进入，
+     * 提交正常完成。审计写入失败不可能影响本应 200 的幂等请求。
+     */
     @Test
-    void idempotentStatusChangeStillRecordsSuccessAudit() {
+    void idempotentStatusChangeSkipsAuditEntirely() {
         when(sysRoleMapper.selectById(37L)).thenReturn(role(37L, "EDITOR", "编辑"));
 
         service.setStatus(37L, new RoleStatusRequest(1));
 
         assertThat(txManager.outcomes).containsExactly("COMMIT");
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
+        assertThat(writer.written).isEmpty();
+        assertThat(writer.writtenInNewTransaction).isEmpty();
+    }
+
+    /**
+     * 评审 P2：状态实际变更（条件更新命中）时审计在业务事务内写入并随事务提交
+     * ——与 update 的直接标注等价，只是触发点从方法入口移到写入确认之后。
+     */
+    @Test
+    void statusChangeAuditIsWrittenInsideBusinessTransactionAndCommitsWithIt() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(role(37L, "EDITOR", "编辑"));
+        when(sysRoleMapper.update(any(SysRole.class), any(Wrapper.class))).thenReturn(1);
+
+        service.setStatus(37L, new RoleStatusRequest(0));
+
+        assertThat(txManager.outcomes).containsExactly("COMMIT");
         assertThat(writer.written).hasSize(1);
-        assertThat(writer.written.get(0).getOperation()).isEqualTo("role.status");
-        assertThat(writer.written.get(0).getResult()).isEqualTo("SUCCESS");
+        OperationLog entry = writer.written.get(0);
+        assertThat(entry.getOperation()).isEqualTo("role.status");
+        assertThat(entry.getResult()).isEqualTo("SUCCESS");
+        // 写入瞬间事务仍激活 = beforeCommit 阶段，与启停写入同一事务
         assertThat(writer.txActiveAtWrite).containsExactly(true);
+        assertThat(writer.writtenInNewTransaction).isEmpty();
+    }
+
+    /** 评审 P2：状态变更路径上审计写入失败 → 业务事务整体回滚（不可能出现变更生效但审计缺失）。 */
+    @Test
+    void statusChangeAuditWriteFailureRollsBackBusinessTransaction() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(role(37L, "EDITOR", "编辑"));
+        when(sysRoleMapper.update(any(SysRole.class), any(Wrapper.class))).thenReturn(1);
+        writer.failOnWrite = true;
+
+        assertThatThrownBy(() -> service.setStatus(37L, new RoleStatusRequest(0)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("审计写入失败");
+
+        assertThat(txManager.outcomes).containsExactly("ROLLBACK");
+        // 状态变更写库已执行，但事务回滚后不生效；成功日志已撤销，仅补记 FAILURE
+        verify(sysRoleMapper).update(any(SysRole.class), any(Wrapper.class));
+        assertThat(writer.written).isEmpty();
+        assertThat(writer.writtenInNewTransaction).hasSize(1);
+        assertThat(writer.writtenInNewTransaction.get(0).getResult()).isEqualTo("FAILURE");
+        assertThat(writer.writtenInNewTransaction.get(0).getOperation()).isEqualTo("role.status");
     }
 
     private static SysRole role(long id, String code, String name) {
@@ -234,8 +277,13 @@ class RoleAdminAuditTransactionTests {
         }
 
         @Bean
-        RoleAdminServiceImpl roleAdminService(SysRoleMapper sysRoleMapper) {
-            return new RoleAdminServiceImpl(sysRoleMapper);
+        RoleWriteAuditMarker roleWriteAuditMarker() {
+            return new RoleWriteAuditMarker();
+        }
+
+        @Bean
+        RoleAdminServiceImpl roleAdminService(SysRoleMapper sysRoleMapper, RoleWriteAuditMarker roleWriteAuditMarker) {
+            return new RoleAdminServiceImpl(sysRoleMapper, roleWriteAuditMarker);
         }
 
         @Bean

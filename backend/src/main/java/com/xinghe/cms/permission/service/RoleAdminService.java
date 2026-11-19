@@ -44,6 +44,9 @@ public interface RoleAdminService {
      * 状态，不删除 user-role 或 role-permission 历史关联；重复设置同一状态
      * 幂等返回 200（不重复写库）；不存在返回 404。
      *
+     * <p>审计：仅在状态实际变更（条件更新命中）时记录 role.status / SUCCESS；
+     * 幂等无状态变更路径不产生审计记录，审计失败也不影响这些请求（评审 P2）。</p>
+     *
      * @param id      角色 ID
      * @param request 启停请求（目标状态 0/1）
      * @throws com.xinghe.cms.common.exception.BusinessException

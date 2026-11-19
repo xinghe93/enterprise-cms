@@ -154,9 +154,10 @@ public class RoleController {
      * 契约：只改状态，不删除 user-role / role-permission 历史关联；重复设置
      * 同一状态幂等返回 200（data=null）；不存在 404。
      *
-     * <p>审计：由 D 的 {@code @AuditLog} 标注在事务边界内的服务方法上，success
-     * 审计随业务事务一起提交（评审 P1）；操作编码取 OpenAPI
-     * {@code x-audit-operation}。</p>
+     * <p>审计：{@code @AuditLog} 标注在 {@code RoleWriteAuditMarker#roleStatusChanged}
+     * 上，服务层仅在条件更新命中（状态确实变更）后调用它——重复同状态、并发
+     * 未命中的幂等 200 路径不产生审计记录，审计失败也不会拖垮这些请求（评审
+     * P2）；实际变更路径的 success 审计随启停事务一起提交。</p>
      *
      * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
      */

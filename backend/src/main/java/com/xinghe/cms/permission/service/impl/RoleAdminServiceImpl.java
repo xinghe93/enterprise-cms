@@ -29,7 +29,8 @@ import org.springframework.transaction.annotation.Transactional;
  * 判断（库存量 {@code EDITOR} 时，提交 {@code " EDITOR "} 返回 409 而非
  * 创建出第二条记录）。去首尾空白与非空校验采用同一套契约空白规则
  * （见 {@link #stripContractWhitespace}）：仅含 NBSP 等字符的输入裁剪后为
- * 空串返回 400，名称内部空格保留。</p>
+ * 空串返回 400，名称内部空格保留；U+001C–U+001F 等控制符按契约（ECMAScript
+ * {@code \s}）是非空白，首尾出现也原样保留不裁剪。</p>
  *
  * <p>修改与启停遵循契约：修改只改 roleName（编码创建后不可改），启停只改
  * status（不删除 user-role / role-permission 历史关联）；重复设置同一状态
@@ -41,13 +42,16 @@ import org.springframework.transaction.annotation.Transactional;
  * 条件更新 {@code WHERE status<>?}（评审 P2）：并发同目标启停请求中后到者
  * 条件不匹配、影响行数为 0，跳过重复写入仍按幂等返回 200。</p>
  *
- * <p>审计（评审 P1）：三个写操作由 D 的 {@code @AuditLog} 标注在本类的方法上
- * ——{@link com.xinghe.cms.log.aspect.AuditLogAspect} 要求注解标在事务边界
- * <b>之内</b>（标在 Controller 上时事务尚未开启，success 日志会在业务提交后
- * 才写、写入失败也只记错误不回滚业务）。标注在 {@code @Transactional} 方法上
- * 后，切面在事务内进入，success 日志经 {@code beforeCommit} 与业务一起提交，
- * 写入失败则业务事务整体回滚；失败审计由切面在回滚后用独立事务补记 FAILURE。
- * 操作编码取 OpenAPI {@code x-audit-operation}。</p>
+ * <p>审计（评审 P1/P2）：{@link com.xinghe.cms.log.aspect.AuditLogAspect} 要求
+ * {@code @AuditLog} 标在事务边界之内（标在 Controller 上时事务尚未开启，success
+ * 日志会在业务提交后才写、写入失败也只记错误不回滚业务）。创建与修改必然产生
+ * 状态变更，注解直接标注在 {@code create}/{@code update} 方法上：切面在事务内
+ * 进入，success 日志经 {@code beforeCommit} 与业务一起提交，写入失败则业务事务
+ * 整体回滚；失败审计由切面在回滚后用独立事务补记 FAILURE。启停存在两条无状态
+ * 变更的幂等路径（重复同状态、并发条件更新未命中，均按契约 200 且不写库），
+ * 为避免"审计写入失败拖垮本应 200 的幂等请求"，注解标在
+ * {@link RoleWriteAuditMarker#roleStatusChanged} 上、仅在条件更新命中（状态确实
+ * 变更）后调用。操作编码取 OpenAPI {@code x-audit-operation}。</p>
  */
 @Service
 public class RoleAdminServiceImpl implements RoleAdminService {
@@ -60,8 +64,12 @@ public class RoleAdminServiceImpl implements RoleAdminService {
 
     private final SysRoleMapper sysRoleMapper;
 
-    public RoleAdminServiceImpl(SysRoleMapper sysRoleMapper) {
+    /** 启停审计锚点（评审 P2）：仅在状态实际变更时经代理调用以记录审计。 */
+    private final RoleWriteAuditMarker roleWriteAuditMarker;
+
+    public RoleAdminServiceImpl(SysRoleMapper sysRoleMapper, RoleWriteAuditMarker roleWriteAuditMarker) {
         this.sysRoleMapper = sysRoleMapper;
+        this.roleWriteAuditMarker = roleWriteAuditMarker;
     }
 
     @Override
@@ -148,7 +156,6 @@ public class RoleAdminServiceImpl implements RoleAdminService {
 
     @Override
     @Transactional
-    @AuditLog(operation = "role.status")
     public void setStatus(Long id, RoleStatusRequest request) {
         Integer status = request.status();
         // OpenAPI Status enum [0,1]；类型已由 StrictIntDeserializer 拦截，此处校验取值
@@ -161,7 +168,8 @@ public class RoleAdminServiceImpl implements RoleAdminService {
             throw new BusinessException(ResultCode.NOT_FOUND, "角色不存在");
         }
 
-        // 契约：重复设置同一状态返回 200，幂等不重复写库
+        // 契约：重复设置同一状态返回 200，幂等不重复写库。
+        // 评审 P2：本路径无状态变更，直接返回，不进入审计标记方法（见下方审计说明）
         if (status.equals(role.getStatus())) {
             return;
         }
@@ -176,21 +184,44 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         // 本迭代无删除角色入口，select 与 update 之间行消失的窗口不存在。
         SysRole change = new SysRole();
         change.setStatus(status);
-        sysRoleMapper.update(change,
+        int updated = sysRoleMapper.update(change,
                 new UpdateWrapper<SysRole>().eq("id", role.getId()).ne("status", status));
+
+        // 评审 P2：影响 0 行 = 并发请求已把状态改到目标值，同样无状态变更，
+        // 按幂等返回 200 且不产生审计记录
+        if (updated == 0) {
+            return;
+        }
+
+        // 仅状态实际变更时进入审计锚点（评审 P2）：切面经代理在事务内注册同步器，
+        // beforeCommit 随本事务写 role.status / SUCCESS；审计写入失败则事务回滚
+        // （此时状态确实变了，回滚 + 报错符合"业务生效但审计缺失"的禁止约束）。
+        // 两条无状态变更路径在上面已提前返回，不会产生任何审计记录。
+        roleWriteAuditMarker.roleStatusChanged();
     }
 
     /**
-     * 契约空白判定（评审 P2）：与 OpenAPI pattern {@code \S} 的 ECMAScript 空白
-     * 语义一致。{@code String.strip()}/{@code Character.isWhitespace} 不把
-     * NBSP（U+00A0）、窄 NBSP（U+202F）、BOM（U+FEFF）当作空白；裁剪与判空
-     * 必须用同一套规则，否则 {@code "\u00A0编辑\u00A0"} 会带着首尾 NBSP 落库。
-     * {@code Character.isSpaceChar} 补齐 NBSP 家族（Unicode 空格分隔符 Zs），
-     * U+FEFF 显式覆盖。名称内部的空白不在首尾，原样保留。
+     * 契约空白判定（评审 P2）：与 OpenAPI pattern {@code \S} 的 ECMAScript
+     * {@code \s} 语义<b>完全一致</b>，不借用 {@code Character.isWhitespace}——
+     * 它两头都不对：
+     * <ul>
+     *   <li>多认 U+001C–U+001F（信息分隔控制符）：按契约它们是非空白字符，
+     *       裁剪会把 {@code "\u001C编辑\u001C"} 错误保存为"编辑"，必须放行；</li>
+     *   <li>少认 NBSP 家族与 BOM：U+00A0、U+202F 等 Zs 字符与 U+FEFF 在
+     *       Java 判定中不是空白，仅含这些的输入会"看起来为空"却通过校验。</li>
+     * </ul>
+     * 因此按 ECMAScript 规范精确枚举 {@code \s} = WhiteSpace + LineTerminator：
+     * Zs 空格分隔符 + U+2028/U+2029 + 控制空白 U+0009/U+000A/U+000B/U+000C/
+     * U+000D + U+FEFF。名称内部（非首尾）的空白原样保留。
      */
     private static boolean isContractWhitespace(int codePoint) {
-        return Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)
-                || codePoint == '\uFEFF';
+        int type = Character.getType(codePoint);
+        return type == Character.SPACE_SEPARATOR            // Zs：\u0020 \u00A0 \u1680 \u2000-\u200A \u202F \u205F \u3000
+                || type == Character.LINE_SEPARATOR          // \u2028
+                || type == Character.PARAGRAPH_SEPARATOR     // \u2029
+                || codePoint == 0x09 || codePoint == 0x0A || codePoint == 0x0B
+                || codePoint == 0x0C || codePoint == 0x0D    // 控制空白（\t \n \v \f \r）
+                || codePoint == 0xFEFF;                      // ZWNBSP/BOM（ECMAScript WhiteSpace 成员）
     }
 
     /** 去除首尾的契约空白（见 {@link #isContractWhitespace}），内部空白原样保留。 */

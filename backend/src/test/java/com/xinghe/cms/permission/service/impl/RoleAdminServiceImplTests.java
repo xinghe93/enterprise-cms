@@ -39,6 +39,9 @@ class RoleAdminServiceImplTests {
     @Mock
     private SysRoleMapper sysRoleMapper;
 
+    @Mock
+    private RoleWriteAuditMarker roleWriteAuditMarker;
+
     @InjectMocks
     private RoleAdminServiceImpl service;
 
@@ -338,6 +341,49 @@ class RoleAdminServiceImplTests {
         assertThat(captor.getValue().getRoleName()).isEqualTo("名称");
     }
 
+    /**
+     * 评审 P2 回归：U+001C（信息分隔控制符）按 ECMAScript {@code \s} 是<b>非空白</b>，
+     * 首尾出现也不裁剪——{@code Character.isWhitespace} 会把它错裁掉导致
+     * {@code "\u001C编辑\u001C"} 被存成"编辑"。
+     */
+    @Test
+    void updateDoesNotTrimInformationSeparators() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(savedRole(37L, "EDITOR", "旧名称"),
+                savedRole(37L, "EDITOR", "编辑"));
+
+        service.update(37L, new RoleUpdateRequest("\u001C编辑\u001C"));
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getRoleName()).isEqualTo("\u001C编辑\u001C");
+    }
+
+    /** 评审 P2 回归：仅含 U+001C 的输入按契约 \S 是非空白，放行并原样写库（不误拒）。 */
+    @Test
+    void informationSeparatorOnlyRoleNameIsNonBlankPerContract() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(savedRole(37L, "EDITOR", "旧名称"),
+                savedRole(37L, "EDITOR", "\u001C"));
+
+        service.update(37L, new RoleUpdateRequest("\u001C"));
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getRoleName()).isEqualTo("\u001C");
+    }
+
+    /** 评审 P2 回归：U+000B（垂直制表符）在 ECMAScript \s 中是空白，首尾仍要裁剪。 */
+    @Test
+    void updateTrimsVerticalTabPerContract() {
+        when(sysRoleMapper.selectById(37L)).thenReturn(savedRole(37L, "EDITOR", "旧名称"),
+                savedRole(37L, "EDITOR", "编辑"));
+
+        service.update(37L, new RoleUpdateRequest("\u000B编辑\u000B"));
+
+        ArgumentCaptor<SysRole> captor = ArgumentCaptor.forClass(SysRole.class);
+        verify(sysRoleMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getRoleName()).isEqualTo("编辑");
+    }
+
     /** 评审 P2 回归：创建入口同样按契约空白判定——roleCode/roleName 仅含 NBSP → 400。 */
     @Test
     void createNbspOnlyFieldsReturn400() {
@@ -361,6 +407,8 @@ class RoleAdminServiceImplTests {
     void setStatusChangesOnlyStatus() {
         SysRole existing = savedRole(37L, "EDITOR", "编辑");
         when(sysRoleMapper.selectById(37L)).thenReturn(existing);
+        // mock 默认 update 返回 0（幂等分支），必须 stub 为命中 1 行以走实际变更路径
+        when(sysRoleMapper.update(any(SysRole.class), any(Wrapper.class))).thenReturn(1);
 
         service.setStatus(37L, new RoleStatusRequest(0));
 
@@ -377,9 +425,11 @@ class RoleAdminServiceImplTests {
         // 评审 P2：条件更新带 status<>?，并发同目标启停请求跳过重复写入
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
         assertThat(sqlSegment).contains("id =").contains("status <>");
+        // 评审 P2：状态实际变更才进入审计锚点
+        verify(roleWriteAuditMarker).roleStatusChanged();
     }
 
-    /** 契约：重复设置同一状态幂等返回 200，不重复写库。 */
+    /** 契约：重复设置同一状态幂等返回 200，不重复写库、不记录审计（无状态变更）。 */
     @Test
     void settingSameStatusIsIdempotentAndSkipsWrite() {
         when(sysRoleMapper.selectById(37L)).thenReturn(savedRole(37L, "EDITOR", "编辑"));
@@ -388,11 +438,14 @@ class RoleAdminServiceImplTests {
 
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
         verify(sysRoleMapper, never()).update(any(SysRole.class), any(Wrapper.class));
+        // 评审 P2：无状态变更路径不进入审计——审计失败不应拖垮本应 200 的幂等请求
+        verify(roleWriteAuditMarker, never()).roleStatusChanged();
     }
 
     /**
      * 评审 P2：并发同目标启停——另一请求已把状态改到目标值，条件更新
-     * {@code WHERE status<>?} 影响 0 行，服务按幂等返回 200 不报错。
+     * {@code WHERE status<>?} 影响 0 行，服务按幂等返回 200，且不进入审计
+     * （与同状态路径一致：无状态变更即无审计）。
      */
     @Test
     void setStatusConditionalUpdateWithZeroAffectedRowsStillReturns200() {
@@ -401,6 +454,7 @@ class RoleAdminServiceImplTests {
         service.setStatus(37L, new RoleStatusRequest(0));
 
         verify(sysRoleMapper).update(any(SysRole.class), any(Wrapper.class));
+        verify(roleWriteAuditMarker, never()).roleStatusChanged();
     }
 
     /** 启停：角色不存在 404。 */
@@ -415,6 +469,7 @@ class RoleAdminServiceImplTests {
 
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
         verify(sysRoleMapper, never()).update(any(SysRole.class), any(Wrapper.class));
+        verify(roleWriteAuditMarker, never()).roleStatusChanged();
     }
 
     /** 启停：status 非 0/1（如 2）返回 400，不进入查询。 */
