@@ -174,10 +174,18 @@ test('角色目录异常一律抛错而非静默返回空/残缺候选（避免�
   const roleApi = createRoleApi(mock({ records: [], total: 0 }))
   // 真的零角色是合法结果，返回空但不能抛错。
   assert.deepEqual((await roleApi.listAssignableRoles()).records, [])
+  // 契约 total 是 int64，字符串数字必须兼容；空字符串仍属非法。
+  assert.deepEqual((await createRoleApi(mock({ records: [], total: '0' })).listAssignableRoles()).records, [])
+  assert.equal((await createRoleApi(mock({ records: [{ id: '1', status: 1 }], total: '1' })).listAssignableRoles()).records.length, 1)
+  await assert.rejects(createRoleApi(mock({ records: [], total: '' })).listAssignableRoles(), /分页数据异常/)
+
+  // 重复/缺 ID 的记录不能靠条数凑满 total 冒充完整目录。
+  await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }, { id: '1' }], total: 2 })).listAssignableRoles(), /重复记录/)
+  await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }, {}], total: 2 })).listAssignableRoles(), /缺少 ID/)
 
   // total 缺失 / 非法：抛错，交由上层禁用保存。
   await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }] })).listAssignableRoles(), /分页数据异常/)
-  await assert.rejects(createRoleApi(mock({ records: [], total: '5' })).listAssignableRoles(), /分页数据异常/)
+  await assert.rejects(createRoleApi(mock({ records: [], total: 'five' })).listAssignableRoles(), /分页数据异常/)
 
   // 首页空页但 total>0：提前截断，抛错。
   await assert.rejects(createRoleApi(mock({ records: [], total: 5 })).listAssignableRoles(), /提前返回空页/)
@@ -197,17 +205,17 @@ test('角色目录异常一律抛错而非静默返回空/残缺候选（避免�
 })
 
 test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', async () => {
-  // 页面映射直接动态导入真实 moduleViews 断言行为，替代对源码文本的正则匹配，
-  // 等价重构（改写法、调键顺序）不会误报（DeepSeek 审查 #13）。
-  const { moduleViews } = await import('../src/router/viewComponents.js')
+  // 映射与回退都通过可导入的纯函数断言行为，不再对 router/index.js 做源码正则匹配；
+  // 等价重构（改写法、调键顺序）不会误报（DeepSeek 审查 #13/#11）。
+  const { hasModuleView, moduleViews, resolveModuleView } = await import('../src/router/viewComponents.js')
   for (const entry of ['departments', 'users', 'assignments', 'categories']) {
     assert.equal(typeof moduleViews[entry], 'function', `moduleViews.${entry} 应映射到真实页面`)
+    assert.equal(hasModuleView(entry), true)
+    assert.equal(typeof resolveModuleView(entry), 'function')
   }
-  // router/index.js 依赖 vue-router 的浏览器 API（createWebHistory），Node 环境无法加载，
-  // 其「映射回退」逻辑只能以源码断言覆盖。
-  const routerSource = readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
+  assert.equal(hasModuleView('not-a-real-module'), false)
+  assert.equal(typeof resolveModuleView('not-a-real-module'), 'function')
+  // main.js 在 Node 环境有浏览器副作用，只能以源码断言覆盖样式入口。
   const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
-  assert.match(routerSource, /moduleViews\[entry\.name\] \?\?/)
-  assert.match(routerSource, /props: \{ entry \}/)
   assert.match(mainSource, /import '\.\/styles\/organization\.css'/)
 })

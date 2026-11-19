@@ -43,9 +43,17 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.va
 const departmentFilterOptions = computed(() => flattenDepartments(sortDepartmentTree(fullTree.value)))
 // 可选部门：启用部门 + 编辑时保留原部门引用；与后端「新引用须启用、原引用可保留」一致。
 const departmentOptions = computed(() => parentOptions(fullTree.value, {
-  keepParentId: dialog.value?.mode === 'edit' ? (dialog.value.user?.departmentId ?? null) : null,
+  // 原部门以详情里的权威值为准，显式存到 dialog.retainedDepartmentId；
+  // 不再从合并后的 user 快照推断，避免列表旧值与详情 null 混用（DeepSeek 审查 #1）。
+  keepParentId: dialog.value?.mode === 'edit' ? (dialog.value.retainedDepartmentId ?? null) : null,
 }))
 const allowedDepartmentIds = computed(() => new Set(departmentOptions.value.map((option) => String(option.id))))
+// 原部门不在候选中（树失败、停用或已不存在）时必须显式渲染「保留原部门」选项，
+// 不能只在 treeFailed 时显示，否则下拉空白却仍提交该 ID（DeepSeek 审查 #4）。
+const retainedDepartmentMissing = computed(() => {
+  const id = dialog.value?.mode === 'edit' ? dialog.value.retainedDepartmentId : null
+  return id !== null && id !== undefined && !allowedDepartmentIds.value.has(String(id))
+})
 
 let usersRequestId = 0
 
@@ -123,12 +131,15 @@ async function openEdit(user) {
   try {
     // 列表是旧快照；完整 PUT 会回写 realName / departmentId，先取最新详情避免覆盖。
     const detail = await userApi.getUser(user.id)
+    const retainedDepartmentId = detail?.departmentId ?? null
     dialog.value = {
       mode: 'edit',
       user: { ...user, ...detail },
+      // 详情是原部门的唯一权威来源：候选、下拉选项与校验都引用同一字段。
+      retainedDepartmentId,
       form: {
         realName: detail?.realName ?? user.realName ?? '',
-        departmentId: detail?.departmentId ?? '',
+        departmentId: retainedDepartmentId ?? '',
       },
     }
   } catch {
@@ -146,10 +157,10 @@ function closeDialog() {
 
 async function save() {
   if (submitting.value || !dialog.value) return
-  const { mode, form, user } = dialog.value
+  const { mode, form, user, retainedDepartmentId } = dialog.value
   // 编辑时详情里的原部门是权威值：树加载失败也要允许「只改姓名、保留原部门」保存。
   const message = validateAccountForm(mode, form, allowedDepartmentIds.value,
-    mode === 'edit' ? (user?.departmentId ?? null) : null)
+    mode === 'edit' ? (retainedDepartmentId ?? null) : null)
   if (message) {
     formError.value = message
     return
@@ -244,7 +255,7 @@ onMounted(() => {
       </label>
       <ElButton @click="search">查询</ElButton>
       <span class="org-toolbar-hint">部门筛选含本部门及全部后代</span>
-      <ElButton type="primary" :disabled="loading || !treeLoaded" @click="openCreate">新建员工</ElButton>
+      <ElButton type="primary" :disabled="loading || !treeLoaded || treeFailed" @click="openCreate">新建员工</ElButton>
       <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
     </div>
 
@@ -331,10 +342,10 @@ onMounted(() => {
         <span>所属部门</span>
         <select v-model="dialog.form.departmentId">
           <option value="">无部门（清除原部门）</option>
-          <!-- 树加载失败时详情里的原部门不在候选中：显式显示「保留原部门」，
+          <!-- 原部门不在候选中（树失败 / 停用 / 已不存在）时显式显示「保留原部门」，
                避免下拉框空白却仍提交该 ID，让用户知道保存会原样回写。 -->
-          <option v-if="dialog.mode === 'edit' && treeFailed && dialog.form.departmentId"
-            :value="dialog.form.departmentId">保留原部门（ID: {{ dialog.form.departmentId }}）</option>
+          <option v-if="retainedDepartmentMissing"
+            :value="dialog.retainedDepartmentId">保留原部门（ID: {{ dialog.retainedDepartmentId }}）</option>
           <option v-for="option in departmentOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
         </select>
         <small>仅可选择启用部门；原部门停用时可保留不变。</small>

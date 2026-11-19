@@ -51,22 +51,27 @@ async function loadTree() {
   const requestId = ++treeRequestId
   loading.value = true
   loadFailed.value = false
-  // 筛选后的树用于表格，完整树用于上级候选。两个请求相互独立：
-  // 用 allSettled 分开兜底，一侧失败不清空另一侧已成功的数据（DeepSeek 审查 #8）。
-  const [filteredResult, fullResult] = await Promise.allSettled([
-    userApi.getDepartmentTree({ status: statusFilter.value === '' ? '' : Number(statusFilter.value) }),
-    userApi.getDepartmentTree(),
-  ])
-  if (requestId !== treeRequestId) return
-  const filtered = filteredResult.status === 'fulfilled' ? filteredResult.value : null
-  const full = fullResult.status === 'fulfilled' ? fullResult.value : null
-  tree.value = filtered ?? []
-  fullTree.value = full ?? []
-  if (filtered === null || full === null) {
-    // api/client.js 已统一弹出后端错误；内联只给出可重试的中性状态，不重复弹窗。
-    loadFailed.value = true
+  try {
+    // 筛选后的树用于表格，完整树用于上级候选。两个请求相互独立：
+    // 用 allSettled 分开兜底，一侧失败不清空另一侧已成功的数据（DeepSeek 审查 #8）。
+    const [filteredResult, fullResult] = await Promise.allSettled([
+      userApi.getDepartmentTree({ status: statusFilter.value === '' ? '' : Number(statusFilter.value) }),
+      userApi.getDepartmentTree(),
+    ])
+    if (requestId !== treeRequestId) return
+    const filtered = filteredResult.status === 'fulfilled' ? filteredResult.value : null
+    const full = fullResult.status === 'fulfilled' ? fullResult.value : null
+    tree.value = filtered ?? []
+    fullTree.value = full ?? []
+    if (filtered === null || full === null) {
+      // api/client.js 已统一弹出后端错误；内联只给出可重试的中性状态，不重复弹窗。
+      loadFailed.value = true
+    }
+  } finally {
+    // 无论成功、失败还是响应过期，只有最新一次请求负责复位 loading，
+    // 避免并发切换筛选时旧请求提前 return 导致状态残留（DeepSeek 审查 #6）。
+    if (requestId === treeRequestId) loading.value = false
   }
-  if (requestId === treeRequestId) loading.value = false
 }
 
 function openCreate(parentId = '') {
@@ -153,10 +158,13 @@ async function save() {
 
 async function toggleStatus(node) {
   if (submitting.value) return
-  if (node.status !== 0 && node.status !== 1) return
+  // 列表行可能来自筛选前的快照；提交前按 ID 从最新完整树回读真实状态，
+  // 避免基于过期 status 反向切换（DeepSeek 审查 #7）。
+  const current = findDepartment(fullTree.value, node.id) ?? findDepartment(tree.value, node.id) ?? node
+  if (current.status !== 0 && current.status !== 1) return
   submitting.value = true
   try {
-    await userApi.setDepartmentStatus(node.id, node.status === 1 ? 0 : 1)
+    await userApi.setDepartmentStatus(current.id, current.status === 1 ? 0 : 1)
     await loadTree()
   } catch {
     // 公共层已提示 404 / 409 / 500，此处不吞异常也不重复弹窗。

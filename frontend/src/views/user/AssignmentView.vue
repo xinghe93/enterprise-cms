@@ -166,10 +166,15 @@ async function openRoleDialog(user) {
   submitting.value = true
   formError.value = ''
   roleDetailFailed.value = false
+  rolesReady.value = false
+  selectedRoleIds.value = []
+  removedRoles.value = []
+  // 先打开弹窗再发请求：任一请求失败时都要能在弹窗内重试，
+  // 不能在详情失败时直接关闭，让用户只能重新点行（DeepSeek 待核实 #5）。
+  dialog.value = { type: 'role', user }
   try {
     const detail = await userApi.getUser(user.id)
     const ok = await ensureRoles()
-    dialog.value = { type: 'role', user }
     if (!ok) {
       // 目录失败时勾选无效：清空待移除提示（目录没拿到，无法判断哪些会被移除），
       // 保持禁止保存并引导重试，而不是带着空勾选放行保存。
@@ -181,7 +186,9 @@ async function openRoleDialog(user) {
     }
     applyRoleSelection(detail)
   } catch {
-    // 公共层已提示 404 / 500，保持弹窗关闭状态。
+    // 公共层已提示 404 / 500；这里保留弹窗与重试入口，不让用户带着空勾选保存。
+    roleDetailFailed.value = true
+    formError.value = '员工详情加载失败，请重试'
   } finally {
     submitting.value = false
   }
@@ -216,7 +223,7 @@ async function retryRoles() {
     // 详情失败也要留下重试入口：此时 ensureRoles 已把 rolesLoadFailed 清空，
     // 若不再单独标记，保存禁用且重试按钮消失，只能关闭弹窗重开（老师审查 #2）。
     roleDetailFailed.value = true
-    formError.value = '重试失败，请稍后再试'
+    formError.value = '员工详情加载失败，请重试'
   } finally {
     submitting.value = false
   }
@@ -281,8 +288,11 @@ async function saveRoles() {
 onMounted(() => {
   // 员工页跳转带 ?keyword=<username>：首次请求前读取，避免目标员工不在第一页时
   // 管理员还要手动重新搜索（老师审查 #5）；长度与契约 keyword 上限一致。
-  const keyword = typeof route.query.keyword === 'string' ? route.query.keyword : ''
-  if (keyword) filters.value.keyword = keyword.slice(0, 100)
+  const keyword = typeof route.query.keyword === 'string' ? route.query.keyword.trim() : ''
+  if (keyword) {
+    filters.value.keyword = keyword.slice(0, 100)
+    filters.value.current = 1
+  }
   void loadDepartments()
   void loadUsers()
 })

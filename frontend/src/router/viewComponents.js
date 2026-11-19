@@ -25,3 +25,15 @@ export const moduleViews = {
 export const contentViewProps = {
   portal: { portal: true },
 }
+
+/**
+ * 路由构造用的纯查询函数：路由表只依赖这两个函数，测试可直接断言行为，
+ * 不必对 router/index.js 做源码正则匹配（DeepSeek 审查 #11）。
+ */
+export function hasModuleView(name) {
+  return Object.hasOwn(moduleViews, name)
+}
+
+export function resolveModuleView(name) {
+  return moduleViews[name] ?? (() => import('../views/ModuleView.vue'))
+}

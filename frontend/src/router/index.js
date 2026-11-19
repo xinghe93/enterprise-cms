@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { moduleEntries } from './navigation.js'
-import { moduleViews, contentViewProps } from './viewComponents.js'
+import { contentViewProps, hasModuleView, resolveModuleView } from './viewComponents.js'
 
 const articleDetail = () => import('../views/content/ArticleDetailView.vue')
 const articleEditor = () => import('../views/content/ArticleEditorView.vue')
@@ -15,10 +15,10 @@ export const router = createRouter({
         { path: 'workspace', name: 'workspace', component: () => import('../views/WorkspaceView.vue'), meta: { title: '工作空间' } },
         ...moduleEntries.map((entry) => ({
           path: entry.path.slice(1), name: entry.name,
-          component: moduleViews[entry.name] ?? (() => import('../views/ModuleView.vue')),
+          component: resolveModuleView(entry.name),
           // 占位页接收 entry；真实页面用自身固定 props（如 portal），否则不传，
           // 避免多余 props 落到组件根元素上。
-          ...(moduleViews[entry.name]
+          ...(hasModuleView(entry.name)
             ? (contentViewProps[entry.name] ? { props: contentViewProps[entry.name] } : {})
             : { props: { entry } }),
           meta: { title: entry.title },

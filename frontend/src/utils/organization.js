@@ -133,9 +133,9 @@ export function normalizeRoleIds(ids) {
  * mode=create 校验全部四项；mode=edit 只校验 realName 与 departmentId（完整 PUT）。
  * allowedDepartmentIds 为可选部门 ID 集合，传入时校验所选部门在候选内。
  *
- * retainedDepartmentId 是编辑时从员工详情读到的原部门（PR #47 审查 #3）：部门树加载
- * 失败时候选集合为空，但「只改姓名、保留原部门」仍是合法的完整 PUT，此时允许该原
- * 部门绕过候选校验；换成其他部门（候选缺失时无法验证启用链）仍必须拒绝。
+ * retainedDepartmentId 是编辑时从员工详情读到的原部门（PR #47 审查 #3/#7）：契约
+ * 允许原引用不变时保留停用/不可选的原部门，因此只要提交值与详情原值一致就放行；
+ * 换成其他部门（候选缺失时无法验证启用链）仍必须拒绝，新建也没有原部门可依据。
  */
 export function validateAccountForm(mode, form, allowedDepartmentIds = null,
   retainedDepartmentId = null) {
@@ -157,11 +157,9 @@ export function validateAccountForm(mode, form, allowedDepartmentIds = null,
   if (departmentId !== '' && departmentId !== null && departmentId !== undefined) {
     const id = String(departmentId)
     if (!isValidId(id)) return '所属部门 ID 非法'
-    const treeUnavailable = !allowedDepartmentIds || allowedDepartmentIds.size === 0
     const keepingDetailDepartment = mode === 'edit' && retainedDepartmentId != null
       && id === String(retainedDepartmentId)
-    if (allowedDepartmentIds && !allowedDepartmentIds.has(id)
-      && !(treeUnavailable && keepingDetailDepartment)) {
+    if (allowedDepartmentIds && !allowedDepartmentIds.has(id) && !keepingDetailDepartment) {
       return '所属部门不可选：仅能选择启用部门或保留原部门'
     }
   }

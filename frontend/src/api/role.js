@@ -25,6 +25,7 @@ export function createRoleApi(client) {
      */
     listAssignableRoles: async () => {
       const records = []
+      const seenIds = new Set()
       const maxPages = 100
       let declaredTotal = null
       for (let current = 1; current <= maxPages; current += 1) {
@@ -33,12 +34,16 @@ export function createRoleApi(client) {
         })
         const rows = page?.records
         const rawTotal = page?.total
-        if (!Array.isArray(rows) || !Number.isSafeInteger(rawTotal) || rawTotal < 0) {
+        // 契约 total 为 int64；部分 JSON 序列化会把长整型写成字符串。
+        // 只接受「纯十进制整数字符串」，不接受小数/指数/空串，避免把脏值静默转成 0。
+        const total = typeof rawTotal === 'string' && /^\d+$/.test(rawTotal.trim())
+          ? Number(rawTotal.trim()) : rawTotal
+        if (!Array.isArray(rows) || !Number.isSafeInteger(total) || total < 0) {
           throw new TypeError('角色目录分页数据异常，已中止加载以避免误删现有角色')
         }
         if (declaredTotal === null) {
-          declaredTotal = rawTotal
-        } else if (rawTotal !== declaredTotal) {
+          declaredTotal = total
+        } else if (total !== declaredTotal) {
           throw new TypeError('角色目录分页总数不一致，已中止加载以避免误删现有角色')
         }
         if (rows.length === 0) {
@@ -48,7 +53,19 @@ export function createRoleApi(client) {
           }
           break
         }
-        records.push(...rows)
+        // 重复记录会让 records.length 误达 total 而掩盖真实缺失；缺 ID 同样无法
+        // 证明目录完整，都按不可信中止（DeepSeek 审查 #2）。
+        for (const row of rows) {
+          if (row?.id === null || row?.id === undefined) {
+            throw new TypeError('角色目录记录缺少 ID，已中止加载以避免误删现有角色')
+          }
+          const key = String(row.id)
+          if (seenIds.has(key)) {
+            throw new RangeError('角色目录返回重复记录，已中止加载以避免误删现有角色')
+          }
+          seenIds.add(key)
+          records.push(row)
+        }
         if (records.length >= declaredTotal) break
       }
       // 达到页数上限仍未取满 = 目录不完整，抛错而非返回残缺候选。

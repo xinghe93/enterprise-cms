@@ -153,7 +153,10 @@ test('账号表单：部门树加载失败时编辑可保留详情原部门，�
   assert.match(validateAccountForm('create',
     { username: 'zhangsan', password: 'Passw0rd!', realName: '张三', departmentId: '3' },
     emptyTree, '3'), /所属部门不可选/, '新建没有详情原部门可依据')
-  // 候选完整时仍按原规则校验，不能因传入 retained 而放宽。
+  // 树成功但原部门停用 / 已不在候选时，只要仍提交详情原值就允许保留。
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, new Set(['9']), '3'), '',
+    '原引用不变可保留停用/不可选部门')
+  // 换成其他部门时仍按候选规则校验，不能因传入 retained 而放宽。
   assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, new Set(['3']), '3'),
     /所属部门不可选/)
 })
