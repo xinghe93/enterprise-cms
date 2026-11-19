@@ -119,3 +119,19 @@ test('候选目录为空或被截断时不会把第二页启用角色当作可�
   assert.deepEqual(complete.selectedRoleIds, ['101'])
   assert.equal(complete.removedRoles.length, 0)
 })
+
+test('员工持有的启用角色缺失于目录时单独标记，调用方必须阻止全量替换', () => {
+  const assigned = [
+    { id: '2', roleName: '编辑', status: 1 },
+    { id: '9', roleName: '目录漏掉的启用角色', status: 1 },
+    { id: '5', roleName: '已停用', status: 0 },
+  ]
+  const { selectedRoleIds, removedRoles, missingEnabledRoles } = partitionAssignedRoles(
+    assigned,
+    [{ id: '2' }, { id: '7' }],
+  )
+  assert.deepEqual(selectedRoleIds, ['2'])
+  // 停用项与缺失的启用项都进 removed，但只有后者触发保存门禁。
+  assert.deepEqual(removedRoles.map((role) => role.id), ['9', '5'])
+  assert.deepEqual(missingEnabledRoles.map((role) => role.id), ['9'])
+})
