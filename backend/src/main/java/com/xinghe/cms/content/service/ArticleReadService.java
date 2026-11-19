@@ -52,7 +52,8 @@ public class ArticleReadService {
         return new PageResult<>(summaries, page.total(), page.current(), page.size());
     }
 
-    private ArticleDetailVO detail(ArticleRow row) {
+    // Callers supply a row already authorized for the current read or write.
+    ArticleDetailVO detail(ArticleRow row) {
         List<TagView> articleTags = tags.findByArticleIds(List.of(row.id())).getOrDefault(row.id(), List.of());
         return new ArticleDetailVO(ArticleSummaryVO.from(row, articleTags), row.content());
     }
