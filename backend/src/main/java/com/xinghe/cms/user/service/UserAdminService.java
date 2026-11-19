@@ -154,7 +154,14 @@ public class UserAdminService {
                 && !Objects.equals(request.departmentId(), current.departmentId())) {
             requireEnabledDepartmentChain(request.departmentId());
         }
-        int rows = mapper.updateProfile(userId, request.realName(), request.departmentId());
+        int rows;
+        try {
+            rows = mapper.updateProfile(userId, request.realName(), request.departmentId());
+        } catch (DataIntegrityViolationException exception) {
+            // 校验通过后目标部门仍可能被并发删除：与创建入口一样转 409，
+            // 不能落到通用 500。sys_user 只有 fk_user_department 一个外键。
+            throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
+        }
         if (rows == 0 && mapper.findProfileForUpdate(userId) == null) {
             // MySQL 值未变化时 affected rows 也会是 0；持锁重查区分「无变化」与「被并发删除」。
             throw new BusinessException(ResultCode.CONFLICT, "员工资料已变更，请重试");

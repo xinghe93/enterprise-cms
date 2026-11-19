@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -15,6 +16,7 @@ import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -120,6 +122,8 @@ class BearerTokenAuthenticationFilterTests {
         assertEquals("editor_demo", current.username());
         assertEquals(3L, current.departmentId());
         assertEquals("opaque-token", request.getAttribute(CurrentUserProvider.TOKEN_ATTRIBUTE));
+        // P1：状态确认后必须复核会话，正常路径同样完成两次解析。
+        verify(sessions, times(2)).resolveIdentity("opaque-token");
     }
 
     @Test
@@ -179,6 +183,36 @@ class BearerTokenAuthenticationFilterTests {
                 (req, res) -> newContinued.set(true));
         assertEquals(200, newResponse.getStatus());
         assertTrue(newContinued.get(), "重新启用后签发的新 Token 仍可访问受保护接口");
+    }
+
+    /**
+     * PR #39 审查 P1：停用与重新启用并发时不得凭旧会话放行。
+     * 时序：首次解析确认旧会话（epoch-0）→ 状态查询期间停用提交、撤销把纪元轮换到
+     * epoch-2 并完成重新启用 → 状态查询读到启用(1) → 二次解析发现纪元已变返回 null → 401。
+     */
+    @Test
+    void staleSessionIsRejectedWhenStatusReadAfterReenable() throws Exception {
+        AtomicReference<String> currentEpoch = new AtomicReference<>("epoch-0");
+        when(sessions.resolveIdentity("old-token")).thenAnswer(invocation ->
+                "epoch-0".equals(currentEpoch.get())
+                        ? new SessionIdentity(7L, "epoch-0") : null);
+        when(userMapper.findStatusById(7L)).thenAnswer(invocation -> {
+            // 状态查询与首次解析之间穿插：停用提交 → 撤销 → 重新启用 → 新登录。
+            currentEpoch.set("epoch-2");
+            return new CurrentUserStatusRow("u", null, 1);
+        });
+
+        MockHttpServletRequest request = request("/api/auth/me", "Bearer old-token");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean continued = new AtomicBoolean(false);
+
+        filter.doFilter(request, response, (req, res) -> continued.set(true));
+
+        assertEquals(401, response.getStatus(), "旧会话不得凭重新启用后的状态放行");
+        assertTrue(!continued.get());
+        assertNull(request.getAttribute(CurrentUserProvider.REQUEST_ATTRIBUTE));
+        assertNull(request.getAttribute(CurrentUserProvider.TOKEN_ATTRIBUTE));
+        verify(sessions, times(2)).resolveIdentity("old-token");
     }
 
     @Test

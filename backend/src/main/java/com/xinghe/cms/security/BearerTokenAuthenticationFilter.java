@@ -2,6 +2,7 @@ package com.xinghe.cms.security;
 
 import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.security.AuthSessionService.SessionIdentity;
 import com.xinghe.cms.user.mapper.UserAuthMapper;
 import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
 import jakarta.servlet.FilterChain;
@@ -37,6 +38,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * 该用户会话纪元：只有 Redis 当前纪元仍是那个观察值时才轮换。这样延迟的旧请求
  * （读到停用状态后暂停，期间账号完成停用撤销、重新启用并重新登录）恢复后不会
  * 无条件撤销，从而作废重新启用后签发的新 Token。旧请求本身仍返回 401。</p>
+ *
+ * <p><strong>状态确认后复核会话</strong>（PR #39 审查 P1）：先解析会话、再查数据库状态，
+ * 两步之间可能穿插「停用提交 → 撤销（纪元轮换）→ 重新启用」。若此时数据库状态已经
+ * 是启用，旧会话的纪元却已失效，只校验一次就会用旧 Token 建立身份。因此在状态确认
+ * 之后再次解析同一 Token，用户 ID 与纪元都必须和首次一致才放行；期间纪元被轮换时
+ * 第二次解析返回 null，本次请求按 401 拒绝。</p>
  *
  * <p>账号启停接口仍须在数据库事务提交后调用 {@code revokeAllForUser}，不得先刷新
  * Redis 再提交数据库。Redis/数据库故障返回 500，不放行、不吞异常。</p>
@@ -86,6 +93,15 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                 // 只有观察到的纪元仍是当前纪元时才允许轮换；期间已撤销并重新登录的场景
                 // 纪元已变，本次不撤销，避免作废新会话。旧请求一律返回 401。
                 sessions.revokeAllForUserIfEpoch(identity.userId(), identity.epoch());
+                writeError(response, ResultCode.UNAUTHORIZED);
+                return;
+            }
+            // P1：状态确认后再校验一次会话。两步之间可能完成「停用提交 → 撤销 → 重新启用」，
+            // 此时读到的是启用状态，但首次解析拿到的旧纪元已被轮换。第二次解析内部会比对
+            // 当前纪元，轮换后返回 null；用户或纪元不一致同样拒绝，绝不用旧会话建立身份。
+            SessionIdentity reconfirmed = sessions.resolveIdentity(token);
+            if (reconfirmed == null || reconfirmed.userId() != identity.userId()
+                    || !identity.epoch().equals(reconfirmed.epoch())) {
                 writeError(response, ResultCode.UNAUTHORIZED);
                 return;
             }

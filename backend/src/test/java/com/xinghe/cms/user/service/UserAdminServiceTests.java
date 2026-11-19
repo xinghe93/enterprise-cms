@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -34,6 +35,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -155,6 +157,21 @@ class UserAdminServiceTests {
 
         assertEquals(ResultCode.CONFLICT, exception.getResultCode());
         verify(mapper, never()).updateProfile(any(), any(), any());
+    }
+
+    /** PR #39 审查 P2：换部门时目标被并发删除，外键冲突必须按契约转 409 而非 500。 */
+    @Test
+    void updateUserForeignKeyConflictMapsTo409() {
+        when(mapper.findProfileForUpdate(USER_ID)).thenReturn(profile(1L));
+        when(mapper.findDepartmentChainStatuses(2L)).thenReturn(List.of(1));
+        doThrow(new DataIntegrityViolationException("fk_user_department"))
+                .when(mapper).updateProfile(USER_ID, "新姓名", 2L);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.updateUser(USER_ID, new UserUpdateRequest("新姓名", 2L)));
+
+        assertEquals(ResultCode.CONFLICT, exception.getResultCode());
+        verify(transactionManager).rollback(any());
     }
 
     @Test
