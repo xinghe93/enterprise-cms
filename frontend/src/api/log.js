@@ -7,11 +7,15 @@ async function apiClient() {
 }
 
 const DATE_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/
+// 后端业务 ID 为 Long：1–19 位十进制、无前导零、最大值 9223372036854775807。
+const BUSINESS_ID_PATTERN = /^[1-9][0-9]{0,18}$/
+const LONG_MAX = 9223372036854775807n
 
 function pad2(value) {
   return String(value).padStart(2, '0')
 }
 
+/** 分页数字（current/size）用：只接受正整数。 */
 function normalizePositiveInt(value) {
   if (value === null || value === undefined || value === '') return null
   if (typeof value === 'number') return Number.isInteger(value) && value > 0 ? value : null
@@ -20,6 +24,18 @@ function normalizePositiveInt(value) {
     return Number.isSafeInteger(number) && number > 0 ? number : null
   }
   return null
+}
+
+/**
+ * 业务 ID（userId、日志详情 ID）用：保持字符串，避免 Number 精度丢失。
+ * 只做格式与 Long 范围校验，合法时返回规范化字符串，否则返回 null。
+ */
+export function normalizeBusinessId(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) return null
+  const text = String(value).trim()
+  if (!BUSINESS_ID_PATTERN.test(text)) return null
+  return BigInt(text) <= LONG_MAX ? text : null
 }
 
 /** 把 Date 或已有时分秒字符串整理成后端只接受的本地时间 yyyy-MM-dd'T'HH:mm:ss（不带 Z）。 */
@@ -40,7 +56,7 @@ export function formatLocalDateTime(value) {
 export function buildLogQuery({ userId, operation, result, timeRange, current, size } = {}) {
   const query = {}
 
-  const user = normalizePositiveInt(userId)
+  const user = normalizeBusinessId(userId)
   if (user !== null) query.userId = user
 
   const keyword = typeof operation === 'string' ? operation.trim() : ''
@@ -60,9 +76,9 @@ export function buildLogQuery({ userId, operation, result, timeRange, current, s
   return query
 }
 
-/** 日志 ID 只接受 1-18 位十进制正整数（与后端详情接口规则一致）。 */
+/** 日志 ID 按后端 Long 契约校验：1–19 位十进制、无前导零、不超过 Long.MAX_VALUE。 */
 export function isValidLogId(value) {
-  return normalizePositiveInt(value) !== null
+  return normalizeBusinessId(value) !== null
 }
 
 /** 后端返回的 total 可能是 undefined/null/字符串/NaN，统一收敛为非负整数。 */
@@ -87,9 +103,10 @@ export async function listLogs(query) {
 
 /** 查询单条日志详情。详情接口不接受任何查询参数；ID 非法时直接拒绝，避免请求 /admin/logs/undefined。 */
 export async function getLog(id) {
-  if (!isValidLogId(id)) {
+  const logId = normalizeBusinessId(id)
+  if (logId === null) {
     throw new TypeError('无效的日志 ID')
   }
   const api = await apiClient()
-  return api.get(`/admin/logs/${normalizePositiveInt(id)}`)
+  return api.get(`/admin/logs/${logId}`)
 }

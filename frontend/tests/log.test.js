@@ -9,16 +9,22 @@ test('默认分页参数为第一页、每页 10 条，空筛选项不传给后�
   assert.deepEqual(buildLogQuery({ userId: '', operation: '   ', result: '' }), { current: 1, size: 10 })
 })
 
-test('有效筛选项被保留，操作类型去掉首尾空白，非数字操作人 ID 被剔除', () => {
+test('有效筛选项被保留，操作类型去掉首尾空白，操作人 ID 按字符串保留', () => {
   const query = buildLogQuery({ userId: '990101', operation: '  article.approve  ', result: 'FAILURE', current: 2, size: 20 })
   assert.deepEqual(query, {
-    userId: 990101,
+    userId: '990101',
     operation: 'article.approve',
     result: 'FAILURE',
     current: 2,
     size: 20,
   })
   assert.deepEqual(buildLogQuery({ userId: 'abc', result: 'OTHER' }), { current: 1, size: 10 })
+})
+
+test('超出 Number 安全整数范围的合法 Long ID 仍作为字符串保留', () => {
+  assert.deepEqual(buildLogQuery({ userId: '9007199254740993' }), { userId: '9007199254740993', current: 1, size: 10 })
+  assert.deepEqual(buildLogQuery({ userId: '9223372036854775807' }), { userId: '9223372036854775807', current: 1, size: 10 })
+  assert.deepEqual(buildLogQuery({ userId: '9223372036854775808' }), { current: 1, size: 10 })
 })
 
 test('时间范围转成本地格式且不带 Z，边界值可左闭右开', () => {
@@ -50,10 +56,14 @@ test('formatLogTime 显示到秒，空值显示破折号', () => {
   assert.equal(formatLogTime(undefined), '—')
 })
 
-test('isValidLogId 只接受 1-18 位正整数，拒绝 undefined/0/负数/0x 前缀', () => {
+test('isValidLogId 按 Long 契约接受 1-19 位正整数，拒绝前导零/0/负数/0x 前缀/超 Long 上限', () => {
   assert.equal(isValidLogId(990001), true)
   assert.equal(isValidLogId('990001'), true)
   assert.equal(isValidLogId(1), true)
+  assert.equal(isValidLogId('9007199254740993'), true)
+  assert.equal(isValidLogId('9223372036854775807'), true)
+  assert.equal(isValidLogId('9223372036854775808'), false)
+  assert.equal(isValidLogId('000123'), false)
   assert.equal(isValidLogId(undefined), false)
   assert.equal(isValidLogId(null), false)
   assert.equal(isValidLogId(''), false)

@@ -67,7 +67,7 @@ function formatOperator(row) {
 }
 
 function onUserIdInput(value) {
-  filters.value.userId = String(value ?? '').replace(/\D/g, '').slice(0, 18)
+  filters.value.userId = String(value ?? '').replace(/\D/g, '').slice(0, 19)
 }
 
 async function fetchLogs() {
