@@ -18,7 +18,7 @@ import {
   ElTag,
 } from 'element-plus'
 import 'element-plus/dist/index.css'
-import { formatLogTime, getLog, isValidLogId, listLogs, normalizeTotal } from '../api/log.js'
+import { createLatestRequestGuard, formatLogTime, getLog, isValidLogId, listLogs, normalizeTotal } from '../api/log.js'
 import { useSessionStore } from '../stores/session.js'
 
 const vLoading = ElLoading.directive
@@ -43,6 +43,7 @@ const detailLoading = ref(false)
 const detail = ref(null)
 const detailError = ref('')
 let detailRequestSeq = 0
+const listRequestGuard = createLatestRequestGuard()
 
 const detailItems = computed(() => {
   if (!detail.value) return []
@@ -71,26 +72,31 @@ function onUserIdInput(value) {
 }
 
 async function fetchLogs() {
+  const requestSeq = listRequestGuard.next()
   if (!canListLogs.value) {
     rows.value = []
     total.value = 0
     loadError.value = '当前账号没有日志查询权限（log:list），请联系管理员。'
+    loading.value = false
     return
   }
   loading.value = true
   loadError.value = ''
   try {
     const data = await listLogs({ ...filters.value, current: current.value, size: size.value })
+    // 只允许最新一次请求写回页面状态，避免快速翻页时旧响应覆盖新结果。
+    if (!listRequestGuard.isLatest(requestSeq)) return
     rows.value = Array.isArray(data?.records) ? data.records : []
     total.value = normalizeTotal(data?.total)
     lastLoadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   } catch (error) {
+    if (!listRequestGuard.isLatest(requestSeq)) return
     // 全局 ElMessage 已提示一次错误；页面再给出可重试的显式状态，并清理旧数据避免误导。
     rows.value = []
     total.value = 0
     loadError.value = error?.message ? `日志加载失败：${error.message}` : '日志加载失败，请稍后重试。'
   } finally {
-    loading.value = false
+    if (listRequestGuard.isLatest(requestSeq)) loading.value = false
   }
 }
 
@@ -258,6 +264,7 @@ onMounted(fetchLogs)
           :current-page="current"
           :page-size="size"
           :page-sizes="[10, 20, 50]"
+          :disabled="loading"
           @current-change="handlePageChange"
           @size-change="handleSizeChange"
         />

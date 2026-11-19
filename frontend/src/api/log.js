@@ -110,3 +110,20 @@ export async function getLog(id) {
   const api = await apiClient()
   return api.get(`/admin/logs/${logId}`)
 }
+
+/**
+ * 列表请求序号守卫：每次请求先取号，只有最新一次请求允许回写页面状态。
+ * 用于避免快速翻页时旧请求后返回覆盖新结果（页码与可见记录会因此不一致）。
+ */
+export function createLatestRequestGuard() {
+  let latest = 0
+  return {
+    next() {
+      latest += 1
+      return latest
+    },
+    isLatest(token) {
+      return token === latest
+    },
+  }
+}

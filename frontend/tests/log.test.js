@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isValidLogId, normalizeTotal } from '../src/api/log.js'
+import { createLatestRequestGuard, isValidLogId, normalizeTotal } from '../src/api/log.js'
 import { buildLogQuery, formatLocalDateTime, formatLogTime } from '../src/api/log.js'
 
 test('默认分页参数为第一页、每页 10 条，空筛选项不传给后端', () => {
@@ -82,4 +82,15 @@ test('normalizeTotal 把非法或负值收敛为 0，其余取整', () => {
   assert.equal(normalizeTotal(NaN), 0)
   assert.equal(normalizeTotal(-5), 0)
   assert.equal(normalizeTotal(Infinity), 0)
+})
+
+test('列表请求守卫只允许最新一次请求回写页面状态（乱序返回保护）', () => {
+  const guard = createLatestRequestGuard()
+  const page2 = guard.next()
+  const page3 = guard.next()
+  const applied = []
+  // 模拟第 3 页先返回、第 2 页后返回：只有最新请求允许写 rows/total/loading。
+  if (guard.isLatest(page3)) applied.push('page-3')
+  if (guard.isLatest(page2)) applied.push('page-2')
+  assert.deepEqual(applied, ['page-3'])
 })
