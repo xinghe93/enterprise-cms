@@ -2,16 +2,17 @@ package com.xinghe.cms.log.controller;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
+import com.xinghe.cms.common.contract.AuthorizationSnapshot;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.dto.OperationLogQuery;
 import com.xinghe.cms.log.service.OperationLogService;
-import com.xinghe.cms.log.support.LogPermissionGuard;
 import com.xinghe.cms.log.vo.OperationLogVO;
+import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,16 +54,14 @@ class OperationLogControllerTests {
     @Autowired
     private StubOperationLogService stubService;
 
-    @Autowired
-    private StubLogPermissionGuard stubPermissionGuard;
-
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
+        mockMvc = MockMvcBuilders.webAppContextSetup(context)
+                .addFilters(new TestAuthenticationFilter())
+                .build();
         stubService.reset();
-        stubPermissionGuard.reset();
     }
 
     @Test
@@ -298,35 +297,15 @@ class OperationLogControllerTests {
             return new StubOperationLogService();
         }
 
+        /**
+         * 授权快照替身：本类聚焦 HTTP 契约与参数校验，统一放行日志权限；
+         * 权限行为由 OperationLogPermissionTests 覆盖。
+         */
         @Bean
         @Primary
-        StubLogPermissionGuard stubLogPermissionGuard() {
-            return new StubLogPermissionGuard();
-        }
-    }
-
-    /**
-     * 权限校验替身：HTTP 契约测试聚焦参数与响应，权限行为由 OperationLogPermissionTests 覆盖。
-     */
-    static class StubLogPermissionGuard extends LogPermissionGuard {
-
-        private final List<String> required = new ArrayList<>();
-
-        StubLogPermissionGuard() {
-            super(null, null);
-        }
-
-        @Override
-        public void require(String permissionCode) {
-            required.add(permissionCode);
-        }
-
-        List<String> required() {
-            return required;
-        }
-
-        void reset() {
-            required.clear();
+        AuthorizationQueryService stubAuthorizationQueryService() {
+            return userId -> new AuthorizationSnapshot(Set.of("ADMIN", "EMPLOYEE"),
+                    Set.of("log:list", "log:read"));
         }
     }
 
