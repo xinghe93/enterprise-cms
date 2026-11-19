@@ -158,6 +158,8 @@
         LIMIT #{size} OFFSET #{offset}
     </select>
 
+    <!-- 调用约定：userIds 非空（唯一调用方 UserAdminService#loadRoles 已对空列表
+         返回 Map.of() 短路），空集合会拼出非法的 IN ()，不得绕过 Service 直接调用。 -->
     <select id="findRolesByUserIds" resultMap="roleRowMap">
         SELECT ur.user_id, r.id AS role_id, r.role_code, r.role_name, r.status
         FROM sys_user_role ur

@@ -76,6 +76,8 @@ class UserStatusServiceTests {
     void disableCommitsDatabaseBeforeRevokingSessionsByVersion() {
         when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, V1));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(1);
+        // 撤销版本唯一来源：updateStatus 后同事务回读的 status_version（+1 后的 V2），
+        // 不是入参 status、也不是 updated_at。
         when(userMapper.findStatusVersion(USER_ID)).thenReturn(new UserStatusSnapshot(0, V2));
         // 提交这一刻会话还没被撤销，确定性排除「先刷 Redis 再提交」。
         doAnswer(invocation -> {
@@ -143,7 +145,11 @@ class UserStatusServiceTests {
         verify(transactionManager).commit(txStatus);
     }
 
-    /** 从未变更过状态的账号版本为 0：同状态请求按 0 幂等跳过（Lua 记录缺省按 0）。 */
+    /**
+     * 从未变更过状态的账号版本为 0：同状态请求按 0 幂等跳过。
+     * 「Redis 记录缺省时按 0 比较」是 Lua 脚本语义，由 AuthSessionServiceTests 与
+     * RedisIT 验证；本测试只锁定 Service 把 status_version 原样交给带版本撤销。
+     */
     @Test
     void neverDisabledAccountSkipsRevokeByZeroVersion() {
         when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, V0));
@@ -211,8 +217,10 @@ class UserStatusServiceTests {
     }
 
     /**
-     * 提交后撤销失败后的同状态重试必须能补偿：状态未变但不写库，仍按同一版本撤销；
-     * 版本记录未抬高，Lua 会真正轮换纪元（DeepSeek 审查「响应与状态不一致」）。
+     * 提交后撤销失败后的同状态重试必须能补偿：首次停用把版本从 V1 抬到 V2 并提交，
+     * 撤销失败；重试时状态已是 0（同状态短路不写库），但版本仍是 V2——正是那次
+     * 未完成撤销的版本，Lua 比较后发现记录未抬高而真正轮换纪元，完成补偿
+     * （DeepSeek 审查「响应与状态不一致」）。
      */
     @Test
     void disableRevokeFailureCanBeCompensatedBySameStatusRetry() {

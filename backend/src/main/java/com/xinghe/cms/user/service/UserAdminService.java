@@ -17,6 +17,7 @@ import com.xinghe.cms.user.vo.UserPageVO;
 import com.xinghe.cms.user.vo.UserVO;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -130,7 +131,9 @@ public class UserAdminService {
         }
         // 时间由数据库生成后回读，不接受客户端伪造时间；新建账号 roles 恒为 []。
         // 按 username 回读安全：sys_user 的 uk_user_username 唯一键与该查询使用同一列、
-        // 同一排序规则（utf8mb4_0900_ai_ci），能插入的行必然是该精确匹配唯一行。
+        // 同一排序规则（utf8mb4_0900_ai_ci）。该排序规则大小写不敏感——大小写变体在
+        // 插入时就会命中唯一键转 409，不会留下可被本回读误命中的其他行；因此能走到
+        // 回读的行必然是刚插入的那一行。
         UserProfileRow created = mapper.findProfileByUsername(request.username());
         if (created == null) {
             throw new BusinessException(ResultCode.INTERNAL_SERVER_ERROR, "创建结果不可读");
@@ -164,10 +167,9 @@ public class UserAdminService {
             // 不能落到通用 500。sys_user 只有 fk_user_department 一个外键。
             throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
         }
-        if (rows == 0 && mapper.findProfileForUpdate(userId) == null) {
-            // MySQL 值未变化时 affected rows 也会是 0；持锁重查区分「无变化」与「被并发删除」。
-            throw new BusinessException(ResultCode.CONFLICT, "员工资料已变更，请重试");
-        }
+        // rows == 0 是 MySQL 的正常语义：值未变化时 affected rows 为 0，按幂等成功处理。
+        // findProfileForUpdate 的行锁从本事务开始持续持有，并发删除会阻塞到本事务提交，
+        // 因此 0 行不可能是「被并发删除」，无需再重查区分。
         UserProfileRow updated = mapper.findProfileById(userId);
         if (updated == null) {
             throw new BusinessException(ResultCode.CONFLICT, "员工资料已变更，请重试");
@@ -224,7 +226,7 @@ public class UserAdminService {
         }
         Map<Long, List<RoleBriefVO>> result = new LinkedHashMap<>();
         for (UserRoleRow row : mapper.findRolesByUserIds(userIds)) {
-            result.computeIfAbsent(row.userId(), ignored -> new java.util.ArrayList<>())
+            result.computeIfAbsent(row.userId(), ignored -> new ArrayList<>())
                     .add(new RoleBriefVO(toId(row.roleId()), row.roleCode(),
                             row.roleName(), row.status()));
         }

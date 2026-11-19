@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
@@ -276,6 +277,22 @@ class UserAdminServiceTests {
         ArgumentCaptor<String> pattern = ArgumentCaptor.forClass(String.class);
         verify(mapper).countUsers(pattern.capture(), eq(null), eq(1));
         assertEquals("%abc%", pattern.getValue());
+        // total 为 0 时必须跳过数据页查询，不能拿着空结果再扫一次库。
+        verify(mapper, never()).findUsersPage(any(), any(), any(), anyLong(), anyLong());
+    }
+
+    /** 契约 8.1：roleIds 为空即清空全部角色——必须真正删除现有关联，不能静默跳过。 */
+    @Test
+    void replaceRolesWithEmptyListDeletesExistingRoles() {
+        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(ACTIVE);
+        when(roleDirectory.lockAssignableRoles(List.of())).thenReturn(List.of());
+        when(mapper.findRoleIdsByUserId(USER_ID)).thenReturn(List.of(2L));
+
+        service.replaceRoles(USER_ID, new UserRolesUpdateRequest(List.of()));
+
+        verify(mapper).deleteUserRoles(USER_ID);
+        verify(mapper, never()).insertUserRoles(any(), anyList());
+        verify(transactionManager).commit(any());
     }
 
     @Test

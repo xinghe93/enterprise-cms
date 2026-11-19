@@ -344,4 +344,19 @@ class UserAdminEndpointsHttpTests {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(409));
     }
+
+    /** 停用方向的撤销失败：数据库已提交但接口必须 500，公共异常处理器不得伪装成 200（契约 7.2）。 */
+    @Test
+    void statusRevokeFailureMapsTo500InsteadOfFakingSuccess() throws Exception {
+        String path = USERS + "/7/status";
+        doThrow(new IllegalStateException("Redis 不可用"))
+                .when(userStatusService).changeStatus(7L, 0);
+
+        perform(put(path).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":0}"), path)
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value(500));
+
+        verify(userStatusService).changeStatus(7L, 0);
+    }
 }
