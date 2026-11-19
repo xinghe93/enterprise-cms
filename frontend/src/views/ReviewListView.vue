@@ -42,6 +42,8 @@ const size = ref(10)
 const loading = ref(false)
 const loadError = ref('')
 const lastLoadedAt = ref('')
+// 列表请求序号：快速翻页时只允许最新一次请求回写页面状态。
+let pendingRequestSeq = 0
 
 const decisionDialog = reactive({
   visible: false, mode: 'approve', row: null, comment: '', submitting: false,
@@ -64,6 +66,7 @@ function onNumericInput(field) {
 }
 
 async function fetchPending() {
+  const requestSeq = ++pendingRequestSeq
   loading.value = true
   loadError.value = ''
   try {
@@ -71,18 +74,20 @@ async function fetchPending() {
       keyword: filters.keyword, categoryId: filters.categoryId,
       authorId: filters.authorId, current: current.value, size: size.value,
     }))
+    if (requestSeq !== pendingRequestSeq) return
     rows.value = Array.isArray(page?.records) ? page.records : []
     total.value = Number.isFinite(Number(page?.total)) ? Number(page.total) : 0
     current.value = Number(page?.current) > 0 ? Number(page.current) : current.value
     size.value = Number(page?.size) > 0 ? Number(page.size) : size.value
     lastLoadedAt.value = formatLocalDateTime(new Date())
   } catch {
+    if (requestSeq !== pendingRequestSeq) return
     // 错误提示由全局 api 客户端统一弹出；这里只复位数据并给出可重试提示。
     rows.value = []
     total.value = 0
     loadError.value = '待审核列表加载失败，请稍后重试。'
   } finally {
-    loading.value = false
+    if (requestSeq === pendingRequestSeq) loading.value = false
   }
 }
 
@@ -253,6 +258,7 @@ onMounted(() => { void fetchPending() })
       <div class="review-pagination">
         <ElPagination
           :current-page="current" :page-size="size" :page-sizes="[10, 20, 50]" :total="total"
+          :disabled="loading"
           layout="total, sizes, prev, pager, next, jumper"
           @size-change="handleSizeChange" @current-change="handleCurrentChange"
         />
