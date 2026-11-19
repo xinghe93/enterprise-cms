@@ -61,7 +61,7 @@ export function createRoleApi(client) {
           }
           const key = String(row.id)
           if (seenIds.has(key)) {
-            throw new RangeError('角色目录返回重复记录，已中止加载以避免误删现有角色')
+            throw new RangeError('角色目录出现重复角色 ID，已中止加载以避免误删现有角色')
           }
           seenIds.add(key)
           records.push(row)

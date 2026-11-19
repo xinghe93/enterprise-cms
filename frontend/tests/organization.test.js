@@ -109,6 +109,22 @@ test('角色回显按完整启用目录拆分，类型不一致不误判、停�
   assert.deepEqual(removedRoles.map((role) => role.roleName), ['已停用'])
 })
 
+test('员工持有的启用角色缺失于目录时单独标记，调用方必须阻止全量替换', () => {
+  const assigned = [
+    { id: '2', roleName: '编辑', status: 1 },
+    { id: '9', roleName: '目录漏掉的启用角色', status: 1 },
+    { id: '5', roleName: '已停用', status: 0 },
+  ]
+  const { selectedRoleIds, removedRoles, missingEnabledRoles } = partitionAssignedRoles(
+    assigned,
+    [{ id: '2' }, { id: '7' }],
+  )
+  assert.deepEqual(selectedRoleIds, ['2'])
+  // 停用项与缺失的启用项都进 removed，但只有后者触发保存门禁。
+  assert.deepEqual(removedRoles.map((role) => role.id), ['9', '5'])
+  assert.deepEqual(missingEnabledRoles.map((role) => role.id), ['9'])
+})
+
 test('候选目录为空或被截断时不会把第二页启用角色当作可保留项', () => {
   const assigned = [{ id: '101', roleName: '第二页角色', status: 1 }]
   // 目录只加载到第一页（100 项以内），101 被误判为 removed——这正是必须分页拉全的原因。

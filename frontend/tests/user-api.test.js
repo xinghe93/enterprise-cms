@@ -180,7 +180,7 @@ test('角色目录异常一律抛错而非静默返回空/残缺候选（避免�
   await assert.rejects(createRoleApi(mock({ records: [], total: '' })).listAssignableRoles(), /分页数据异常/)
 
   // 重复/缺 ID 的记录不能靠条数凑满 total 冒充完整目录。
-  await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }, { id: '1' }], total: 2 })).listAssignableRoles(), /重复记录/)
+  await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }, { id: '1' }], total: 2 })).listAssignableRoles(), /重复角色 ID/)
   await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }, {}], total: 2 })).listAssignableRoles(), /缺少 ID/)
 
   // total 缺失 / 非法：抛错，交由上层禁用保存。
@@ -218,4 +218,33 @@ test('公共入口把 A 的两个模块映射到真实页面，其余仍走占�
   // main.js 在 Node 环境有浏览器副作用，只能以源码断言覆盖样式入口。
   const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
   assert.match(mainSource, /import '\.\/styles\/organization\.css'/)
+  // PR #41 审查 P2：按需引入 ElDialog 必须同时带 dialog + overlay 样式。
+  assert.match(mainSource, /el-dialog\.css/)
+  assert.match(mainSource, /el-overlay\.css/)
+})
+
+test('角色目录跨页出现重复 ID 时抛错，避免残缺候选误删角色', async () => {
+  const client = createApiClient({
+    adapter: async (config) => {
+      const byPage = { 1: [{ id: '1' }, { id: '2' }], 2: [{ id: '2' }, { id: '3' }] }
+      return {
+        data: envelope(200, {
+          records: byPage[config.params.current] ?? [],
+          total: 3, current: config.params.current, size: 100,
+        }),
+        status: 200, statusText: '', headers: {}, config,
+      }
+    },
+  })
+  await assert.rejects(createRoleApi(client).listAssignableRoles(), /重复角色 ID/)
+})
+
+test('角色分配页保存门禁覆盖详情就绪、目录完整与启用角色缺失', () => {
+  const source = readFileSync(new URL('../src/views/user/AssignmentView.vue', import.meta.url), 'utf8')
+  // 详情失败时 rolesReady 保持 false，保存按钮与 saveRoles 都不得放行。
+  assert.match(source, /rolesReady/)
+  assert.match(source, /roleDetailFailed/)
+  assert.match(source, /missingEnabledRoles/)
+  // 部门保存前必须重读详情并使用最新 realName，避免覆盖他人改名。
+  assert.match(source, /latest\.realName/)
 })

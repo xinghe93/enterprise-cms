@@ -43,6 +43,9 @@ const rolesReady = ref(false)
 // 目录与详情分别记录失败：任一失败都要保留弹窗内的重试入口（老师审查 #2）。
 // 只看 rolesLoadFailed 时，目录重试成功但详情失败会同时丢掉重试按钮，只能关弹窗重开。
 const roleDetailFailed = ref(false)
+// 详情标记为启用、却不在完整启用目录中的角色：说明目录不可信，必须阻止保存，
+// 否则全量替换会把「漏取」误当「停用」清掉（老师审查 #2）。
+const missingEnabledRoles = ref([])
 const formError = ref('')
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.value.size)))
@@ -130,6 +133,7 @@ function closeDialog() {
   formError.value = ''
   rolesReady.value = false
   roleDetailFailed.value = false
+  missingEnabledRoles.value = []
 }
 
 async function openDepartmentDialog(user) {
@@ -169,6 +173,7 @@ async function openRoleDialog(user) {
   rolesReady.value = false
   selectedRoleIds.value = []
   removedRoles.value = []
+  missingEnabledRoles.value = []
   // 先打开弹窗再发请求：任一请求失败时都要能在弹窗内重试，
   // 不能在详情失败时直接关闭，让用户只能重新点行（DeepSeek 待核实 #5）。
   dialog.value = { type: 'role', user }
@@ -196,9 +201,14 @@ async function openRoleDialog(user) {
 
 /** 两项请求都成功后按完整目录重建勾选；只有走到这里才解锁保存。 */
 function applyRoleSelection(detail) {
-  const { selectedRoleIds: selected, removedRoles: removed } = partitionAssignedRoles(detail?.roles, assignableRoles.value)
+  const {
+    selectedRoleIds: selected,
+    removedRoles: removed,
+    missingEnabledRoles: missing,
+  } = partitionAssignedRoles(detail?.roles, assignableRoles.value)
   selectedRoleIds.value = selected
   removedRoles.value = removed
+  missingEnabledRoles.value = missing
   rolesReady.value = true
   roleDetailFailed.value = false
 }
@@ -208,6 +218,7 @@ async function retryRoles() {
   if (submitting.value || !dialog.value || dialog.value.type !== 'role') return
   submitting.value = true
   formError.value = ''
+  missingEnabledRoles.value = []
   try {
     const ok = await ensureRoles()
     if (!ok) {
@@ -254,11 +265,27 @@ async function saveDepartment() {
   submitting.value = true
   formError.value = ''
   try {
-    // 完整 PUT：realName 用刚读取的最新值；departmentId 契约要求十进制字符串。
-    await userApi.updateUser(user.id, {
-      realName: user.realName,
-      departmentId: departmentId ? String(departmentId) : null,
-    })
+    const target = departmentId ? String(departmentId) : null
+    const original = user.departmentId == null ? null : String(user.departmentId)
+    // 部门未变化就不提交完整 PUT：没有写入就不会回写 realName，也就不会覆盖他人改名。
+    if (target === original) {
+      dialog.value = null
+      await loadUsers()
+      return
+    }
+    // 完整 PUT 必带 realName：提交前重读详情，用最新姓名而不是开窗时的快照；
+    // 同时校验部门是否已被他人修改，避免静默覆盖对方的调整（老师审查 #3）。
+    const latest = await userApi.getUser(user.id)
+    const latestDepartment = latest?.departmentId == null ? null : String(latest.departmentId)
+    if (latestDepartment !== original) {
+      formError.value = '该员工的部门已被其他管理员修改，请关闭后重新打开再操作'
+      return
+    }
+    if (!latest?.realName) {
+      formError.value = '员工详情已变化，请关闭后重试'
+      return
+    }
+    await userApi.updateUser(user.id, { realName: latest.realName, departmentId: target })
     dialog.value = null
     await loadUsers()
   } catch (error) {
@@ -270,6 +297,11 @@ async function saveDepartment() {
 
 async function saveRoles() {
   if (submitting.value || !rolesReady.value || !dialog.value || dialog.value.type !== 'role') return
+  // 详情里的启用角色不在完整目录中：目录可能漏页/重复，保存会把缺失角色当成停用清掉。
+  if (missingEnabledRoles.value.length) {
+    formError.value = '员工持有未出现在启用目录中的角色，目录可能不完整，已禁止保存'
+    return
+  }
   submitting.value = true
   formError.value = ''
   try {
@@ -400,7 +432,7 @@ onMounted(() => {
           </select>
           <small>新选部门及所有祖先必须启用；保持原部门不变时可保留停用引用。</small>
         </label>
-        <p class="org-note">修改员工是完整更新，提交时会同时带上刚读取的最新姓名「{{ dialog.user.realName }}」。</p>
+        <p class="org-note">保存前会重新读取详情并使用最新姓名，避免覆盖其他管理员的改名；部门已被他人调整时会提示重新打开。</p>
         <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
       </div>
 
@@ -410,6 +442,10 @@ onMounted(() => {
           以下已分配角色当前不可分配（停用或不存在），保存后将被移除：
           {{ removedRoles.map((role) => role.roleName).join('、') }}
         </div>
+        <p v-if="missingEnabledRoles.length" class="org-form-error" role="alert">
+          员工持有未出现在启用目录中的角色（{{ missingEnabledRoles.map((role) => role.roleName).join('、') }}），
+          目录可能不完整，已禁止保存。请重试加载目录后再操作。
+        </p>
         <ElButton v-if="rolesLoadFailed || roleDetailFailed" link type="danger" :disabled="submitting" @click="retryRoles">角色信息加载失败，点击重试</ElButton>
         <div v-else-if="!assignableRoles.length" class="org-empty">暂无可分配的启用角色。</div>
         <div v-else class="org-check-list">
@@ -428,7 +464,8 @@ onMounted(() => {
         <ElButton :disabled="submitting" @click="closeDialog">取消</ElButton>
         <ElButton
           type="primary" :loading="submitting"
-          :disabled="submitting || (dialog?.type === 'role' && !rolesReady)"
+          :disabled="submitting || (dialog?.type === 'role'
+            && (!rolesReady || missingEnabledRoles.length > 0))"
           @click="dialog?.type === 'department' ? saveDepartment() : saveRoles()"
         >{{ submitting ? '保存中…' : '保存' }}</ElButton>
       </template>
