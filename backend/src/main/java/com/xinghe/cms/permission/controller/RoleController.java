@@ -6,6 +6,8 @@ import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
+import com.xinghe.cms.permission.request.RoleStatusRequest;
+import com.xinghe.cms.permission.request.RoleUpdateRequest;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.RoleAdminService;
 import com.xinghe.cms.permission.service.RoleQueryService;
@@ -17,16 +19,18 @@ import java.util.Set;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 角色管理接口。当前批次：分页/详情查询（D5）+ 创建（role-admin 第一批）；
- * 修改、启停、权限查询与全量替换在后续迭代补充。
+ * 角色管理接口。当前批次：分页/详情查询（D5）+ 创建（role-admin 第一批）+
+ * 修改/启停（role-write 第二批）；权限查询与全量替换在后续迭代补充。
  *
  * <p>鉴权：按 OpenAPI {@code x-permission}，分页需要 {@code role:list}，
- * 详情需要 {@code role:read}，创建需要 {@code role:create}，
+ * 详情需要 {@code role:read}，创建需要 {@code role:create}，修改需要
+ * {@code role:update}，启停需要 {@code role:status}，
  * 由 {@code RequirePermissionAspect} 统一校验。
  * 注解包名遵循契约（《跨模块服务接口》第 49 行）：
  * {@code com.xinghe.cms.security.annotation.RequirePermission}。</p>
@@ -110,8 +114,10 @@ public class RoleController {
      * 字符上限（码点计数，服务层校验）；未知字段由 Jackson 全局严格模式拦截 400；
      * 重复编码 409。新角色默认启用且未分配权限，返回完整 Role。
      *
-     * <p>审计：OpenAPI 标记 {@code x-audit-operation=role.create}，按契约由 D 的
-     * {@code @AuditLog} 注解标记 HTTP 入口——该依赖尚未交付，到位后补标记。</p>
+     * <p>审计：由 D 的 {@code @AuditLog} 标注在事务边界内的服务方法上
+     * （{@code AuditLogAspect} 要求注解不标在 Controller——事务尚未开启会使
+     * success 审计在业务提交后才单独写入，写入失败接口仍 200）；操作编码取
+     * OpenAPI {@code x-audit-operation}。</p>
      *
      * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
      */
@@ -121,5 +127,47 @@ public class RoleController {
             HttpServletRequest httpRequest) {
         QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
         return ApiResponse.success(roleAdminService.create(request));
+    }
+
+    /**
+     * 修改角色（OpenAPI {@code PUT /api/admin/roles/{id}}，权限 {@code role:update}）。
+     * 契约：只改 roleName，不改变编码、状态与关联；不存在 404；返回完整 Role。
+     * 请求体未知字段由 Jackson 全局严格模式拦截 400。
+     *
+     * <p>审计：由 D 的 {@code @AuditLog} 标注在事务边界内的服务方法上，success
+     * 审计随业务事务一起提交（评审 P1）；操作编码取 OpenAPI
+     * {@code x-audit-operation}。</p>
+     *
+     * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
+     */
+    @PutMapping("/{id}")
+    @RequirePermission("role:update")
+    public ApiResponse<RoleView> update(@PathVariable String id,
+            @Valid @RequestBody RoleUpdateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
+        return ApiResponse.success(roleAdminService.update(Ids.parse(id), request));
+    }
+
+    /**
+     * 启停角色（OpenAPI {@code PUT /api/admin/roles/{id}/status}，权限 {@code role:status}）。
+     * 契约：只改状态，不删除 user-role / role-permission 历史关联；重复设置
+     * 同一状态幂等返回 200（data=null）；不存在 404。
+     *
+     * <p>审计：{@code @AuditLog} 标注在 {@code RoleWriteAuditMarker#roleStatusChanged}
+     * 上，服务层仅在条件更新命中（状态确实变更）后调用它——重复同状态、并发
+     * 未命中的幂等 200 路径不产生审计记录，审计失败也不会拖垮这些请求（评审
+     * P2）；实际变更路径的 success 审计随启停事务一起提交。</p>
+     *
+     * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
+     */
+    @PutMapping("/{id}/status")
+    @RequirePermission("role:status")
+    public ApiResponse<Void> setStatus(@PathVariable String id,
+            @Valid @RequestBody RoleStatusRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
+        roleAdminService.setStatus(Ids.parse(id), request);
+        return ApiResponse.success();
     }
 }
