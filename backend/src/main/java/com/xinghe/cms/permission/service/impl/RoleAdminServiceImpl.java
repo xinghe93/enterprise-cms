@@ -11,6 +11,7 @@ import com.xinghe.cms.permission.request.RoleStatusRequest;
 import com.xinghe.cms.permission.request.RoleUpdateRequest;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.RoleAdminService;
+import com.xinghe.cms.permission.support.ContractWhitespace;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,10 +28,11 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>字段规范化（协作约定 8.1，与查询接口一致）：先校验原始长度，再去除
  * 首尾空白并检查非空，写库使用规范化后的值——保证唯一性按去空白后的编码
  * 判断（库存量 {@code EDITOR} 时，提交 {@code " EDITOR "} 返回 409 而非
- * 创建出第二条记录）。去首尾空白与非空校验采用同一套契约空白规则
- * （见 {@link #stripContractWhitespace}）：仅含 NBSP 等字符的输入裁剪后为
- * 空串返回 400，名称内部空格保留；U+001C–U+001F 等控制符按契约（ECMAScript
- * {@code \s}）是非空白，首尾出现也原样保留不裁剪。</p>
+ * 创建出第二条记录）。去首尾空白与非空校验采用同一套契约空白规则，统一委托
+ * {@link ContractWhitespace}（与 HTTP DTO 必填校验共用同一真源，评审 P2）：
+ * 仅含 NBSP 等字符的输入裁剪后为空串返回 400，名称内部空格保留；
+ * U+001C–U+001F 等控制符按契约（ECMAScript {@code \s}）是非空白，
+ * 首尾出现也原样保留不裁剪。</p>
  *
  * <p>修改与启停遵循契约：修改只改 roleName（编码创建后不可改），启停只改
  * status（不删除 user-role / role-permission 历史关联）；重复设置同一状态
@@ -90,10 +92,11 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         // 裁剪与判空使用同一套契约空白规则（评审 P2）：OpenAPI pattern \S 按
         // ECMAScript 空白定义，NBSP（U+00A0）等字符 Java 的 strip() 不认，
         // "只裁普通空白、判空用契约规则"会让 "\u00A0编辑\u00A0" 带着首尾 NBSP
-        // 落库——必须用 stripContractWhitespace 裁剪（协作约定 8.1 的
-        // "去首尾空白"），仅含这类字符的输入裁剪后为空串 → 400
-        String roleCode = stripContractWhitespace(request.roleCode());
-        String roleName = stripContractWhitespace(request.roleName());
+        // 落库——必须用 ContractWhitespace.strip 裁剪（协作约定 8.1 的
+        // "去首尾空白"），仅含这类字符的输入裁剪后为空串 → 400。
+        // ContractWhitespace 与 HTTP DTO 的 @ContractNotBlank 共用同一真源。
+        String roleCode = ContractWhitespace.strip(request.roleCode());
+        String roleName = ContractWhitespace.strip(request.roleName());
         if (roleCode.isEmpty() || roleName.isEmpty()) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色编码与名称不能为空白");
         }
@@ -126,7 +129,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         if (request.roleName().codePointCount(0, request.roleName().length()) > MAX_ROLE_NAME_LENGTH) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色名称最长 100 个字符");
         }
-        String roleName = stripContractWhitespace(request.roleName());
+        String roleName = ContractWhitespace.strip(request.roleName());
         if (roleName.isEmpty()) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "角色名称不能为空白");
         }
@@ -198,42 +201,5 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         // （此时状态确实变了，回滚 + 报错符合"业务生效但审计缺失"的禁止约束）。
         // 两条无状态变更路径在上面已提前返回，不会产生任何审计记录。
         roleWriteAuditMarker.roleStatusChanged();
-    }
-
-    /**
-     * 契约空白判定（评审 P2）：与 OpenAPI pattern {@code \S} 的 ECMAScript
-     * {@code \s} 语义<b>完全一致</b>，不借用 {@code Character.isWhitespace}——
-     * 它两头都不对：
-     * <ul>
-     *   <li>多认 U+001C–U+001F（信息分隔控制符）：按契约它们是非空白字符，
-     *       裁剪会把 {@code "\u001C编辑\u001C"} 错误保存为"编辑"，必须放行；</li>
-     *   <li>少认 NBSP 家族与 BOM：U+00A0、U+202F 等 Zs 字符与 U+FEFF 在
-     *       Java 判定中不是空白，仅含这些的输入会"看起来为空"却通过校验。</li>
-     * </ul>
-     * 因此按 ECMAScript 规范精确枚举 {@code \s} = WhiteSpace + LineTerminator：
-     * Zs 空格分隔符 + U+2028/U+2029 + 控制空白 U+0009/U+000A/U+000B/U+000C/
-     * U+000D + U+FEFF。名称内部（非首尾）的空白原样保留。
-     */
-    private static boolean isContractWhitespace(int codePoint) {
-        int type = Character.getType(codePoint);
-        return type == Character.SPACE_SEPARATOR            // Zs：\u0020 \u00A0 \u1680 \u2000-\u200A \u202F \u205F \u3000
-                || type == Character.LINE_SEPARATOR          // \u2028
-                || type == Character.PARAGRAPH_SEPARATOR     // \u2029
-                || codePoint == 0x09 || codePoint == 0x0A || codePoint == 0x0B
-                || codePoint == 0x0C || codePoint == 0x0D    // 控制空白（\t \n \v \f \r）
-                || codePoint == 0xFEFF;                      // ZWNBSP/BOM（ECMAScript WhiteSpace 成员）
-    }
-
-    /** 去除首尾的契约空白（见 {@link #isContractWhitespace}），内部空白原样保留。 */
-    private static String stripContractWhitespace(String value) {
-        int start = 0;
-        int end = value.length();
-        while (start < end && isContractWhitespace(value.codePointAt(start))) {
-            start += Character.charCount(value.codePointAt(start));
-        }
-        while (end > start && isContractWhitespace(value.codePointBefore(end))) {
-            end -= Character.charCount(value.codePointBefore(end));
-        }
-        return value.substring(start, end);
     }
 }

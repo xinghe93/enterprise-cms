@@ -562,26 +562,71 @@ class RoleControllerHttpTests {
     }
 
     /**
-     * 评审 P2 回归：roleName 仅含 NBSP（JSON 转义 \u00A0）返回 400。
-     * HTTP 层的服务是 mock，NBSP 的契约空白判定本身由
-     * {@code RoleAdminServiceImplTests.updateNbspOnlyRoleNameReturns400} 覆盖；
-     * 此处验证服务层按契约拒绝（BAD_REQUEST）后经公共异常处理器正确映射为 400，
-     * 且请求体中的 NBSP 原样透传给服务层（不被 MVC 绑定悄悄改动）。
+     * 评审 P2 复审回归：roleName 仅含 NBSP（JSON 转义 \u00A0）返回 400。
+     * NBSP 属于契约空白（ECMAScript \s），改由 {@code @ContractNotBlank} 在
+     * {@code @Valid} 阶段拦截，不再进入服务层（HTTP 层服务是 mock，业务校验
+     * 不真跑）。服务层自身的 NBSP 判空由
+     * {@code RoleAdminServiceImplTests.updateNbspOnlyRoleNameReturns400} 覆盖。
      */
     @Test
     void updateNbspOnlyRoleNameReturns400() throws Exception {
-        doThrow(new BusinessException(ResultCode.BAD_REQUEST, "角色名称不能为空白"))
-                .when(roleAdminService).update(eq(37L), any(RoleUpdateRequest.class));
-
         mockMvc.perform(put("/api/admin/roles/37")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"roleName\":\"\\u00A0\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
 
+        // DTO 必填校验与服务层共用同一套契约空白规则：NBSP 在 @Valid 阶段即被拒
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /**
+     * 评审 P2 复审回归：HTTP 入口放行契约允许的名称——roleName 仅含 U+001C
+     * （信息分隔控制符，ECMAScript \s 不含它，按契约是非空白、合法）。
+     * 旧的 {@code @NotBlank} 用 Java {@code isBlank()} 会在 {@code @Valid}
+     * 阶段误拒 400；换用与服务层同源的 {@code @ContractNotBlank} 后应放行进入
+     * 服务层，且请求体中的 U+001C 原样透传（不被 MVC 绑定悄悄改动）。
+     */
+    @Test
+    void updateInformationSeparatorOnlyRoleNameReachesService() throws Exception {
+        when(roleAdminService.update(eq(37L), any(RoleUpdateRequest.class)))
+                .thenReturn(new RoleView("37", "EDITOR", "\u001C", 1,
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0),
+                        java.time.LocalDateTime.of(2026, 11, 18, 8, 50)));
+
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleName\":\"\\u001C\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
         ArgumentCaptor<RoleUpdateRequest> captor = ArgumentCaptor.forClass(RoleUpdateRequest.class);
         verify(roleAdminService).update(eq(37L), captor.capture());
-        assertThat(captor.getValue().roleName()).isEqualTo("\u00A0");
+        assertThat(captor.getValue().roleName()).isEqualTo("\u001C");
+    }
+
+    /**
+     * 评审 P2 复审回归：创建接口同样放行契约允许的名称——roleName 仅含
+     * U+001C 时 {@code @ContractNotBlank} 不误拒，请求进入服务层并原样透传
+     * （{@code RoleCreateRequest} 与 {@code RoleUpdateRequest} 共用同一契约
+     * 空白规则，避免「改一处又漏一处」）。
+     */
+    @Test
+    void createInformationSeparatorOnlyRoleNameReachesService() throws Exception {
+        when(roleAdminService.create(any(RoleCreateRequest.class)))
+                .thenReturn(new RoleView("77", "CUSTOM_EDITOR", "\u001C", 1,
+                        java.time.LocalDateTime.of(2026, 11, 17, 17, 40),
+                        java.time.LocalDateTime.of(2026, 11, 17, 17, 40)));
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleCode\":\"CUSTOM_EDITOR\",\"roleName\":\"\\u001C\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ArgumentCaptor<RoleCreateRequest> captor = ArgumentCaptor.forClass(RoleCreateRequest.class);
+        verify(roleAdminService).create(captor.capture());
+        assertThat(captor.getValue().roleName()).isEqualTo("\u001C");
     }
 
     // ---------- 启停角色（PUT /api/admin/roles/{id}/status） ----------

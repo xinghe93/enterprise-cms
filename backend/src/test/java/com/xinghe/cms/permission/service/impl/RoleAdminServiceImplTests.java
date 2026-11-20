@@ -268,8 +268,10 @@ class RoleAdminServiceImplTests {
     }
 
     /**
-     * 评审 P2 回归：roleName 仅含 NBSP（U+00A0）——@NotBlank 与 strip() 都放行
-     * （Java 空白判定不认 NBSP），必须按契约 \S 的 ECMAScript 空白判定返回 400。
+     * 评审 P2 回归：roleName 仅含 NBSP（U+00A0）——Java 的 isBlank()/strip()
+     * 都放行（Java 空白判定不认 NBSP），必须按契约 \S 的 ECMAScript 空白判定
+     * 返回 400。判空/裁剪统一委托 {@code ContractWhitespace}，与 HTTP DTO 的
+     * {@code @ContractNotBlank} 同源。
      */
     @Test
     void updateNbspOnlyRoleNameReturns400() {
