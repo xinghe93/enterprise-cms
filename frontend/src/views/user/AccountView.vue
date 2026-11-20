@@ -32,6 +32,9 @@ const filters = ref({ keyword: '', departmentId: '', status: '', current: 1, siz
 const loading = ref(false)
 const loadFailed = ref(false)
 const submitting = ref(false)
+// 编辑详情加载与保存提交分开用锁：详情加载未完成时不是「保存中」，
+// 复用 submitting 会让状态语义混淆（DeepSeek 审查）。
+const loadingDetail = ref(false)
 const dialog = ref(null)       // { mode:'create'|'edit', user?, form }
 const pendingStatus = ref(null) // { user, next }
 const formError = ref('')
@@ -119,14 +122,14 @@ function changeSize() {
 }
 
 function openCreate() {
-  if (submitting.value) return
+  if (submitting.value || loadingDetail.value || pendingStatus.value) return
   formError.value = ''
   dialog.value = { mode: 'create', form: { username: '', password: '', realName: '', departmentId: '' } }
 }
 
 async function openEdit(user) {
-  if (submitting.value) return
-  submitting.value = true
+  if (submitting.value || loadingDetail.value || pendingStatus.value) return
+  loadingDetail.value = true
   formError.value = ''
   try {
     // 列表是旧快照；完整 PUT 会回写 realName / departmentId，先取最新详情避免覆盖。
@@ -145,7 +148,7 @@ async function openEdit(user) {
   } catch {
     // 公共层已提示错误，保持弹窗关闭。
   } finally {
-    submitting.value = false
+    loadingDetail.value = false
   }
 }
 
@@ -194,7 +197,10 @@ async function save() {
 }
 
 function askStatus(user) {
-  if (submitting.value || (user.status !== 0 && user.status !== 1)) return
+  // 确认弹窗打开期间不允许被其他行的启停覆盖，否则确认对象悄悄换成另一名员工
+  // （DeepSeek 审查：启停确认弹窗可被并发覆盖）。
+  if (submitting.value || pendingStatus.value || loadingDetail.value) return
+  if (user.status !== 0 && user.status !== 1) return
   pendingStatus.value = { user, next: user.status === 1 ? 0 : 1 }
 }
 
@@ -238,8 +244,8 @@ onMounted(() => {
       </label>
       <label class="org-inline-field">
         <span>部门</span>
-        <select v-model="filters.departmentId" @change="search">
-          <option value="">全部部门</option>
+        <select v-model="filters.departmentId" :disabled="treeFailed" @change="search">
+          <option value="">{{ treeFailed ? '部门树未加载' : '全部部门' }}</option>
           <option v-for="option in departmentFilterOptions" :key="option.node.id" :value="option.node.id">
             {{ '　'.repeat(option.depth) }}{{ option.node.deptName }}{{ option.node.status === 0 ? '（停用）' : '' }}
           </option>
@@ -287,9 +293,9 @@ onMounted(() => {
             </td>
             <td>
               <div class="org-actions">
-                <button type="button" :disabled="submitting" @click="openEdit(user)">编辑</button>
-                <button type="button" :disabled="submitting" @click="goAssign(user)">分配角色/部门</button>
-                <button type="button" :disabled="submitting" @click="askStatus(user)">
+                <button type="button" :disabled="submitting || loadingDetail" @click="openEdit(user)">编辑</button>
+                <button type="button" :disabled="submitting || loadingDetail" @click="goAssign(user)">分配角色/部门</button>
+                <button type="button" :disabled="submitting || loadingDetail || Boolean(pendingStatus)" @click="askStatus(user)">
                   {{ user.status === 1 ? '停用' : '启用' }}
                 </button>
               </div>

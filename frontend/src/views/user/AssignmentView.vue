@@ -19,7 +19,7 @@ import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { createRoleApi } from '../../api/role.js'
-import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree } from '../../utils/organization.js'
+import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree } from '../../utils/organization.js'
 
 const route = useRoute()
 
@@ -33,6 +33,10 @@ const total = ref(0)
 const filters = ref({ keyword: '', departmentId: '', status: '', current: 1, size: 10 })
 const loading = ref(false)
 const loadFailed = ref(false)
+const departmentsLoading = ref(false)
+// 老师复审 P2：部门树首次加载失败后不能静默失败——标记状态供「刷新」重试与降级展示，
+// 否则服务恢复后本页仍无法筛选部门、也无法在分配弹窗看到任何部门候选。
+const departmentsLoadFailed = ref(false)
 const submitting = ref(false)
 const dialog = ref(null)
 const selectedRoleIds = ref([])
@@ -58,11 +62,23 @@ const assignmentOptions = computed(() => parentOptions(departments.value, {
 let usersRequestId = 0
 
 async function loadDepartments() {
+  if (departmentsLoading.value) return
+  departmentsLoading.value = true
   try {
     departments.value = await userApi.getDepartmentTree()
+    departmentsLoadFailed.value = false
   } catch {
-    departments.value = []
+    // 失败时保留已加载候选（可能正被打开的弹窗引用），只标记失败状态。
+    departmentsLoadFailed.value = true
+  } finally {
+    departmentsLoading.value = false
   }
+}
+
+/** 老师复审 P2：刷新同时重试部门树，否则树首次失败后只能离开页面再进来才能恢复。 */
+function refresh() {
+  void loadDepartments()
+  void loadUsers()
 }
 
 /**
@@ -144,19 +160,26 @@ async function openDepartmentDialog(user) {
     // 列表可能是他人修改姓名之前加载的快照；完整 PUT 会回写 realName，
     // 因此打开弹窗时重新读取详情，避免把他人已提交的姓名覆盖成旧值。
     const detail = await userApi.getUser(user.id)
+    const departmentId = detail?.departmentId ?? null
     // 详情是权威来源：departmentId 为 null 表示该员工当前已无部门，
     // 不能回退到列表旧值，否则保存会把已清除的部门重新挂回（老师审查 #3）。
-    const detailDepartmentId = detail?.departmentId ?? null
+    // 老师复审 P2：树加载失败或候选缺失时，仍保留详情中的原部门作为可选项，
+    // 避免「打开弹窗→原部门无对应选项→保存被候选校验拒绝」且刷新才能恢复。
+    const knownDepartment = departmentId != null
+      && departmentFilterOptions.value.some((row) => String(row.node.id) === String(departmentId))
     dialog.value = {
       type: 'department',
+      fallbackDepartment: departmentId != null && !knownDepartment
+        ? { id: String(departmentId), label: detail?.departmentName || `部门 ${departmentId}` }
+        : null,
       user: {
         ...user,
         id: detail?.id ?? user.id,
         realName: detail?.realName ?? user.realName,
-        departmentId: detailDepartmentId,
+        departmentId,
       },
       // select 以空串表示「无部门」，保存时统一转 null 提交。
-      form: { departmentId: detailDepartmentId ?? '' },
+      form: { departmentId: departmentId ?? '' },
     }
   } catch {
     // 公共层已提示 404 / 500，保持弹窗关闭。
@@ -179,6 +202,15 @@ async function openRoleDialog(user) {
   dialog.value = { type: 'role', user }
   try {
     const detail = await userApi.getUser(user.id)
+    // DeepSeek 审查：弹窗标题/后续保存基于详情的最新值，不用列表快照对象。
+    dialog.value = {
+      ...dialog.value,
+      user: {
+        ...dialog.value.user,
+        id: detail?.id ?? dialog.value.user.id,
+        realName: detail?.realName ?? dialog.value.user.realName,
+      },
+    }
     const ok = await ensureRoles()
     if (!ok) {
       // 目录失败时勾选无效：清空待移除提示（目录没拿到，无法判断哪些会被移除），
@@ -257,7 +289,10 @@ async function saveDepartment() {
     formError.value = '部门 ID 非法，请重新选择'
     return
   }
-  if (departmentId && !assignmentOptions.value.some((option) => String(option.id) === String(departmentId))) {
+  // 树失败降级保留的原部门选项豁免候选校验（候选里没有它）；选新部门仍必须过候选校验。
+  const fallbackId = dialog.value.fallbackDepartment?.id ?? ''
+  if (departmentId && String(departmentId) !== String(fallbackId)
+    && !assignmentOptions.value.some((option) => String(option.id) === String(departmentId))) {
     formError.value = '新选部门及其所有祖先必须启用；原部门不变时可保留'
     return
   }
@@ -296,10 +331,19 @@ async function saveDepartment() {
 }
 
 async function saveRoles() {
-  if (submitting.value || !rolesReady.value || !dialog.value || dialog.value.type !== 'role') return
-  // 详情里的启用角色不在完整目录中：目录可能漏页/重复，保存会把缺失角色当成停用清掉。
-  if (missingEnabledRoles.value.length) {
-    formError.value = '员工持有未出现在启用目录中的角色，目录可能不完整，已禁止保存'
+  if (submitting.value || !dialog.value || dialog.value.type !== 'role') return
+  // 门禁收敛到纯函数 roleSaveBlocked（organization.test.js 直接断言其行为）：
+  // 目录失败 / 详情未就绪 / 启用角色缺失任一成立都禁止全量替换。
+  if (roleSaveBlocked({
+    rolesLoadFailed: rolesLoadFailed.value,
+    roleDetailFailed: roleDetailFailed.value,
+    missingEnabledCount: missingEnabledRoles.value.length,
+  })) {
+    formError.value = '角色目录或员工详情未加载成功，已禁止保存，请重试'
+    return
+  }
+  if (!rolesReady.value) {
+    formError.value = '角色目录或员工详情未加载成功，已禁止保存，请重试'
     return
   }
   submitting.value = true
@@ -320,7 +364,9 @@ async function saveRoles() {
 onMounted(() => {
   // 员工页跳转带 ?keyword=<username>：首次请求前读取，避免目标员工不在第一页时
   // 管理员还要手动重新搜索（老师审查 #5）；长度与契约 keyword 上限一致。
-  const keyword = typeof route.query.keyword === 'string' ? route.query.keyword.trim() : ''
+  // 重复参数会解析成数组：取第一个值而不是静默忽略（DeepSeek 审查）。
+  const rawKeyword = Array.isArray(route.query.keyword) ? route.query.keyword[0] : route.query.keyword
+  const keyword = typeof rawKeyword === 'string' ? rawKeyword.trim() : ''
   if (keyword) {
     filters.value.keyword = keyword.slice(0, 100)
     filters.value.current = 1
@@ -361,10 +407,13 @@ onMounted(() => {
         </select>
       </label>
       <ElButton type="primary" :disabled="loading" @click="search">查询</ElButton>
-      <ElButton :disabled="loading" @click="loadUsers">刷新</ElButton>
+      <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
+    <p v-if="departmentsLoadFailed" class="org-alert" role="alert">
+      部门树未加载：部门筛选与「新选部门」暂不可用，分配部门弹窗仅保留员工当前部门；点击「刷新」重试。
+    </p>
 
     <div class="org-card">
       <table class="org-table">
@@ -428,6 +477,9 @@ onMounted(() => {
           <span>所属部门</span>
           <select v-model="dialog.form.departmentId">
             <option value="">无部门（清除原部门）</option>
+            <option v-if="dialog.fallbackDepartment" :value="dialog.fallbackDepartment.id">
+              {{ dialog.fallbackDepartment.label }}（部门树未加载，仅保留当前部门）
+            </option>
             <option v-for="option in assignmentOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
           </select>
           <small>新选部门及所有祖先必须启用；保持原部门不变时可保留停用引用。</small>
@@ -465,7 +517,7 @@ onMounted(() => {
         <ElButton
           type="primary" :loading="submitting"
           :disabled="submitting || (dialog?.type === 'role'
-            && (!rolesReady || missingEnabledRoles.length > 0))"
+            && roleSaveBlocked({ rolesLoadFailed, roleDetailFailed, missingEnabledCount: missingEnabledRoles.length }))"
           @click="dialog?.type === 'department' ? saveDepartment() : saveRoles()"
         >{{ submitting ? '保存中…' : '保存' }}</ElButton>
       </template>

@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   collectSubtreeIds, compactParams, findDepartment, flattenDepartments, isValidId,
-  normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree, validateAccountForm,
+  normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree,
+  validateAccountForm,
 } from '../src/utils/organization.js'
 
 const node = (id, parentId, deptName, sortOrder, status, children = []) => ({
@@ -85,6 +86,9 @@ test('可选查询条件保留 0 与 false，只省略空值', () => {
 
 test('角色全量替换去重、限 100 项、空数组表示清空', () => {
   assert.deepEqual(normalizeRoleIds(['3', '3', '9']), ['3', '9'])
+  // 先 trim 再去重：' 5 ' 与 '5' 是同一角色，不裁剪会因空白产生重复项或难定位的非法 ID 报错。
+  assert.deepEqual(normalizeRoleIds([' 5 ', '5']), ['5'])
+  assert.deepEqual(normalizeRoleIds([' 9 ']), ['9'])
   assert.deepEqual(normalizeRoleIds([]), [])
   assert.deepEqual(normalizeRoleIds(Array.from({ length: 100 }, (_, i) => String(i + 1))).length, 100)
   assert.throws(() => normalizeRoleIds('3'), TypeError)
@@ -185,4 +189,13 @@ test('账号表单：编辑只校验姓名与部门，不要求账号/密码，�
   assert.match(validateAccountForm('edit', { realName: '', departmentId: '3' }), /姓名/)
   assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, allowed), /所属部门不可选/)
   assert.match(validateAccountForm('unknown', { realName: '张三' }), /模式/)
+})
+
+test('角色保存门禁：目录失败/详情未就绪/启用角色缺失任一成立即阻止全量替换', () => {
+  // 纯函数行为断言，取代对 .vue 源码的正则匹配（DeepSeek 审查：正则证明不了门禁）。
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: false, roleDetailFailed: false, missingEnabledCount: 0 }), false)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: true, roleDetailFailed: false, missingEnabledCount: 0 }), true)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: false, roleDetailFailed: true, missingEnabledCount: 0 }), true)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: false, roleDetailFailed: false, missingEnabledCount: 1 }), true)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: true, roleDetailFailed: true, missingEnabledCount: 2 }), true)
 })

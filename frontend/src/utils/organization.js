@@ -114,7 +114,9 @@ export function normalizeRoleIds(ids) {
       throw new TypeError(`角色 ID 第 ${index + 1} 项为空，请重新选择`)
     }
   })
-  const unique = [...new Set(ids.map(String))]
+  // 先 trim 再去重：' 5 ' 与 '5' 是同一个角色，不裁剪会因去重偏差放行重复项，
+  // 且带空白的 ID 会在 isValidId 处以更难定位的信息报错（DeepSeek 审查）。
+  const unique = [...new Set(ids.map((id) => String(id).trim()))]
   if (unique.length > 100) throw new RangeError('角色最多 100 项')
   for (const id of unique) {
     if (!isValidId(id)) throw new TypeError(`非法角色 ID：${id}`)
@@ -164,6 +166,16 @@ export function validateAccountForm(mode, form, allowedDepartmentIds = null,
     }
   }
   return ''
+}
+
+/**
+ * 角色分配保存门禁（纯函数）：目录加载失败、员工详情未就绪，或详情里存在
+ * 不在完整启用目录中的启用角色时，禁止全量替换——任何一条不满足都可能把
+ * 现有角色清空。抽成纯函数让 Node 测试直接断言行为，而不是对 .vue 源码做
+ * 正则匹配（DeepSeek 审查：源码正则无法验证真实门禁逻辑）。
+ */
+export function roleSaveBlocked({ rolesLoadFailed, roleDetailFailed, missingEnabledCount }) {
+  return Boolean(rolesLoadFailed || roleDetailFailed || missingEnabledCount > 0)
 }
 
 /**

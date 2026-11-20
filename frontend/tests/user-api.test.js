@@ -215,12 +215,19 @@ test('公共入口把 A 的两个模块映射到真实页面，其余仍走占�
   }
   assert.equal(hasModuleView('not-a-real-module'), false)
   assert.equal(typeof resolveModuleView('not-a-real-module'), 'function')
-  // main.js 在 Node 环境有浏览器副作用，只能以源码断言覆盖样式入口。
+  // main.js 在 Node 环境有浏览器副作用，样式入口以完整 import 语句断言（专用用例覆盖）。
   const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
   assert.match(mainSource, /import '\.\/styles\/organization\.css'/)
-  // PR #41 审查 P2：按需引入 ElDialog 必须同时带 dialog + overlay 样式。
-  assert.match(mainSource, /el-dialog\.css/)
-  assert.match(mainSource, /el-overlay\.css/)
+})
+
+test('角色目录返回记录数超过声明 total 时抛错（服务端翻页异常不可信）', async () => {
+  const client = createApiClient({
+    adapter: async (config) => ({
+      data: envelope(200, { records: [{ id: '1' }, { id: '2' }], total: 1, current: config.params.current, size: 100 }),
+      status: 200, statusText: '', headers: {}, config,
+    }),
+  })
+  await assert.rejects(createRoleApi(client).listAssignableRoles(), /超过声明 total/)
 })
 
 test('角色目录跨页出现重复 ID 时抛错，避免残缺候选误删角色', async () => {
@@ -239,12 +246,19 @@ test('角色目录跨页出现重复 ID 时抛错，避免残缺候选误删角�
   await assert.rejects(createRoleApi(client).listAssignableRoles(), /重复角色 ID/)
 })
 
-test('角色分配页保存门禁覆盖详情就绪、目录完整与启用角色缺失', () => {
+test('角色分配页保存门禁收敛到纯函数，部门保存重读详情有代码路径', () => {
   const source = readFileSync(new URL('../src/views/user/AssignmentView.vue', import.meta.url), 'utf8')
-  // 详情失败时 rolesReady 保持 false，保存按钮与 saveRoles 都不得放行。
-  assert.match(source, /rolesReady/)
-  assert.match(source, /roleDetailFailed/)
-  assert.match(source, /missingEnabledRoles/)
-  // 部门保存前必须重读详情并使用最新 realName，避免覆盖他人改名。
+  // 门禁逻辑的行为断言在 organization.test.js 的 roleSaveBlocked 用例；
+  // 这里只验证页面确实接线到该纯函数，且保存前重读详情用最新姓名。
+  assert.match(source, /roleSaveBlocked\(/)
   assert.match(source, /latest\.realName/)
+})
+
+test('main.js 样式入口按完整 import 语句断言，注释提及不算命中', () => {
+  const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
+  assert.match(mainSource, /import 'element-plus\/theme-chalk\/el-dialog\.css'/)
+  assert.match(mainSource, /import 'element-plus\/theme-chalk\/el-overlay\.css'/)
+  // 去掉真实 import 后仅靠注释不应通过（防假阳性回归）。
+  const stripped = mainSource.replace(/^import 'element-plus\/theme-chalk\/el-(dialog|overlay)\.css'$/gm, '')
+  assert.doesNotMatch(stripped, /import 'element-plus\/theme-chalk\/el-dialog\.css'/)
 })
