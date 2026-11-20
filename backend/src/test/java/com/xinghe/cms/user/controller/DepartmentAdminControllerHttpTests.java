@@ -200,6 +200,32 @@ class DepartmentAdminControllerHttpTests {
         verify(departmentService).create(new DepartmentCreateRequest(null, "DEV", "研发部门", 0));
     }
 
+    /**
+     * 长度按 Unicode 代码点计数（老师复审 P2）：增补平面汉字「𠮷」每字占 2 个 UTF-16
+     * char，100 个字 raw.length()=200 但 codePointCount=100，恰好等于上限必须放行；
+     * 101 个代码点才拒绝。
+     */
+    @Test
+    void createCountsLengthByCodePointsForSupplementaryCharacters() throws Exception {
+        when(departmentService.create(any(DepartmentCreateRequest.class))).thenReturn(node());
+        String supplementary = "\uD842\uDFB7";
+        String exactlyMax = supplementary.repeat(100);
+
+        perform(post(DEPARTMENTS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deptCode\":\"D1\",\"deptName\":\"" + exactlyMax + "\"}"), DEPARTMENTS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        verify(departmentService).create(new DepartmentCreateRequest(null, "D1", exactlyMax, 0));
+
+        perform(post(DEPARTMENTS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deptCode\":\"D2\",\"deptName\":\"" + supplementary.repeat(101) + "\"}"),
+                DEPARTMENTS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        verify(departmentService, org.mockito.Mockito.never())
+                .create(new DepartmentCreateRequest(null, "D2", supplementary.repeat(101), 0));
+    }
+
     @Test
     void updateRequiresAllThreeFields() throws Exception {
         String path = DEPARTMENTS + "/5";

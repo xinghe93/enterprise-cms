@@ -15,6 +15,10 @@ import tools.jackson.databind.JsonNode;
  * <p>契约《接口与协作约定》第 235 行：类型及<strong>原始长度</strong>先按模型校验，
  * 再对普通名称/编码去掉首尾空白并验证非空。OpenAPI 的 {@code pattern: "\\S"} 是
  * 「至少含一个非空白字符」的部分匹配，所以只拒绝纯空白值，不限制内部空白。</p>
+ *
+ * <p>控制流约定：Jackson 的 {@code reportInputMismatch} 按框架契约<strong>必定抛出</strong>
+ * {@code MismatchedInputException} 中止反序列化，因此校验失败后的 {@code return}
+ * 不会真的返回 {@code null} 继续构造对象（DeepSeek 审查待核实的「隐含抛异常」即此契约）。</p>
  */
 final class DepartmentJson {
 
@@ -45,7 +49,10 @@ final class DepartmentJson {
         }
         String raw = value.textValue();
         // 契约：先按原始值校验长度，不能靠裁剪首尾空格把超长值压进上限（P2 审查）。
-        if (raw.length() > max) {
+        // 长度按 Unicode 代码点计数（老师复审 P2）：String.length() 返回 UTF-16 代码单元，
+        // 含增补平面字符（如「𠮷」，每个占 2 个 char）的合法名称会被误判超长，
+        // 51 个扩展汉字 raw.length()=102 却 codePointCount=51。契约上限按"字符"语义。
+        if (raw.codePointCount(0, raw.length()) > max) {
             return context.reportInputMismatch(target, "字段 %s 原始长度不能超过 %d",
                     field, max);
         }
@@ -99,7 +106,11 @@ final class DepartmentJson {
         }
     }
 
-    /** sortOrder：JSON 整数 0～2147483647；创建省略为 0，修改必填。 */
+    /**
+     * sortOrder：JSON 整数 0～2147483647；创建省略为 0，修改必填。
+     * 契约虽标 format int64，但同时限定 maximum=2147483647，int + canConvertToInt
+     * 恰好等价实现该约束，不会溢出（DeepSeek 审查「类型语义不符」按此判定）。
+     */
     static int sortOrder(JsonNode root, String field, boolean required, Class<?> target,
             DeserializationContext context) {
         if (!root.has(field)) {

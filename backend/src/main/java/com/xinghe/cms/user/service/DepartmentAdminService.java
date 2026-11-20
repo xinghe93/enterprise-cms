@@ -119,7 +119,7 @@ public class DepartmentAdminService {
         // 只锁当前节点会让两个根互换父节点的并发移动各自通过校验，提交后形成环。
         List<DepartmentRow> all = mapper.findAllForUpdate();
         DepartmentRow locked = all.stream()
-                .filter(row -> row.id() == id)
+                .filter(row -> Objects.equals(row.id(), id))
                 .findFirst()
                 .orElse(null);
         if (locked == null) {
@@ -143,7 +143,7 @@ public class DepartmentAdminService {
         // 整树已在事务内锁定，当前节点必然存在且写入成功；回读当前读得到真实 updatedAt。
         List<DepartmentRow> updated = mapper.findAllForUpdate();
         DepartmentRow after = updated.stream()
-                .filter(row -> row.id() == id)
+                .filter(row -> Objects.equals(row.id(), id))
                 .findFirst()
                 .orElse(null);
         if (after == null) {

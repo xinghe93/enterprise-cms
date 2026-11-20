@@ -167,14 +167,17 @@ class DepartmentAdminServiceTests {
 
     @Test
     void updateUsesLockedHierarchySnapshot() {
-        // 校验与写入必须基于 findAllForUpdate 的受保护快照，不能退回归普通快照读。
+        // 校验与写入必须基于 findAllForUpdate 的受保护快照，不能退回归普通快照读；
+        // 只约束「不落回 findAll/findById」而不断言精确调用次数，避免锁死实现细节
+        // （DeepSeek 审查：update 断言锁定快照读取次数过于脆弱）。
         when(mapper.findAllForUpdate()).thenAnswer(invocation -> tree());
         when(mapper.updateNode(2L, 1L, "研发部门", 5)).thenReturn(1);
 
         service.update(2L, new DepartmentUpdateRequest(1L, "研发部门", 5));
 
-        verify(mapper, org.mockito.Mockito.times(2)).findAllForUpdate();
+        verify(mapper, org.mockito.Mockito.atLeast(2)).findAllForUpdate();
         verify(mapper, never()).findAll();
+        verify(mapper, never()).findById(any());
     }
 
     @Test
@@ -235,13 +238,22 @@ class DepartmentAdminServiceTests {
 
     @Test
     void deleteRejectsChildrenAndUsersIncludingDisabledOnes() {
+        // 两个场景用不同部门 ID 独立 stubbing，不依赖 Mockito 连续 thenReturn 的调用顺序
+        // （DeepSeek 审查）；两个方向都断言具体业务码。
         when(mapper.findByIdForUpdate(1L)).thenReturn(row(1L, null, 10, 1));
-        when(mapper.countChildren(1L)).thenReturn(1).thenReturn(0);
-        when(mapper.countUsers(1L)).thenReturn(1);
+        when(mapper.countChildren(1L)).thenReturn(1);
 
-        assertThrows(BusinessException.class, () -> service.delete(1L));
-        BusinessException exception = assertThrows(BusinessException.class, () -> service.delete(1L));
-        assertEquals(ResultCode.CONFLICT, exception.getResultCode());
+        BusinessException byChildren = assertThrows(BusinessException.class,
+                () -> service.delete(1L));
+        assertEquals(ResultCode.CONFLICT, byChildren.getResultCode());
+
+        when(mapper.findByIdForUpdate(2L)).thenReturn(row(2L, null, 10, 1));
+        when(mapper.countChildren(2L)).thenReturn(0);
+        when(mapper.countUsers(2L)).thenReturn(1);
+
+        BusinessException byUsers = assertThrows(BusinessException.class,
+                () -> service.delete(2L));
+        assertEquals(ResultCode.CONFLICT, byUsers.getResultCode());
         verify(mapper, never()).deleteById(any());
     }
 

@@ -72,11 +72,25 @@ class DepartmentAuditTransactionTests {
         assertNotNull(created);
         assertTrue(transactionManager.committed);
         assertFalse(transactionManager.rolledBack);
-        assertEquals(List.of("DEV"), businessEffects.values());
+        assertEquals(List.of(List.of("DEV", "研发部门", 0)), businessEffects.inserts());
         assertEquals(1, auditLogWriter.written.size());
         assertEquals("SUCCESS", auditLogWriter.written.get(0).getResult());
         assertEquals("department.create", auditLogWriter.written.get(0).getOperation());
         assertTrue(auditLogWriter.writtenInNewTransaction.isEmpty());
+    }
+
+    /** 非根部门创建走「锁树 → 父链校验 → 插入」的完整路径，审计同样随业务事务提交。 */
+    @Test
+    void successfulAuditWithNonRootParentCreation() {
+        DepartmentVO created = service.create(
+                new DepartmentCreateRequest(2L, "DEV2", "研发二部", 0));
+
+        assertNotNull(created);
+        assertTrue(transactionManager.committed);
+        assertFalse(transactionManager.rolledBack);
+        assertEquals(List.of(List.of("DEV2", "研发二部", 0)), businessEffects.inserts());
+        assertEquals(1, auditLogWriter.written.size());
+        assertEquals("department.create", auditLogWriter.written.get(0).getOperation());
     }
 
     @Test
@@ -90,7 +104,7 @@ class DepartmentAuditTransactionTests {
         // 不会出现「部门已创建但接口报错/无审计记录」的不一致状态。
         assertFalse(transactionManager.committed);
         assertTrue(transactionManager.rolledBack);
-        assertTrue(businessEffects.values().isEmpty());
+        assertTrue(businessEffects.inserts().isEmpty());
     }
 
     @Configuration
@@ -127,12 +141,18 @@ class DepartmentAuditTransactionTests {
         DepartmentAdminMapper departmentAdminMapper(BusinessEffects effects) {
             DepartmentAdminMapper mapper = mock(DepartmentAdminMapper.class);
             when(mapper.insert(any(), anyString(), anyString(), anyInt())).thenAnswer(invocation -> {
-                effects.add(invocation.getArgument(1));
+                // 完整记录插入参数（编码/名称/排序），不只记编码（DeepSeek 审查）。
+                effects.addInsert(invocation.getArgument(1), invocation.getArgument(2),
+                        invocation.getArgument(3));
                 return 1;
             });
             when(mapper.findByDeptCode(anyString())).thenAnswer(invocation ->
-                    new DepartmentRow(5L, null, invocation.getArgument(0), "研发部门",
+                    new DepartmentRow(5L, invocation.getArgument(0).equals("DEV2") ? 2L : null,
+                            invocation.getArgument(0), "研发部门",
                             0, 1, TIME, TIME));
+            // 非根创建场景的父链校验依赖锁树快照：启用父节点 id=2。
+            when(mapper.findAllForUpdate()).thenReturn(List.of(
+                    new DepartmentRow(2L, null, "ROOT", "父部门", 0, 1, TIME, TIME)));
             return mapper;
         }
 
@@ -148,20 +168,20 @@ class DepartmentAuditTransactionTests {
         }
     }
 
-    /** 模拟数据库写入副作用：事务回滚时由事务管理器清空。 */
+    /** 模拟数据库写入副作用：记录完整插入参数，事务回滚时由事务管理器清空。 */
     static class BusinessEffects {
-        private final List<String> values = new ArrayList<>();
+        private final List<List<Object>> inserts = new ArrayList<>();
 
-        void add(String value) {
-            values.add(value);
+        void addInsert(Object deptCode, Object deptName, Object sortOrder) {
+            inserts.add(List.of(deptCode, deptName, sortOrder));
         }
 
-        List<String> values() {
-            return List.copyOf(values);
+        List<List<Object>> inserts() {
+            return List.copyOf(inserts);
         }
 
         void clear() {
-            values.clear();
+            inserts.clear();
         }
     }
 

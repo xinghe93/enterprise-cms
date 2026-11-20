@@ -21,9 +21,12 @@
         id, parent_id, dept_code, dept_name, sort_order, status, created_at, updated_at
     </sql>
 
+    <!-- 业务排序（sortOrder ASC、id ASC）在 Service 内存中统一执行；这里按 id 升序
+         返回只为让数据库结果具备确定性，不依赖存储引擎的返回顺序（DeepSeek 审查）。 -->
     <select id="findAll" resultMap="departmentMap">
         SELECT <include refid="departmentColumns"/>
         FROM sys_department
+        ORDER BY id ASC
     </select>
 
     <!-- 层级写事务统一按 id 升序锁定整棵树：固定加锁顺序避免死锁，
@@ -55,7 +58,9 @@
         WHERE dept_code = #{deptCode}
     </select>
 
-    <!-- status 使用 001_init.sql 的默认值 1；updated_at 由 ON UPDATE 自动维护。 -->
+    <!-- status 使用 001_init.sql 的默认值 1；updated_at 由 ON UPDATE 自动维护。
+         不声明 useGeneratedKeys：Service 用唯一键 findByDeptCode 回读完整行
+         （含数据库生成的时间戳），比仅回填自增 id 更完整（DeepSeek 审查待核实项）。 -->
     <insert id="insert">
         INSERT INTO sys_department (parent_id, dept_code, dept_name, sort_order)
         VALUES (#{parentId}, #{deptCode}, #{deptName}, #{sortOrder})
@@ -84,6 +89,8 @@
         WHERE parent_id = #{id}
     </select>
 
+    <!-- 删除前检查员工引用（含停用员工）；department_id 列与外键定义见
+         database/001_init.sql 的 sys_user 表（fk_user_department）。 -->
     <select id="countUsers" resultType="java.lang.Integer">
         SELECT COUNT(*)
         FROM sys_user
