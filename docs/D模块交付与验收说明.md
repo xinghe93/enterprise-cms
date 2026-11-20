@@ -37,7 +37,7 @@
 | 无权限 403 | 普通员工读日志（`log:list`/`log:read`）、editor 审批、editor 对待审列表 | `OperationLogPermissionTests`（4 项）；e2e `logs-editor-403`、`log-detail-editor-403`、`logs-staff-403`、`pending-editor-403`；PR #30 Controller 测试反射断言 6 个权限码 |
 | 有权限 200 | 管理员日志列表/详情、待审列表、审核历史 | e2e `logs-admin-200`、`pending-admin-200-excludes-own`、`pending-filter-author-200`；`ReviewQueryServiceMysqlIT` |
 | 参数 400 | size 越界、result 非法、时间区间倒置、未知参数、详情 ID 非十进制/前导零/0/超 Long、`operation` 超 100 | `OperationLogControllerTests`、`OperationLogQueryTests`；e2e `logs-size-101-400` 等 6 条 |
-| 状态冲突 409 | 旧版本审批、重复标签名 | `ReviewDecisionServiceTests`、`ArticleTagServiceTests`；e2e `tag-create-duplicate-conflict`（FAILURE 审计）、审核 409 用例（待 #30 合入后由 e2e 脚本自动覆盖） |
+| 状态冲突 409 | 旧版本审批、重复标签名 | `ReviewDecisionServiceTests`、`ArticleTagServiceTests`；e2e `tag-create-duplicate-conflict`（FAILURE 审计）；审核 409 用例待审核历史接口 PR 合入后由 e2e 脚本覆盖 |
 | 不存在 404 | 日志详情不存在、文章不存在、标签不存在 | `OperationLogServiceTests`、`ReviewQueryServiceTests`、`ArticleTagServiceTests`；e2e `log-detail-404` |
 | 审计成功/失败 | `tag.create` 成功写 SUCCESS（userId、requestUri 只路径）、重名 409 写 FAILURE | e2e `audit-success-recorded-with-operator-and-path`、`audit-failure-recorded`；`AuditLogTransactionProxyTests`（真实 Spring 事务代理：成功随提交、失败回滚业务） |
 | 跨模块 MANDATORY | `replaceBindings` 必须在事务内、`IllegalTransactionStateException` | `ArticleTagServiceImplTransactionTests` |
@@ -56,8 +56,8 @@
 | 入口 | 命令/文件 | 前置条件 | 最近结果 |
 | --- | --- | --- | --- |
 | 日志模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.log.**"` | JDK25、`SPRING_DATASOURCE_PASSWORD` | **63 项全过** |
-| 审核模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.review.**"` | 同上 + Docker MySQL（含 IT） | **60 项全过**（dev 分支；#30 合入后更多） |
-| 真实登录态 e2e | 本机验收脚本（不入库）| Docker mysql8/redis、001–004 种子、jar、`CMS_*_PASSWORD` | **26 PASS / 0 FAIL / 1 SKIP** |
+| 审核模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.review.**"` | 同上 + Docker MySQL（含 IT） | **138 项全过**（dev 已合入 #30；审核历史查询接口 PR 合并后为 149 项） |
+| 真实登录态 e2e | 本机验收脚本（不入库）| Docker mysql8/redis、001–005 种子、jar、`CMS_*_PASSWORD` | **26 PASS / 0 FAIL / 1 SKIP** |
 | 压测 | 本机压测脚本（不入库） | 同上 | PASS，见 §5 |
 
 > 本机完整 `mvn verify` 会因宿主机不允许外部进程 attach 而在 A/B/C 的 Mockito 测试类上报 `MockMaker` 失败（非 D 模块问题），排除这些类后可全量通过。
@@ -71,20 +71,21 @@
 | `GET /api/admin/logs?size=10` | 16.8 | 22.2 | 35.3 | 40.2 | 0 | 15.6 | 23.6 | 42.4 | 54.9 | 0 |
 | `GET /api/admin/logs?size=50&result=SUCCESS` | 13.3 | 17.0 | 25.4 | 36.9 | 0 | 17.6 | 50.3 | 68.4 | 131.1 | 0 |
 | `GET /api/admin/reviews/pending?size=10` | 16.6 | 25.5 | 40.2 | 50.6 | 0 | 17.0 | 20.5 | 22.1 | 38.4 | 0 |
-| `GET /api/admin/articles/{id}/reviews?size=10` | SKIP：依赖 PR #30（dev 上路由未开放） | — | — | — | — | — | — | — | — | — |
+| `GET /api/admin/articles/{id}/reviews?size=10` | SKIP：审核历史查询接口待新 PR（当前 dev 无该路由） | — | — | — | — | — | — | — | — | — |
 
 判定：**PASS**（错误数 0；并发=1 时各接口 p95 均 < 300ms）。
 
-说明：数据量很小，结果只证明接口自身开销（鉴权 + 参数校验 + 分页 SQL）稳定；正式压测应在 #30 合并、演示数据充足后重跑，并把审核/发布写接口纳入。
+说明：数据量很小，结果只证明接口自身开销（鉴权 + 参数校验 + 分页 SQL）稳定；#30 已合入 dev，正式压测待审核历史接口 PR 合入、演示数据充足后重跑，并把审核/发布写接口与审核历史纳入。
 
 ## 6. 已知限制与待办
 
 | 项 | 现状 | 待办 |
 | --- | --- | --- |
 | 日志接口权限实现 | `@RequirePermission("log:list")`/`@RequirePermission("log:read")`（PR #52 已合入 dev，旧 `LogPermissionGuard` 已删除），403 文案「缺少访问权限: …」 | 无待办 |
-| 审核/发布命令 | 代码在 PR #30（含权限注解与事务内审计 bean），dev 尚未合入 | 合并后重跑 e2e 与压测，把 SKIP 组转 PASS |
+| 审核/发布命令 | 已随 PR #30 合入 dev（`78b7174`），含 `@RequirePermission` 与事务内审计 bean | 重跑 e2e 与压测，把审核/发布命令组转 PASS |
+| 审核历史查询接口 | `GET /api/admin/articles/{id}/reviews` 此前仅有 Service、无 Controller；已在新分支 `feature/D/reviews-history`（提交 `1030b50`）补齐 Controller 与 11 项测试 | 建 PR → 评审合并后重跑 e2e/压测，SKIP 组转 PASS |
 | 前端权限门控 | 前端日志页/审核页已做软门控（`permissionCodes` 为空时放行），`permissionCodes` 依赖 A 的 `/auth/me` 下发 | 请 A 在 `/auth/me` 返回权限码后收紧 |
-| 演示种子 | `004_seed_review_log_demo.sql` 在 PR #9（`feature/D/e2e-seed`） | 合并后从仓库直接导入 |
+| 演示种子 | `005_seed_review_log_demo.sql`（原 004 编号与 dev 的 `004_user_status_version.sql` 冲突，已改名）在 PR #53（`feature/D/e2e-seed`） | 合并后从仓库直接导入 |
 | 本机 Mockito | JDK25 + Windows 不允许外部 attach | 加 javaagent 或 CI 指定 JDK |
 | 日志数据范围 | 全局审计，首期按权限码全量可读 | 若要求部门级范围需另行评审 |
 
