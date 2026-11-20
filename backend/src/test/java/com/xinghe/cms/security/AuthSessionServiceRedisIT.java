@@ -39,6 +39,7 @@ class AuthSessionServiceRedisIT {
     /** 独立的测试用户 ID，避免与开发数据的键冲突。 */
     private static final long USER_ID = 9_000_001L;
     private static final String EPOCH_KEY = "cms:auth:generation:" + USER_ID;
+    private static final String REVOKED_VERSION_KEY = "cms:auth:revoked-version:" + USER_ID;
     private static final String SESSION_PREFIX = "cms:auth:session:";
 
     private static LettuceConnectionFactory factory;
@@ -100,6 +101,7 @@ class AuthSessionServiceRedisIT {
 
     private void cleanUp() {
         redis.delete(EPOCH_KEY);
+        redis.delete(REVOKED_VERSION_KEY);
         for (String key : trackedSessions) {
             redis.delete(key);
         }
@@ -295,5 +297,54 @@ class AuthSessionServiceRedisIT {
         assertNotNull(before);
         assertNotNull(after);
         assertTrue(after <= before && before - after < 5, "普通请求不得续期");
+    }
+
+    /**
+     * 版本撤销在真实 Redis 上的幂等语义：首次轮换并记录，同版本/更低版本一律跳过
+     * （不误伤重新登录后的新 Token），更高版本才再次轮换。
+     */
+    @Test
+    void versionedRevokeRotatesOnceAndSkipsLowerOrEqualVersions() {
+        String tokenBefore = login();
+        assertNotNull(tokenBefore);
+
+        assertTrue(sessions.revokeAllForUserUpToVersion(USER_ID, 10L), "首次按版本撤销应轮换");
+        assertNull(sessions.resolve(tokenBefore), "轮换后旧 Token 失效");
+        assertEquals("10", redis.opsForValue().get(REVOKED_VERSION_KEY), "已撤销版本被记录");
+        Long ttl = redis.getExpire(REVOKED_VERSION_KEY);
+        assertNotNull(ttl);
+        assertEquals(-1L, ttl, "版本键不设 TTL：它是持久事实，过期会让同状态请求误判待补偿");
+
+        String tokenAfter = login();
+        assertNotNull(tokenAfter);
+        assertFalse(sessions.revokeAllForUserUpToVersion(USER_ID, 10L), "同版本幂等跳过");
+        assertFalse(sessions.revokeAllForUserUpToVersion(USER_ID, 9L), "更低版本的过期撤销跳过");
+        assertEquals(USER_ID, sessions.resolve(tokenAfter), "新 Token 不被过期撤销误伤");
+
+        assertTrue(sessions.revokeAllForUserUpToVersion(USER_ID, 11L), "更高版本再次轮换");
+        assertNull(sessions.resolve(tokenAfter));
+        assertEquals("11", redis.opsForValue().get(REVOKED_VERSION_KEY));
+    }
+
+    /**
+     * 版本键缺省按 0 处理（从未变更状态的账号不会被误踢）；
+     * 非数字脏值不得让 Lua 报错卡死撤销，而是按 0 处理后自愈覆写。
+     */
+    @Test
+    void versionedRevokeTreatsMissingOrDirtyRecordAsZeroAndSelfHeals() {
+        assertFalse(sessions.revokeAllForUserUpToVersion(USER_ID, 0L),
+                "记录缺省按 0：版本 0 幂等跳过，不轮换");
+
+        String token = login();
+        assertNotNull(token);
+        assertTrue(sessions.revokeAllForUserUpToVersion(USER_ID, 1L));
+        assertNull(sessions.resolve(token));
+
+        redis.opsForValue().set(REVOKED_VERSION_KEY, "not-a-number");
+        String tokenAfter = login();
+        assertNotNull(tokenAfter);
+        assertTrue(sessions.revokeAllForUserUpToVersion(USER_ID, 2L), "脏值按 0 自愈后正常轮换");
+        assertEquals("2", redis.opsForValue().get(REVOKED_VERSION_KEY), "自愈覆写为数字版本");
+        assertNull(sessions.resolve(tokenAfter));
     }
 }

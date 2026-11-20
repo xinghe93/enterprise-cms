@@ -14,6 +14,9 @@ export const moduleViews = {
   // 合并 dev 后迁入映射表；两者共用 ArticleListView，靠 portal props 切换数据范围。
   articles: () => import('../views/content/ArticleListView.vue'),
   portal: () => import('../views/content/ArticleListView.vue'),
+  // D 的 #36 操作日志页：dev 上原先由 router/index.js 的硬编码分支兜底，
+  // 合并 dev 后迁入映射表；页面自取会话与权限，不依赖 entry props。
+  logs: () => import('../views/LogListView.vue'),
 }
 
 /**
