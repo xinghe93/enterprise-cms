@@ -96,7 +96,10 @@ async function loadUsers() {
   try {
     const page = await userApi.listUsers({
       keyword: filters.value.keyword,
-      departmentId: filters.value.departmentId,
+      // 部门下拉只提供树里的合法 ID，但防御性校验：异常值不发给后端，按无部门筛选查询。
+      departmentId: filters.value.departmentId && isValidId(String(filters.value.departmentId))
+        ? filters.value.departmentId
+        : '',
       status: filters.value.status === '' ? '' : Number(filters.value.status),
       current: filters.value.current,
       size: filters.value.size,
@@ -296,6 +299,13 @@ async function saveDepartment() {
     dialog.value = null
     await loadUsers()
   } catch (error) {
+    if (error?.code === 404 || error?.status === 404) {
+      // 重读详情或提交时员工已被并发删除：公共层已提示，弹窗保留只会让管理员
+      // 对失效数据继续操作（DeepSeek 审查）。
+      dialog.value = null
+      await loadUsers()
+      return
+    }
     formError.value = error?.message || '保存失败，请按提示检查后重试'
   } finally {
     submitting.value = false
@@ -459,7 +469,8 @@ onMounted(() => {
         <ElButton v-if="rolesLoadFailed || !roleDetailLoaded" link type="danger" :disabled="submitting" @click="retryRoles">
           {{ rolesLoadFailed ? '启用角色目录加载失败' : '员工详情加载失败' }}，点击重试
         </ElButton>
-        <div v-if="!assignableRoles.length" class="org-empty">暂无可分配的启用角色。</div>
+        <!-- 目录加载失败时不显示「暂无可分配」空态（误导），由上方重试按钮与提示接管。 -->
+        <div v-if="!assignableRoles.length && !rolesLoadFailed" class="org-empty">暂无可分配的启用角色。</div>
         <div v-else class="org-check-list">
           <label v-for="role in assignableRoles" :key="role.id" class="org-check-item">
             <input

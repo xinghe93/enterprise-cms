@@ -222,6 +222,40 @@ test('角色目录跨页出现重复 ID 时抛错，避免残缺候选误删角�
   await assert.rejects(createRoleApi(client).listAssignableRoles(), /重复角色 ID/)
 })
 
+test('角色目录每页不足量时继续翻页；病态服务端由安全上限终止而不死循环', async () => {
+  // 合法场景：每页 50 条、total=250 → 需要正好 5 页，MAX_PAGES=100 不会误伤。
+  let calls = 0
+  const undersized = createApiClient({
+    adapter: async (config) => {
+      calls += 1
+      return {
+        data: envelope(200, {
+          records: Array.from({ length: 50 }, (_, i) => ({ id: String((config.params.current - 1) * 50 + i + 1) })),
+          total: 250, current: config.params.current, size: 100,
+        }),
+        status: 200, statusText: '', headers: {}, config,
+      }
+    },
+  })
+  const page = await createRoleApi(undersized).listAssignableRoles()
+  assert.equal(page.records.length, 250)
+  assert.equal(calls, 5)
+
+  // 病态场景：服务端每页永远只回 1 条且 total 巨大 → 安全上限 100 页终止并抛错。
+  let pathological = 0
+  const endless = createApiClient({
+    adapter: async (config) => {
+      pathological += 1
+      return {
+        data: envelope(200, { records: [{ id: String(config.params.current) }], total: 50000, current: config.params.current, size: 100 }),
+        status: 200, statusText: '', headers: {}, config,
+      }
+    },
+  })
+  await assert.rejects(createRoleApi(endless).listAssignableRoles(), /未完整加载/)
+  assert.equal(pathological, 100)
+})
+
 test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', () => {
   const routerSource = readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
   const viewsSource = readFileSync(new URL('../src/router/viewComponents.js', import.meta.url), 'utf8')

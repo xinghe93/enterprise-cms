@@ -32,6 +32,8 @@ export function compactParams(params = {}) {
 }
 
 function compareId(a, b) {
+  // 服务端 ID 恒为十进制字符串，BigInt 失败只可能是异常脏数据：回退字典序保持排序
+  // 确定性（避免 NaN 打乱 sort），不在纯工具层抛错或丢弃节点，由展示层如实呈现。
   try {
     const left = BigInt(a.id)
     const right = BigInt(b.id)
@@ -134,9 +136,15 @@ export function normalizeRoleIds(ids) {
  * 第二页的启用角色误当成 removed，保存时误删。
  */
 export function partitionAssignedRoles(assigned = [], assignable = []) {
-  const available = new Set(assignable.map((role) => String(role.id ?? role)))
-  const list = Array.isArray(assigned) ? assigned : []
-  const idOf = (role) => String(role.id ?? role)
+  // 目录侧防御：null 项或缺失 ID 的记录不进候选集——否则 String(null)='null' 这样的
+  // 占位键会混入可用集合，甚至 role.id 直接抛 TypeError（DeepSeek 审查）。
+  const available = new Set(
+    (Array.isArray(assignable) ? assignable : [])
+      .filter((role) => role != null && role.id != null)
+      .map((role) => String(role.id)),
+  )
+  const list = (Array.isArray(assigned) ? assigned : []).filter((role) => role != null)
+  const idOf = (role) => String(typeof role === 'object' ? role.id ?? role : role)
   return {
     selectedRoleIds: list.filter((role) => available.has(idOf(role))).map(idOf),
     removedRoles: list.filter((role) => !available.has(idOf(role))),
