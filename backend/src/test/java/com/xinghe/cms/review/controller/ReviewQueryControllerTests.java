@@ -18,8 +18,10 @@ import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -134,10 +136,24 @@ class ReviewQueryControllerTests {
         assertThat(stubService.calls).isZero();
     }
 
+    /**
+     * 用 {@link URI} 而不是 String 构造请求：MockMvc 的 {@code get(String, ...)} 会把查询串
+     * 当作 URI 模板再编码一次，{@code %20} 会变成 {@code %2520}，控制器收到的是字面值
+     * {@code 1%202}；改用预编码好的 URI 后，服务端解码得到的是 {@code 1 2}。
+     */
     @Test
     void rejectsPaginationValueWithEncodedWhitespace() throws Exception {
-        MvcResult result = performGet("/api/admin/articles/" + ARTICLE_ID + "/reviews?current=1%202");
+        AtomicReference<String> decodedValue = new AtomicReference<>();
+        MvcResult result = mockMvc.perform(
+                        get(URI.create("/api/admin/articles/" + ARTICLE_ID + "/reviews?current=1%202"))
+                                .with(request -> {
+                                    decodedValue.set(request.getParameter("current"));
+                                    return request;
+                                })
+                                .accept(MediaType.APPLICATION_JSON))
+                .andReturn();
 
+        assertThat(decodedValue.get()).isEqualTo("1 2");
         assertThat(result.getResponse().getStatus()).isEqualTo(400);
         assertThat(body(result).get("message").asString()).isEqualTo("查询参数取值非法: current");
         assertThat(stubService.calls).isZero();
