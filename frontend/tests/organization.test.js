@@ -85,6 +85,9 @@ test('可选查询条件保留 0 与 false，只省略空值', () => {
 
 test('角色全量替换去重、限 100 项、空数组表示清空', () => {
   assert.deepEqual(normalizeRoleIds(['3', '3', '9']), ['3', '9'])
+  // 先 trim 再去重：' 5 ' 与 '5' 是同一角色，不裁剪会因空白产生重复项或难定位的非法 ID 报错。
+  assert.deepEqual(normalizeRoleIds([' 5 ', '5']), ['5'])
+  assert.deepEqual(normalizeRoleIds([' 9 ']), ['9'])
   assert.deepEqual(normalizeRoleIds([]), [])
   assert.deepEqual(normalizeRoleIds(Array.from({ length: 100 }, (_, i) => String(i + 1))).length, 100)
   assert.throws(() => normalizeRoleIds('3'), TypeError)

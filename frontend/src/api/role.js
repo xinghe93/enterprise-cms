@@ -65,8 +65,12 @@ export function createRoleApi(client) {
         }
         if (records.length >= declaredTotal) break
       }
-      // 达到页数上限仍未取满 = 目录不完整，抛错而非返回残缺候选。
+      // 达到页数上限仍未取满 = 目录不完整，抛错而非返回残缺候选；
+      // 记录数超过声明 total 同样不可信（服务端翻页异常），单独给出错误信息。
       if (declaredTotal === null || records.length !== declaredTotal) {
+        if (records.length > declaredTotal) {
+          throw new RangeError('角色目录记录数超过声明 total，已中止加载以避免误删现有角色')
+        }
         throw new RangeError('角色目录未完整加载，已中止以避免误删现有角色')
       }
       return { records, total: records.length }

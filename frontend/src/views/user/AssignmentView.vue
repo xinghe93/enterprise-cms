@@ -28,6 +28,10 @@ const total = ref(0)
 const filters = ref({ keyword: '', departmentId: '', status: '', current: 1, size: 10 })
 const loading = ref(false)
 const loadFailed = ref(false)
+const departmentsLoading = ref(false)
+// 老师复审 P2：部门树首次加载失败后不能静默失败——标记状态供「刷新」重试与降级展示，
+// 否则服务恢复后本页仍无法筛选部门、也无法在分配弹窗看到任何部门候选。
+const departmentsLoadFailed = ref(false)
 const submitting = ref(false)
 const dialog = ref(null)
 const selectedRoleIds = ref([])
@@ -48,11 +52,23 @@ const assignmentOptions = computed(() => parentOptions(departments.value, {
 let usersRequestId = 0
 
 async function loadDepartments() {
+  if (departmentsLoading.value) return
+  departmentsLoading.value = true
   try {
     departments.value = await userApi.getDepartmentTree()
+    departmentsLoadFailed.value = false
   } catch {
-    departments.value = []
+    // 失败时保留已加载候选（可能正被打开的弹窗引用），只标记失败状态。
+    departmentsLoadFailed.value = true
+  } finally {
+    departmentsLoading.value = false
   }
+}
+
+/** 老师复审 P2：刷新同时重试部门树，否则树首次失败后只能离开页面再进来才能恢复。 */
+function refresh() {
+  void loadDepartments()
+  void loadUsers()
 }
 
 /**
@@ -134,8 +150,15 @@ async function openDepartmentDialog(user) {
     // 不用列表旧值兜底，避免把「已被他人清空的部门」重新绑回旧部门。
     const detail = await userApi.getUser(user.id)
     const departmentId = detail?.departmentId ?? null
+    // 老师复审 P2：树加载失败或候选缺失时，仍保留详情中的原部门作为可选项，
+    // 避免「打开弹窗→原部门无对应选项→保存被候选校验拒绝」且刷新才能恢复。
+    const knownDepartment = departmentId != null
+      && departmentFilterOptions.value.some((row) => String(row.node.id) === String(departmentId))
     dialog.value = {
       type: 'department',
+      fallbackDepartment: departmentId != null && !knownDepartment
+        ? { id: String(departmentId), label: detail?.departmentName || `部门 ${departmentId}` }
+        : null,
       user: {
         ...user,
         id: detail?.id ?? user.id,
@@ -180,7 +203,11 @@ async function openRoleDialog(user) {
       removedRoles.value = []
       missingEnabledRoles.value = []
     }
-    dialog.value = { type: 'role', user }
+    // DeepSeek 审查：弹窗标题/后续保存基于详情的最新值，不用列表快照对象。
+    dialog.value = {
+      type: 'role',
+      user: { ...user, id: detail?.id ?? user.id, realName: detail?.realName ?? user.realName },
+    }
     // 详情成功才置位：即使随后目录加载失败，也只由 rolesLoadFailed 控制保存。
     roleDetailLoaded.value = true
     if (!ok) formError.value = '启用角色目录加载失败，为避免误删现有角色已禁止保存，请重试'
@@ -234,7 +261,10 @@ async function saveDepartment() {
     formError.value = '部门 ID 非法，请重新选择'
     return
   }
-  if (departmentId && !assignmentOptions.value.some((option) => String(option.id) === String(departmentId))) {
+  // 树失败降级保留的原部门选项豁免候选校验（候选里没有它）；选新部门仍必须过候选校验。
+  const fallbackId = dialog.value.fallbackDepartment?.id ?? ''
+  if (departmentId && String(departmentId) !== String(fallbackId)
+    && !assignmentOptions.value.some((option) => String(option.id) === String(departmentId))) {
     formError.value = '新选部门及其所有祖先必须启用；原部门不变时可保留'
     return
   }
@@ -335,10 +365,13 @@ onMounted(() => {
         </select>
       </label>
       <ElButton type="primary" :disabled="loading" @click="search">查询</ElButton>
-      <ElButton :disabled="loading" @click="loadUsers">刷新</ElButton>
+      <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
+    <p v-if="departmentsLoadFailed" class="org-alert" role="alert">
+      部门树未加载：部门筛选与「新选部门」暂不可用，分配部门弹窗仅保留员工当前部门；点击「刷新」重试。
+    </p>
 
     <div class="org-card">
       <table class="org-table">
@@ -402,6 +435,9 @@ onMounted(() => {
           <span>所属部门</span>
           <select v-model="dialog.form.departmentId">
             <option value="">无部门（清除原部门）</option>
+            <option v-if="dialog.fallbackDepartment" :value="dialog.fallbackDepartment.id">
+              {{ dialog.fallbackDepartment.label }}（部门树未加载，仅保留当前部门）
+            </option>
             <option v-for="option in assignmentOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
           </select>
           <small>新选部门及所有祖先必须启用；保持原部门不变时可保留停用引用。</small>

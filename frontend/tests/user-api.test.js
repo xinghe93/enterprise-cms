@@ -196,6 +196,16 @@ test('角色目录异常一律抛错而非静默返回空/残缺候选（避免�
   await assert.rejects(createRoleApi(changing).listAssignableRoles(), /总数不一致/)
 })
 
+test('角色目录返回记录数超过声明 total 时抛错（服务端翻页异常不可信）', async () => {
+  const client = createApiClient({
+    adapter: async (config) => ({
+      data: envelope(200, { records: [{ id: '1' }, { id: '2' }], total: 1, current: config.params.current, size: 100 }),
+      status: 200, statusText: '', headers: {}, config,
+    }),
+  })
+  await assert.rejects(createRoleApi(client).listAssignableRoles(), /超过声明 total/)
+})
+
 test('角色目录跨页出现重复 ID 时抛错，避免残缺候选误删角色', async () => {
   const client = createApiClient({
     adapter: async (config) => {

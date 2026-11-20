@@ -114,7 +114,9 @@ export function normalizeRoleIds(ids) {
       throw new TypeError(`角色 ID 第 ${index + 1} 项为空，请重新选择`)
     }
   })
-  const unique = [...new Set(ids.map(String))]
+  // 先 trim 再去重：' 5 ' 与 '5' 是同一个角色，不裁剪会因去重偏差放行重复项，
+  // 且带空白的 ID 会在 isValidId 处以更难定位的信息报错（DeepSeek 审查）。
+  const unique = [...new Set(ids.map((id) => String(id).trim()))]
   if (unique.length > 100) throw new RangeError('角色最多 100 项')
   for (const id of unique) {
     if (!isValidId(id)) throw new TypeError(`非法角色 ID：${id}`)
