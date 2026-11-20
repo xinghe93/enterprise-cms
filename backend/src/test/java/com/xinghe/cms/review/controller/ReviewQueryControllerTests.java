@@ -121,7 +121,49 @@ class ReviewQueryControllerTests {
         MvcResult result = performGet("/api/admin/articles/" + ARTICLE_ID + "/reviews?current=0");
 
         assertThat(result.getResponse().getStatus()).isEqualTo(400);
-        assertThat(body(result).get("message").asString()).isEqualTo("页码必须大于零");
+        assertThat(body(result).get("message").asString()).isEqualTo("查询参数取值非法: current");
+        assertThat(stubService.calls).isZero();
+    }
+
+    @Test
+    void rejectsHexadecimalPaginationValue() throws Exception {
+        MvcResult result = performGet("/api/admin/articles/" + ARTICLE_ID + "/reviews?current=0x2");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(result).get("message").asString()).isEqualTo("查询参数取值非法: current");
+        assertThat(stubService.calls).isZero();
+    }
+
+    @Test
+    void rejectsPaginationValueWithEncodedWhitespace() throws Exception {
+        MvcResult result = performGet("/api/admin/articles/" + ARTICLE_ID + "/reviews?current=1%202");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(result).get("message").asString()).isEqualTo("查询参数取值非法: current");
+        assertThat(stubService.calls).isZero();
+    }
+
+    @Test
+    void rejectsHexadecimalSizeValue() throws Exception {
+        MvcResult result = performGet("/api/admin/articles/" + ARTICLE_ID + "/reviews?size=0x10");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(result).get("message").asString()).isEqualTo("查询参数取值非法: size");
+        assertThat(stubService.calls).isZero();
+    }
+
+    @Test
+    void ignoresPaginationHeadersWhenQueryParametersAreAbsent() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/articles/" + ARTICLE_ID + "/reviews")
+                        .header("Current", "3")
+                        .header("Size", "50")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.calls).isEqualTo(1);
+        assertThat(stubService.capturedQuery.getCurrent()).isEqualTo(1);
+        assertThat(stubService.capturedQuery.getSize()).isEqualTo(10);
     }
 
     @Test
@@ -166,7 +208,6 @@ class ReviewQueryControllerTests {
     void declaresReviewListPermission() throws Exception {
         RequirePermission permission = ReviewQueryController.class
                 .getDeclaredMethod("reviews", String.class,
-                        com.xinghe.cms.common.request.PageQuery.class,
                         jakarta.servlet.http.HttpServletRequest.class)
                 .getAnnotation(RequirePermission.class);
         assertThat(permission).isNotNull();
