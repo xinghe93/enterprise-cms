@@ -3,7 +3,7 @@
 // TODO 权限软门控：B 交付 @RequirePermission 后，按 session.permissionCodes 的
 // article:review-list / article:approve / article:reject 控制入口与按钮。
 // 说明：本页只使用契约中的四个接口；后端接口合入 dev 后方可联调。
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   ElAlert, ElButton, ElDialog, ElDrawer, ElEmpty, ElInput, ElLoading, ElMessage,
   ElPagination, ElTable, ElTableColumn, ElTag,
@@ -14,7 +14,16 @@ import {
   approveArticle, buildPendingQuery, buildReviewQuery, formatLocalDateTime,
   formatReviewTime, listPendingReviews, listReviewHistory, rejectArticle,
 } from '../api/review.js'
+import { useSessionStore } from '../stores/session.js'
 
+const session = useSessionStore()
+const permissionsKnown = computed(() => Array.isArray(session.permissionCodes) && session.permissionCodes.length > 0)
+// 软门控：权限码尚未下发（/auth/me 未返回 permissionCodes）时放行，保证本地联调可用；
+// 一旦下发就按 article:review-list / article:approve / article:reject / review:list 严格控制。
+const canListReviews = computed(() => !permissionsKnown.value || session.hasPermission('article:review-list'))
+const canApprove = computed(() => !permissionsKnown.value || session.hasPermission('article:approve'))
+const canReject = computed(() => !permissionsKnown.value || session.hasPermission('article:reject'))
+const canReadHistory = computed(() => !permissionsKnown.value || session.hasPermission('review:list'))
 const vLoading = ElLoading.directive
 
 const STATUS_LABELS = {
@@ -44,6 +53,8 @@ const loadError = ref('')
 const lastLoadedAt = ref('')
 // 列表请求序号：快速翻页时只允许最新一次请求回写页面状态。
 let pendingRequestSeq = 0
+// 审核历史请求序号：切换文章或快速翻页时只允许最新一次请求回写抽屉状态。
+let historyRequestSeq = 0
 
 const decisionDialog = reactive({
   visible: false, mode: 'approve', row: null, comment: '', submitting: false,
@@ -61,12 +72,26 @@ function statusTagType(status) {
   return STATUS_TAG_TYPES[status] ?? 'info'
 }
 
+// 审核结果标签：只认 APPROVED/REJECTED，未知值按 info 展示原值，避免误判为"驳回"。
+function reviewResultMeta(result) {
+  if (result === 'APPROVED') return { type: 'success', label: '通过' }
+  if (result === 'REJECTED') return { type: 'danger', label: '驳回' }
+  return { type: 'info', label: result || '未知' }
+}
+
 function onNumericInput(field) {
   filters[field] = filters[field].replace(/\D/g, '').slice(0, 19)
 }
 
 async function fetchPending() {
   const requestSeq = ++pendingRequestSeq
+  if (!canListReviews.value) {
+    rows.value = []
+    total.value = 0
+    loading.value = false
+    loadError.value = '当前账号缺少 article:review-list 权限，无法查看待审核队列。'
+    return
+  }
   loading.value = true
   loadError.value = ''
   try {
@@ -180,20 +205,23 @@ function openHistory(row) {
 }
 
 async function fetchHistory() {
+  const requestSeq = ++historyRequestSeq
   historyDrawer.loading = true
   historyDrawer.error = ''
   try {
     const page = await listReviewHistory(historyDrawer.articleId, buildReviewQuery({
       current: historyDrawer.current, size: historyDrawer.size,
     }))
+    if (requestSeq !== historyRequestSeq) return
     historyDrawer.rows = Array.isArray(page?.records) ? page.records : []
     historyDrawer.total = Number.isFinite(Number(page?.total)) ? Number(page.total) : 0
   } catch {
+    if (requestSeq !== historyRequestSeq) return
     historyDrawer.rows = []
     historyDrawer.total = 0
     historyDrawer.error = '审核历史加载失败，请稍后重试。'
   } finally {
-    historyDrawer.loading = false
+    if (requestSeq === historyRequestSeq) historyDrawer.loading = false
   }
 }
 
@@ -228,6 +256,8 @@ onMounted(() => { void fetchPending() })
       <span v-if="lastLoadedAt" class="filter-meta">更新于 {{ lastLoadedAt }}</span>
     </div>
 
+    <ElAlert v-if="permissionsKnown && !canListReviews" class="review-alert" type="warning" :closable="false" show-icon
+      title="当前账号缺少 article:review-list 权限，无法查看待审核队列。" />
     <ElAlert v-if="loadError" class="review-alert" :title="loadError" type="error" :closable="false" show-icon>
       <ElButton size="small" @click="fetchPending">重新加载</ElButton>
     </ElAlert>
@@ -249,9 +279,9 @@ onMounted(() => { void fetchPending() })
         </ElTableColumn>
         <ElTableColumn label="操作" width="220" fixed="right">
           <template #default="{ row }">
-            <ElButton link type="success" @click="openDecision(row, 'approve')">通过</ElButton>
-            <ElButton link type="danger" @click="openDecision(row, 'reject')">驳回</ElButton>
-            <ElButton link type="primary" @click="openHistory(row)">历史</ElButton>
+            <ElButton v-if="canApprove" link type="success" @click="openDecision(row, 'approve')">通过</ElButton>
+            <ElButton v-if="canReject" link type="danger" @click="openDecision(row, 'reject')">驳回</ElButton>
+            <ElButton v-if="canReadHistory" link type="primary" @click="openHistory(row)">历史</ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
@@ -294,8 +324,8 @@ onMounted(() => { void fetchPending() })
           <ElTableColumn prop="reviewerName" label="审核人" width="110" />
           <ElTableColumn label="结果" width="100">
             <template #default="{ row }">
-              <ElTag :type="row.result === 'APPROVED' ? 'success' : 'danger'" effect="light" round>
-                {{ row.result === 'APPROVED' ? '通过' : '驳回' }}
+              <ElTag :type="reviewResultMeta(row.result).type" effect="light" round>
+                {{ reviewResultMeta(row.result).label }}
               </ElTag>
             </template>
           </ElTableColumn>

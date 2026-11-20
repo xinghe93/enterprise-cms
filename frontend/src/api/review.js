@@ -99,18 +99,30 @@ export async function listReviewHistory(articleId, query) {
   return api.get(`/admin/articles/${encodeURIComponent(articleId)}/reviews`, { params: query })
 }
 
+export const MAX_COMMENT_LENGTH = 1000
+
+// 审核意见：trim 后按 Unicode 码点限长，超长直接拒绝（不静默裁剪）。
+export function normalizeComment(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if ([...text].length > MAX_COMMENT_LENGTH) {
+    throw new TypeError(`审核意见不能超过 ${MAX_COMMENT_LENGTH} 字`)
+  }
+  return text
+}
+
 export async function approveArticle(articleId, { version, comment } = {}) {
   const api = await apiClient()
   const body = { version }
-  const normalizedComment = typeof comment === 'string' ? comment.trim() : ''
+  const normalizedComment = normalizeComment(comment)
   if (normalizedComment) body.comment = normalizedComment
   return api.post(`/admin/articles/${encodeURIComponent(articleId)}/approve`, body)
 }
 
 export async function rejectArticle(articleId, { version, comment } = {}) {
   const api = await apiClient()
+  const normalizedComment = normalizeComment(comment)
+  if (!normalizedComment) throw new TypeError('驳回意见不能为空')
   return api.post(`/admin/articles/${encodeURIComponent(articleId)}/reject`, {
-    version,
-    comment: typeof comment === 'string' ? comment.trim() : '',
+    version, comment: normalizedComment,
   })
 }

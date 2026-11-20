@@ -2,7 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  buildPendingQuery, buildReviewQuery, formatLocalDateTime, formatReviewTime, isValidArticleId,
+  MAX_COMMENT_LENGTH, buildPendingQuery, buildReviewQuery, formatLocalDateTime,
+  formatReviewTime, isValidArticleId, normalizeComment,
 } from '../src/api/review.js'
 
 test('isValidArticleId 接受合法 ID 并拒绝非法 ID', () => {
@@ -59,4 +60,12 @@ test('formatLocalDateTime 输出本地时间且不生成本地时区以外的格
   assert.equal(value, '2026-11-15 10:00:00')
   assert.equal(value.includes('Z'), false)
   assert.equal(formatLocalDateTime(new Date(2026, 10, 15, 10, 0, 0)), '2026-11-15 10:00:00')
+})
+
+test('normalizeComment trim 后按码点限长', () => {
+  assert.equal(normalizeComment('  内容完整  '), '内容完整')
+  assert.equal(normalizeComment('   '), '')
+  assert.equal(normalizeComment(null), '')
+  assert.equal([...normalizeComment('请'.repeat(MAX_COMMENT_LENGTH))].length, MAX_COMMENT_LENGTH)
+  assert.throws(() => normalizeComment('请'.repeat(MAX_COMMENT_LENGTH + 1)), TypeError)
 })
