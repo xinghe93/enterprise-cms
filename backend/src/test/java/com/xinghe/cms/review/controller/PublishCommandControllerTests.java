@@ -214,6 +214,25 @@ class PublishCommandControllerTests {
         return "{\"id\": \"" + id + "\", \"version\": " + version + "}";
     }
 
+    @Test
+    void rejectsUnknownQueryParametersOnAllWriteCommandsBeforeCallingService() throws Exception {
+        String single = "{\"version\": 1}";
+        String batch = batchBody(itemJson("990201", 1));
+        String[][] cases = {
+                {"/api/admin/articles/" + ARTICLE_ID + "/publish?unexpected=1", single},
+                {"/api/admin/articles/" + ARTICLE_ID + "/offline?unexpected=1", single},
+                {"/api/admin/articles/batch/publish?unexpected=1", batch},
+                {"/api/admin/articles/batch/offline?unexpected=1", batch},
+        };
+        for (String[] entry : cases) {
+            MvcResult result = postJson(entry[0], entry[1]);
+            assertThat(result.getResponse().getStatus()).as(entry[0]).isEqualTo(400);
+            assertThat(body(result).get("message").asString()).isEqualTo("未知查询参数: unexpected");
+        }
+        assertThat(stubService.singleCalls).isEmpty();
+        assertThat(stubService.batchCalls).isEmpty();
+    }
+
     private MvcResult postJson(String path, String json) throws Exception {
         return mockMvc.perform(post(path)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -238,13 +257,13 @@ class PublishCommandControllerTests {
     @Test
     void declaresRoutePermissionsAndKeepsAuditOutOfController() throws Exception {
         assertPermission(PublishCommandController.class.getDeclaredMethod(
-                "publish", String.class, ArticleVersionRequest.class), "article:publish");
+                "publish", String.class, ArticleVersionRequest.class, jakarta.servlet.http.HttpServletRequest.class), "article:publish");
         assertPermission(PublishCommandController.class.getDeclaredMethod(
-                "offline", String.class, ArticleVersionRequest.class), "article:offline");
+                "offline", String.class, ArticleVersionRequest.class, jakarta.servlet.http.HttpServletRequest.class), "article:offline");
         assertPermission(PublishCommandController.class.getDeclaredMethod(
-                "publishBatch", BatchArticlesRequest.class), "article:publish-batch");
+                "publishBatch", BatchArticlesRequest.class, jakarta.servlet.http.HttpServletRequest.class), "article:publish-batch");
         assertPermission(PublishCommandController.class.getDeclaredMethod(
-                "offlineBatch", BatchArticlesRequest.class), "article:offline-batch");
+                "offlineBatch", BatchArticlesRequest.class, jakarta.servlet.http.HttpServletRequest.class), "article:offline-batch");
     }
 
     private static void assertPermission(java.lang.reflect.Method method, String permissionCode) {

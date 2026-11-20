@@ -1,12 +1,14 @@
 package com.xinghe.cms.review.controller;
 
 import com.xinghe.cms.common.exception.BusinessException;
+import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.review.dto.ReviewDecisionRequest;
 import com.xinghe.cms.review.service.ReviewDecisionService;
 import com.xinghe.cms.review.vo.ArticleStateVO;
 import com.xinghe.cms.security.annotation.RequirePermission;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -14,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -34,6 +37,9 @@ public class ReviewDecisionController {
      */
     private static final Pattern ARTICLE_ID_PATTERN = Pattern.compile("[1-9][0-9]*");
 
+    /** 审核裁决为写接口，契约 8.1 不允许任何查询参数；未知参数必须 400 且不触达 Service。 */
+    private static final Set<String> ALLOWED_QUERY_PARAMS = Set.of();
+
     private final ReviewDecisionService reviewDecisionService;
 
     public ReviewDecisionController(ReviewDecisionService reviewDecisionService) {
@@ -43,14 +49,18 @@ public class ReviewDecisionController {
     @RequirePermission("article:approve")
     @PostMapping("/{id}/approve")
     public ApiResponse<ArticleStateVO> approve(@PathVariable String id,
-            @Valid @RequestBody ReviewDecisionRequest request) {
+            @Valid @RequestBody ReviewDecisionRequest request,
+            HttpServletRequest servletRequest) {
+        QueryParams.requireAllowedKeys(servletRequest.getParameterMap(), ALLOWED_QUERY_PARAMS);
         return ApiResponse.success(reviewDecisionService.approve(parseArticleId(id), request));
     }
 
     @RequirePermission("article:reject")
     @PostMapping("/{id}/reject")
     public ApiResponse<ArticleStateVO> reject(@PathVariable String id,
-            @Valid @RequestBody ReviewDecisionRequest request) {
+            @Valid @RequestBody ReviewDecisionRequest request,
+            HttpServletRequest servletRequest) {
+        QueryParams.requireAllowedKeys(servletRequest.getParameterMap(), ALLOWED_QUERY_PARAMS);
         return ApiResponse.success(reviewDecisionService.reject(parseArticleId(id), request));
     }
 

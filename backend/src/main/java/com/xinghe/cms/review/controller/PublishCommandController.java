@@ -1,6 +1,7 @@
 package com.xinghe.cms.review.controller;
 
 import com.xinghe.cms.common.exception.BusinessException;
+import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.review.dto.ArticleVersionRequest;
@@ -8,6 +9,7 @@ import com.xinghe.cms.review.dto.BatchArticlesRequest;
 import com.xinghe.cms.review.service.PublishCommandService;
 import com.xinghe.cms.review.vo.ArticleStateVO;
 import com.xinghe.cms.security.annotation.RequirePermission;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -16,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -32,6 +35,9 @@ public class PublishCommandController {
 
     private static final Pattern ARTICLE_ID_PATTERN = Pattern.compile("[1-9][0-9]*");
 
+    /** 发布/下架为写接口，契约 8.1 不允许任何查询参数；未知参数必须 400 且不触达 Service。 */
+    private static final Set<String> ALLOWED_QUERY_PARAMS = Set.of();
+
     private final PublishCommandService publishCommandService;
 
     public PublishCommandController(PublishCommandService publishCommandService) {
@@ -41,26 +47,34 @@ public class PublishCommandController {
     @RequirePermission("article:publish")
     @PostMapping("/{id}/publish")
     public ApiResponse<ArticleStateVO> publish(@PathVariable("id") String id,
-                                               @Valid @RequestBody ArticleVersionRequest request) {
+                                               @Valid @RequestBody ArticleVersionRequest request,
+                                               HttpServletRequest servletRequest) {
+        QueryParams.requireAllowedKeys(servletRequest.getParameterMap(), ALLOWED_QUERY_PARAMS);
         return ApiResponse.success(publishCommandService.publish(parseArticleId(id), request));
     }
 
     @RequirePermission("article:offline")
     @PostMapping("/{id}/offline")
     public ApiResponse<ArticleStateVO> offline(@PathVariable("id") String id,
-                                               @Valid @RequestBody ArticleVersionRequest request) {
+                                               @Valid @RequestBody ArticleVersionRequest request,
+                                               HttpServletRequest servletRequest) {
+        QueryParams.requireAllowedKeys(servletRequest.getParameterMap(), ALLOWED_QUERY_PARAMS);
         return ApiResponse.success(publishCommandService.offline(parseArticleId(id), request));
     }
 
     @RequirePermission("article:publish-batch")
     @PostMapping("/batch/publish")
-    public ApiResponse<List<ArticleStateVO>> publishBatch(@Valid @RequestBody BatchArticlesRequest request) {
+    public ApiResponse<List<ArticleStateVO>> publishBatch(@Valid @RequestBody BatchArticlesRequest request,
+                                                          HttpServletRequest servletRequest) {
+        QueryParams.requireAllowedKeys(servletRequest.getParameterMap(), ALLOWED_QUERY_PARAMS);
         return ApiResponse.success(publishCommandService.publishBatch(request));
     }
 
     @RequirePermission("article:offline-batch")
     @PostMapping("/batch/offline")
-    public ApiResponse<List<ArticleStateVO>> offlineBatch(@Valid @RequestBody BatchArticlesRequest request) {
+    public ApiResponse<List<ArticleStateVO>> offlineBatch(@Valid @RequestBody BatchArticlesRequest request,
+                                                          HttpServletRequest servletRequest) {
+        QueryParams.requireAllowedKeys(servletRequest.getParameterMap(), ALLOWED_QUERY_PARAMS);
         return ApiResponse.success(publishCommandService.offlineBatch(request));
     }
 

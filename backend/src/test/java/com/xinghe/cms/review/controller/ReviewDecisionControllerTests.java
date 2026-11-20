@@ -181,6 +181,22 @@ class ReviewDecisionControllerTests {
         assertThat(stubService.rejectedArticleId).isNull();
     }
 
+    @Test
+    void rejectsUnknownQueryParametersOnApproveAndRejectBeforeCallingService() throws Exception {
+        MvcResult approve = postDecision(
+                "/api/admin/articles/" + ARTICLE_ID + "/approve?unexpected=1", "{\"version\": 3}");
+        assertThat(approve.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(approve).get("message").asString()).isEqualTo("未知查询参数: unexpected");
+        assertThat(stubService.approvedArticleId).isNull();
+
+        MvcResult reject = postDecision(
+                "/api/admin/articles/" + ARTICLE_ID + "/reject?unexpected=1",
+                "{\"version\": 3, \"comment\": \"演示驳回\"}");
+        assertThat(reject.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(reject).get("message").asString()).isEqualTo("未知查询参数: unexpected");
+        assertThat(stubService.rejectedArticleId).isNull();
+    }
+
     private MvcResult postDecision(String path, String json) throws Exception {
         return mockMvc.perform(post(path)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -205,9 +221,9 @@ class ReviewDecisionControllerTests {
     @Test
     void declaresRoutePermissionsAndKeepsAuditOutOfController() throws Exception {
         assertPermission(ReviewDecisionController.class.getDeclaredMethod(
-                "approve", String.class, ReviewDecisionRequest.class), "article:approve");
+                "approve", String.class, ReviewDecisionRequest.class, jakarta.servlet.http.HttpServletRequest.class), "article:approve");
         assertPermission(ReviewDecisionController.class.getDeclaredMethod(
-                "reject", String.class, ReviewDecisionRequest.class), "article:reject");
+                "reject", String.class, ReviewDecisionRequest.class, jakarta.servlet.http.HttpServletRequest.class), "article:reject");
     }
 
     private static void assertPermission(java.lang.reflect.Method method, String permissionCode) {
