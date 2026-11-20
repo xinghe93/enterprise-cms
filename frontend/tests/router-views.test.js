@@ -14,13 +14,14 @@ test('导航中 A 的三个入口保持原路径与名称，只替换渲染组�
   assert.equal(navigation.find((group) => group.title === '组织管理').items.length, 5)
 })
 
-test('A 的三个入口与迁入映射表的 C 页面映射到真实页面，其余模块仍走占位页', () => {
-  // categories 是 C 的 #31、articles/portal 是 C 的 #42，合入 dev 后从 router/index.js
-  // 硬编码分支迁入映射表，目的仍是让 router/index.js 不再逐页硬编码；均属真实页面。
-  assert.deepEqual(Object.keys(moduleViews).sort(), ['articles', 'assignments', 'categories', 'departments', 'portal', 'users'])
+test('A 的三个入口与迁入映射表的 C/D 页面映射到真实页面，其余模块仍走占位页', () => {
+  // categories 是 C 的 #31、articles/portal 是 C 的 #42、logs 是 D 的 #36，
+  // 合入 dev 后从 router/index.js 硬编码分支迁入映射表，目的仍是让
+  // router/index.js 不再逐页硬编码；均属真实页面。
+  assert.deepEqual(Object.keys(moduleViews).sort(), ['articles', 'assignments', 'categories', 'departments', 'logs', 'portal', 'users'])
   for (const view of Object.values(moduleViews)) assert.equal(typeof view, 'function')
   for (const entry of moduleEntries) {
-    const expected = entry.owner === 'A' || ['categories', 'articles', 'portal'].includes(entry.name)
+    const expected = entry.owner === 'A' || ['categories', 'articles', 'portal', 'logs'].includes(entry.name)
     assert.equal(Boolean(moduleViews[entry.name]), expected)
   }
 })

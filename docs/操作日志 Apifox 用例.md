@@ -1,6 +1,6 @@
 # 操作日志模块 Apifox 测试用例（D 模块）
 
-**状态（2026-11-09 第三轮，C7）：** 查询接口 25 条用例可在当前分支直接执行（L-01～L-16 为查询契约，L-17～L-25 为未知参数/限长/时间格式/十六进制/组合筛选等边界）；审计切面 6 条用例依赖真实写接口（审核/发布等）合入后执行，已标注。权限注解尚未合入（B 的权限数据层已随 PR #21 进入 dev），所有用例暂不需要 Token；B 交付注解后按第 0.4 节调整。
+**状态（2026-11-18 第八轮，C15）：** 两个查询接口已改为路由层 `@RequirePermission("log:list")` / `@RequirePermission("log:read")`，**所有 L 组用例现在都必须带 `Authorization: Bearer {{token}}` 且该账号拥有对应权限码**（否则 401/403）。查询契约用例共 25 条（L-01～L-16 为查询契约，L-17～L-25 为未知参数/限长/时间格式/十六进制/组合筛选等边界）；审计切面 6 条用例依赖审核/发布写接口（已在 #30 实现）合入后执行。权限行为已由 `OperationLogPermissionTests` 按真实 AOP 覆盖 401/403/200；真实 MySQL + 登录 Token 的端到端验收待补（见第 9 节）。
 
 - 接口说明：见 [操作日志说明](操作日志说明.md)
 - 契约依据：[接口与协作约定 V1.0](<接口与协作约定 V1.0.md>) 第 3.5、8 节；[OpenAPI](api/enterprise-cms.openapi.json)
@@ -60,11 +60,14 @@ DELETE FROM sys_user WHERE id = 990101;
 
 ### 0.4 当前鉴权状态
 
-当前分支没有权限注解，`/api/admin/logs` 可直接访问，不带 `Authorization` 也返回 200。B 合入 `@RequirePermission` 后：
+权限注解已随 dev 生效：`OperationLogController` 的两个查询入口分别标注
+`@RequirePermission("log:list")` / `@RequirePermission("log:read")`，由 B 的
+`RequirePermissionAspect` 统一校验。
 
-- 未带 Token 的请求预期 401（message：请先登录）；
-- 带非审核/管理员 Token 的请求预期 403（message：无访问权限）；
-- 正常用例统一带 `Authorization: Bearer {{token}}`。
+- 未带 Token 的请求返回 401（message：`请先登录`）；
+- 已登录但缺少对应权限码的账号返回 403（message：`缺少访问权限: log:list` 或 `缺少访问权限: log:read`）；
+- 有权限账号返回 200；
+- 正常用例统一带 `Authorization: Bearer {{token}}`，且 token 对应账号需有 `log:list` / `log:read`（管理员或审核角色）。
 
 ## 1. 用例总览
 
@@ -180,7 +183,7 @@ pm.test("时间毫秒精度", () => {
 
 1. **手动执行：** 在 Apifox 按 L-01～L-25 顺序执行，保存请求/响应截图；错误用例至少截一张完整响应体。
 2. **场景运行：** 把 L-01～L-25 加入"操作日志回归"测试场景，一条命令跑完，保存运行报告截图。
-3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（48 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
+3. **报告留证：** 课程设计报告"测试"部分放 Apifox 运行结果截图 + `mvn -B clean verify` 通过截图；JUnit（63 项本模块用例）证明代码级正确性，Apifox 证明接口级契约与真实数据库行为。
 4. **回归时机：** 修改查询参数、错误提示、VO 字段、权限注解后必须重跑 L 组用例；接入业务写接口后补跑 A 组用例。
 5. **自动化替代：** 本地已提供 `课程设计/项目指导/scripts/run_e2e.ps1`，导入种子后自动启动 jar、执行 L-01～L-25 并清理数据，可作为 Apifox 之外的回归手段（脚本须以 UTF-8 带 BOM 保存，Windows PowerShell 5.1 才能正确解析中文；`docker exec mysql` 导入种子需加 `--default-character-set=utf8mb4`）。
 
@@ -188,10 +191,10 @@ pm.test("时间毫秒精度", () => {
 
 | 偏差 | 影响 | 处理 |
 | --- | --- | --- |
-| 权限注解未接入（B 的权限数据层、A 的身份入口已合入） | 未登录已被 A 的 Bearer 过滤器拦截为 401（实测）；普通员工仍可读全局审计数据（缺 403） | 待 B 交付 `@RequirePermission` 后补 403 用例并按"匿名 401 / 普通员工 403 / 管理员 200"验收 |
+| 权限注解（历史，已解决） | 早期为实现 403 由 D 自建 `LogPermissionGuard`，与 B 的统一注解重复 | **已替换（PR #52）**：两个入口改为 `@RequirePermission("log:list")`/`("log:read")`；匿名 401、缺权限 403、有权限 200 由 `OperationLogPermissionTests` 覆盖，旧 guard 已删除 |
 | 伪造 Token 返回 500 | 带 `Authorization: Bearer fake-token` 请求返回 500 `系统繁忙` 而非 401 | 属 A 的会话校验边界问题，已记录在其 PR #20 复审上下文，不在 D 模块修改 |
-| 审计事务分支未在真实业务事务验证 | 仅测试桩 + 手工同步环境覆盖 | 业务写接口合入后执行 A-01～A-06 |
-| 完整构建受宿主机 Mockito attach 限制 | A/B 的 7 个 Mockito 测试类在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 119 项全过（本模块 48 项）；环境问题需组长/B 统一处理 |
+| 审计事务分支未在真实业务事务验证 | 仅测试桩 + 手工同步环境覆盖 | 已由 `AuditLogTransactionProxyTests` 经真实 Spring 事务代理覆盖成功/失败/流转异常三路径；真实 MySQL 业务事务待写接口联调 |
+| 完整构建受宿主机 Mockito attach 限制 | 19 个 A/B/C 的 Mockito 测试类在本机 JDK 25 下报 `MockMaker` 初始化失败 | 排除后 203 项全过（本模块 63 项）；环境问题需组长/B 统一处理 |
 
 ## 7. 本次执行记录（2026-11-09 第三轮，C7）
 
@@ -208,3 +211,16 @@ pm.test("时间毫秒精度", () => {
 - 追加验证（启动 jar 后匿名请求）：`GET /api/admin/logs` → **401 `请先登录`**；`GET /api/admin/logs/1` → **401 `请先登录`**；带 `Authorization: Bearer fake-token` → 500（A 的会话校验边界问题，已写入第 6 节）。
 - 结论：认证层已生效，D 模块仍缺权限层（403），因此在 B 交付 `@RequirePermission` 前本 PR 保持 open、不请求合并；L-01～L-25 查询用例本身不依赖登录状态，接入权限后需补"匿名 401 / 普通员工 403 / 管理员 200"三条验收。
 - 测试与构建：本模块 **48 项**全过（新增"认证上下文取 userId""伪造请求参数无效"两项），全量排除 A/B 的 7 个 Mockito 类后 **119 项**全过。
+
+## 9. 第八轮补充（2026-11-18，C15：权限守卫替换为统一注解）
+
+- 删除本地权限守卫类，`OperationLogController` 的 `page`/`detail` 分别标注
+  `@RequirePermission("log:list")` / `@RequirePermission("log:read")`，由 B 的
+  `RequirePermissionAspect` 统一完成"身份 → 授权快照 → 权限码"校验。
+- 测试改造：`OperationLogPermissionTests` 改为 `@SpringBootTest` + 完整 Spring AOP，
+  6 项覆盖匿名 401（列表/详情）、无权限 403（列表/详情）、`log:list` 只放行列表、
+  `log:read` 放行详情且返回字符串 ID；`OperationLogControllerTests` 通过
+  `TestAuthenticationFilter` 注入已认证用户，20 项参数/契约断言保持不变。
+- 验证：本模块 **63 项**全过；全量排除 19 个 Mockito 受限类后 **203 项**全过并出 jar。
+- 待补：真实 MySQL + `POST /api/auth/login` 取得 Token 后，用 Apifox 或
+  `run_e2e.ps1` 补"匿名 401 / 普通员工 403 / 管理员 200"三条端到端验收（脚本需先取 Token）。
