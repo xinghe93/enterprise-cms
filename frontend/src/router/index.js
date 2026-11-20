@@ -23,9 +23,11 @@ export const router = createRouter({
           // 已实现的模块挂真实页面，其余仍由占位页接管。
           // 注意：先展开 contentRoutes，再给缺省页兜底，避免覆盖内容模块的 component/props。
           ...(contentRoutes[entry.name] ?? {
-            component: entry.name === 'reviews'
-              ? () => import('../views/ReviewListView.vue')
-              : () => import('../views/ModuleView.vue'),
+            component: entry.name === 'logs'
+              ? () => import('../views/LogListView.vue')
+              : entry.name === 'reviews'
+                ? () => import('../views/ReviewListView.vue')
+                : () => import('../views/ModuleView.vue'),
             props: { entry },
           }),
           meta: { title: entry.title },
