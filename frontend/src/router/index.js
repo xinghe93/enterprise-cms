@@ -20,9 +20,14 @@ export const router = createRouter({
         { path: 'workspace', name: 'workspace', component: () => import('../views/WorkspaceView.vue'), meta: { title: '工作空间' } },
         ...moduleEntries.map((entry) => ({
           path: entry.path.slice(1), name: entry.name,
-          component: () => import('../views/ModuleView.vue'),
-          props: { entry },
-          ...contentRoutes[entry.name],
+          // 已实现的模块挂真实页面，其余仍由占位页接管。
+          // 注意：先展开 contentRoutes，再给缺省页兜底，避免覆盖内容模块的 component/props。
+          ...(contentRoutes[entry.name] ?? {
+            component: entry.name === 'logs'
+              ? () => import('../views/LogListView.vue')
+              : () => import('../views/ModuleView.vue'),
+            props: { entry },
+          }),
           meta: { title: entry.title },
         })),
         { path: 'portal/articles/:id', name: 'portal-article', component: articleDetail, props: { portal: true }, meta: { title: '知识文章' } },
