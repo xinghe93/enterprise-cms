@@ -5,7 +5,8 @@
 --   2) 002_seed_permission_baseline.sql（角色与权限基线，必须已执行）；
 --   3) 003_seed_user_baseline.sql（admin / editor / staff 账号，必须已执行）。
 -- 用途：
---   为审核工作台、审核历史、发布/下架与操作日志查询准备可重复的演示数据，
+--   为审核工作台、审核历史、发布/下架与操作日志查询准备可重复的演示数据
+--   （演示分类 1、标签 2、文章 5、审核历史 2、标签关联 2），
 --   便于课程设计演示、Apifox 联调与真实登录态端到端验收。
 -- 特性：
 --   1) 可重复执行：全部按业务键（category_name / tag_name / title / 审核历史指纹）
@@ -57,7 +58,7 @@ FROM DUAL
 WHERE NOT EXISTS (SELECT 1 FROM cms_tag WHERE tag_name = '演示标签B');
 
 -- ---------------------------------------------------------------------
--- 3. 演示文章（4 篇，覆盖待审 / 已通过 / 已发布三种状态）
+-- 3. 演示文章（5 篇，覆盖待审 2 / 已通过 / 已发布 / 已驳回历史）
 --    注意：作者是 editor，审核人是 admin，便于验证"禁止自审"规则不误伤演示流程
 -- ---------------------------------------------------------------------
 INSERT INTO cms_article
@@ -105,12 +106,23 @@ WHERE @demo_editor_id IS NOT NULL
   AND @demo_category_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM cms_article WHERE title = '演示已发布文章：下架');
 
--- 3 篇演示文章已有审核历史：已通过文章（APPROVED）、待驳回文章（REJECTED）
+INSERT INTO cms_article
+    (title, summary, content, category_id, author_id, status, visibility, version)
+SELECT '演示已驳回文章：历史',
+       '演示摘要：用于展示审核历史中 REJECTED 记录与文章最终状态的一致性',
+       '演示正文：这篇文章状态为 REJECTED，配套一条 REJECTED 审核历史，保证状态与历史一致。',
+       @demo_category_id, @demo_editor_id, 'REJECTED', 'ALL', 1
+FROM DUAL
+WHERE @demo_editor_id IS NOT NULL
+  AND @demo_category_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM cms_article WHERE title = '演示已驳回文章：历史');
+
+-- 2 条审核历史：已通过文章（APPROVED）、已驳回文章（REJECTED），与文章状态一致
 SET @demo_approved_article_id = (
     SELECT id FROM cms_article WHERE title = '演示已通过文章：发布' LIMIT 1
 );
 SET @demo_rejected_article_id = (
-    SELECT id FROM cms_article WHERE title = '演示待审文章：审核驳回' LIMIT 1
+    SELECT id FROM cms_article WHERE title = '演示已驳回文章：历史' LIMIT 1
 );
 
 -- ---------------------------------------------------------------------
@@ -158,7 +170,9 @@ FROM cms_category WHERE category_name = '课程设计演示分类'
 UNION ALL
 SELECT '演示标签', COUNT(*) FROM cms_tag WHERE tag_name IN ('演示标签A', '演示标签B')
 UNION ALL
-SELECT '演示文章', COUNT(*) FROM cms_article WHERE title LIKE '演示%'
+SELECT '演示文章', COUNT(*) FROM cms_article
+ WHERE title IN ('演示待审文章：审核通过', '演示待审文章：审核驳回',
+                 '演示已通过文章：发布', '演示已发布文章：下架', '演示已驳回文章：历史')
 UNION ALL
 SELECT '演示审核历史', COUNT(*)
 FROM cms_review
