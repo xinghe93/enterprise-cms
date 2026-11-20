@@ -1,5 +1,5 @@
 -- =====================================================================
--- EnterpriseCMS 004：审核与操作日志演示种子（D 模块，课程演示用）
+-- EnterpriseCMS 005：审核与操作日志演示种子（D 模块，课程演示用）
 -- 依赖：
 --   1) 001_init.sql（建表，必须已执行）；
 --   2) 002_seed_permission_baseline.sql（角色与权限基线，必须已执行）；
@@ -19,7 +19,7 @@
 --   5) 安全边界：仅用于本地/课程开发环境，禁止在生产或任何公网可达环境执行。
 -- 执行：
 --   mysql --default-character-set=utf8mb4 -h127.0.0.1 -uroot -p enterprise_cms
---          < 004_seed_review_log_demo.sql
+--          < 005_seed_review_log_demo.sql
 -- =====================================================================
 
 USE enterprise_cms;
