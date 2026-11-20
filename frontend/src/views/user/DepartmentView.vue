@@ -304,7 +304,7 @@ onMounted(loadTree)
       :model-value="true"
       title="删除部门" width="min(430px, calc(100vw - 32px))"
       :show-close="!submitting" :close-on-click-modal="false" :close-on-press-escape="!submitting"
-      @update:model-value="(open) => { if (!open) pendingDelete = null }"
+      @update:model-value="(open) => { if (!open && !submitting) pendingDelete = null }"
     >
       <p>确认删除「{{ pendingDelete.deptName }}」（{{ pendingDelete.deptCode }}）？</p>
       <p class="org-note">该部门下若仍有子部门或任何员工引用（含停用员工），服务端会返回 409 并保留数据。</p>

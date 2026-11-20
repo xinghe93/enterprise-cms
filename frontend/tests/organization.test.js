@@ -199,3 +199,24 @@ test('角色保存门禁：目录失败/详情未就绪/启用角色缺失任一
   assert.equal(roleSaveBlocked({ rolesLoadFailed: false, roleDetailFailed: false, missingEnabledCount: 1 }), true)
   assert.equal(roleSaveBlocked({ rolesLoadFailed: true, roleDetailFailed: true, missingEnabledCount: 2 }), true)
 })
+
+test('候选目录含 null 项或缺失 ID 的记录时不进可用集合，避免占位键混淆', () => {
+  // 目录侧脏数据：null 项、缺 id 的对象都不能参与匹配，否则 String(null)='null'
+  // 这样的占位键会混进可用集合（DeepSeek 审查）。
+  const assigned = [
+    { id: '2', roleName: '编辑' },
+    { id: '9', roleName: '管理员' },
+  ]
+  const { selectedRoleIds, removedRoles } = partitionAssignedRoles(assigned, [
+    { id: '2' },
+    null,
+    { roleName: '缺 ID 的脏记录' },
+    { id: null },
+  ])
+  assert.deepEqual(selectedRoleIds, ['2'])
+  assert.deepEqual(removedRoles.map((role) => role.roleName), ['管理员'])
+  // 分配列表里的 null 项同样被过滤，不产生 'null' 占位勾选。
+  const withNullAssigned = partitionAssignedRoles([{ id: '2' }, null], [{ id: '2' }, { id: '9' }])
+  assert.deepEqual(withNullAssigned.selectedRoleIds, ['2'])
+  assert.equal(withNullAssigned.removedRoles.length, 0)
+})
