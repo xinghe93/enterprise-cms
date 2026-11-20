@@ -59,6 +59,17 @@ class ReviewDecisionServiceTests {
     }
 
     @Test
+    void rejectsNullRequestBeforeTouchingWorkflow() {
+        assertThatThrownBy(() -> service.approve(990201L, null))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("请求体不能为空");
+        assertThatThrownBy(() -> service.reject(990201L, null))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("请求体不能为空");
+        assertThat(workflow.calls).isEmpty();
+    }
+
+    @Test
     void approveTransitionsArticleAndWritesApprovedReview() {
         workflow.result = new ArticleState(ARTICLE_ID, ArticleStatus.APPROVED, VERSION + 1,
                 LocalDateTime.of(2026, 11, 13, 10, 0, 0, 120_000_000));

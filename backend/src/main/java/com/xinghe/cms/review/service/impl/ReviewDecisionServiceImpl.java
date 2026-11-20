@@ -28,6 +28,7 @@ public class ReviewDecisionServiceImpl implements ReviewDecisionService {
 
     @Override
     public ArticleStateVO approve(long articleId, ReviewDecisionRequest request) {
+        requireRequest(request);
         requireArticleId(articleId);
         int expectedVersion = requireVersion(request);
         return toVO(reviewAuditRecorder.approve(articleId, expectedVersion, normalizeComment(request.comment())));
@@ -35,6 +36,7 @@ public class ReviewDecisionServiceImpl implements ReviewDecisionService {
 
     @Override
     public ArticleStateVO reject(long articleId, ReviewDecisionRequest request) {
+        requireRequest(request);
         requireArticleId(articleId);
         int expectedVersion = requireVersion(request);
         String comment = normalizeComment(request.comment());
@@ -50,6 +52,12 @@ public class ReviewDecisionServiceImpl implements ReviewDecisionService {
             throw new IllegalStateException("文章状态更新失败");
         }
         return new ArticleStateVO(state.id(), state.status(), state.version(), state.publishedAt());
+    }
+
+    private static void requireRequest(ReviewDecisionRequest request) {
+        if (request == null) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "请求体不能为空");
+        }
     }
 
     private static void requireArticleId(long articleId) {

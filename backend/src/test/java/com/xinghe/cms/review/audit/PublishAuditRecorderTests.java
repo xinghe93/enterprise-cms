@@ -93,6 +93,23 @@ class PublishAuditRecorderTests {
     }
 
     @Test
+    void rejectsMismatchedBatchArgumentsBeforeAnyTransition() {
+        assertThatThrownBy(() -> recorder.publishBatch(null, List.of(1)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("批量参数不一致");
+        assertThatThrownBy(() -> recorder.publishBatch(List.of(1L), List.of()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("批量参数不一致");
+        assertThatThrownBy(() -> recorder.publishBatch(List.of(), List.of()))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("文章列表不能为空");
+        assertThatThrownBy(() -> recorder.publishBatch(java.util.Arrays.asList(1L, null), List.of(1, 2)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("文章 ID 不能为空");
+        assertThat(workflow.calls).isEmpty();
+    }
+
+    @Test
     void declaresAuditOperationsAndMandatoryTransactions() throws Exception {
         assertAuditAnnotation("publish", "article.publish");
         assertAuditAnnotation("offline", "article.offline");

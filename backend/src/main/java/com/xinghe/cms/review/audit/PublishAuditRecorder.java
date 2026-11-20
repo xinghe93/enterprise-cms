@@ -2,6 +2,8 @@ package com.xinghe.cms.review.audit;
 
 import com.xinghe.cms.common.contract.ArticleState;
 import com.xinghe.cms.common.enums.ArticleAction;
+import com.xinghe.cms.common.exception.BusinessException;
+import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.service.ArticleWorkflowService;
 import com.xinghe.cms.log.annotation.AuditLog;
 import lombok.RequiredArgsConstructor;
@@ -56,6 +58,7 @@ public class PublishAuditRecorder {
 
     private List<ArticleState> transitionBatch(List<Long> articleIds, List<Integer> versions,
             ArticleAction action) {
+        requireBatchArguments(articleIds, versions);
         Integer[] order = new Integer[articleIds.size()];
         for (int index = 0; index < order.length; index++) {
             order[index] = index;
@@ -68,5 +71,19 @@ public class PublishAuditRecorder {
                     articleIds.get(requestIndex), versions.get(requestIndex), action);
         }
         return List.of(results);
+    }
+
+    private static void requireBatchArguments(List<Long> articleIds, List<Integer> versions) {
+        if (articleIds == null || versions == null || articleIds.size() != versions.size()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "批量参数不一致");
+        }
+        if (articleIds.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "文章列表不能为空");
+        }
+        for (Long articleId : articleIds) {
+            if (articleId == null) {
+                throw new BusinessException(ResultCode.BAD_REQUEST, "文章 ID 不能为空");
+            }
+        }
     }
 }
