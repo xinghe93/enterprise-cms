@@ -30,6 +30,9 @@ export function createApiClient({ baseURL = '/api', getToken = () => '', onError
   const client = axios.create({ baseURL, timeout: 15000, ...(adapter ? { adapter } : {}) })
   client.interceptors.request.use((config) => {
     const token = getToken()
+    // 记录发出请求时的会话令牌：响应回来时若会话已切换，这条 401 属于旧会话，
+    // 不能再清掉刚登录的新会话（账号 A 请求迟到、账号 B 已登录的场景）。
+    config.sessionToken = token
     if (token) config.headers.set('Authorization', `Bearer ${token}`)
     else config.headers.delete('Authorization')
     return config
@@ -37,8 +40,12 @@ export function createApiClient({ baseURL = '/api', getToken = () => '', onError
 
   function reject(error, config) {
     if (axios.isCancel(error)) return Promise.reject(error)
-    if (error.code === 401) onUnauthorized()
-    if (!config?.silent) onError(error)
+    // 旧会话的迟到 401：不清理当前会话、不提示旧会话错误，仅把错误交给调用方。
+    const staleSession = Boolean(
+      config?.sessionToken && getToken() && config.sessionToken !== getToken(),
+    )
+    if (error.code === 401 && !staleSession) onUnauthorized()
+    if (!config?.silent && !staleSession) onError(error)
     return Promise.reject(error)
   }
 

@@ -73,3 +73,32 @@ test('主动取消不触发全局错误提示', async () => {
   await assert.rejects(client.get('/auth/me', { signal: controller.signal }), axios.isCancel)
   assert.equal(notified, false)
 })
+
+test('旧会话令牌的迟到 401 不清除当前会话、不提示旧错误', async () => {
+  let token = 'session-a'
+  const events = []
+  const client = createApiClient({
+    getToken: () => token,
+    adapter: async (config) => {
+      // 请求带着账号 A 的令牌发出；返回前账号 B 已登录。
+      token = 'session-b'
+      const result = await response(envelope(401, null, '请先登录'), 401)(config)
+      throw new axios.AxiosError('HTTP error', 'ERR_BAD_REQUEST', config, null, result)
+    },
+    onUnauthorized: () => events.push('clear'),
+    onError: () => events.push('error'),
+  })
+  await assert.rejects(client.get('/admin/reviews/pending'), { code: 401 })
+  assert.deepEqual(events, [])
+})
+
+test('同一会话的 401 仍清除会话', async () => {
+  let cleared = 0
+  const client = createApiClient({
+    getToken: () => 'session-a',
+    adapter: response(envelope(401, null, '登录已过期'), 401),
+    onUnauthorized: () => cleared++,
+  })
+  await assert.rejects(client.get('/admin/users'), { code: 401 })
+  assert.equal(cleared, 1)
+})
