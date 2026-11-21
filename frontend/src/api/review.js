@@ -105,7 +105,9 @@ async function apiClient() {
 /** 当前账号有效权限编码（OpenAPI GET /api/auth/permissions，x-owner B；返回 string[]）。 */
 export async function fetchMyPermissions() {
   const api = await apiClient()
-  return api.get('/auth/permissions')
+  // 该接口 x-owner 为 B，dev 尚未实现时返回 404；这属于"权限状态未知"而非页面错误，
+  // 用 silent 关闭全局错误提示，由页面按 unavailable 状态显式提示。
+  return api.get('/auth/permissions', { silent: true })
 }
 
 export async function listPendingReviews(query) {
