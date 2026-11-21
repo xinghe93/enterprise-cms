@@ -1,8 +1,9 @@
 <script setup>
 // 审核工作台（D 模块）：待审核队列 + 通过/驳回 + 审核历史抽屉。
-// 权限：进入页面先按 OpenAPI GET /api/auth/permissions 加载当前账号有效权限；
-// 已确认权限时按 article:review-list / article:approve / article:reject / review:list 严格门控；
-// 接口暂不可用（后端未实现时 404/401）降级为"按登录身份显示 + 显式提示"，后端仍会强校验。
+// 权限：进入页面先按 OpenAPI GET /api/auth/permissions 加载当前账号有效权限，
+// 并写入会话（C 的文章详情页据此判断 article:read，从而能在审核流程中请求正文）。
+// 只有权限加载成功后才显示审核入口，按 article:review-list / article:approve /
+// article:reject / review:list 严格门控；加载失败时隐藏操作并提供重试，不按身份猜测。
 // 正文：标题与审核对话框提供到 /admin/articles/:id 的正文入口（C 的文章详情页，article:read）。
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
@@ -22,14 +23,14 @@ import { useRouter } from 'vue-router'
 const session = useSessionStore()
 const router = useRouter()
 // idle / loading / loaded / unavailable：区分"权限加载中"与"已加载但为空"。
-// loaded 时严格按权限码门控（空数组=无任何权限，隐藏操作）；
-// unavailable 时后端权限接口暂不可用，先按登录身份显示并在页面提示。
+// 只有 loaded 才显示操作并按权限码严格门控（空数组=无任何权限，隐藏全部操作）；
+// 加载中不显示操作；加载失败显示重试入口，不按登录身份猜测权限。
 const permissionStatus = ref('idle')
 const permissionsKnown = computed(() => permissionStatus.value === 'loaded')
-const canListReviews = computed(() => !permissionsKnown.value || session.hasPermission('article:review-list'))
-const canApprove = computed(() => !permissionsKnown.value || session.hasPermission('article:approve'))
-const canReject = computed(() => !permissionsKnown.value || session.hasPermission('article:reject'))
-const canReadHistory = computed(() => !permissionsKnown.value || session.hasPermission('review:list'))
+const canListReviews = computed(() => permissionsKnown.value && session.hasPermission('article:review-list'))
+const canApprove = computed(() => permissionsKnown.value && session.hasPermission('article:approve'))
+const canReject = computed(() => permissionsKnown.value && session.hasPermission('article:reject'))
+const canReadHistory = computed(() => permissionsKnown.value && session.hasPermission('review:list'))
 const vLoading = ElLoading.directive
 
 async function loadPermissions() {
@@ -45,6 +46,12 @@ async function loadPermissions() {
   } catch {
     permissionStatus.value = 'unavailable'
   }
+}
+
+// 权限加载失败后重试：成功后立即按已通过校验的筛选条件刷新待审核列表。
+async function retryPermissions() {
+  await loadPermissions()
+  if (permissionsKnown.value) void fetchPending()
 }
 
 const STATUS_LABELS = {
@@ -65,6 +72,9 @@ const STATUS_TAG_TYPES = {
 }
 
 const filters = reactive({ keyword: '', categoryId: '', authorId: '' })
+// 已通过校验的查询条件：翻页/修改每页数量/重新加载都沿用它，
+// 避免用户改了非法 ID 但没点查询时，分页把非法值丢弃、扩大查询范围。
+const appliedFilters = reactive({ keyword: '', categoryId: '', authorId: '' })
 const historyForm = reactive({ articleId: '' })
 const rows = ref([])
 const total = ref(0)
@@ -107,6 +117,19 @@ function onNumericInput(field) {
 
 async function fetchPending() {
   const requestSeq = ++pendingRequestSeq
+  if (permissionStatus.value === 'loading' || permissionStatus.value === 'idle') {
+    rows.value = []
+    total.value = 0
+    loading.value = false
+    return
+  }
+  if (!permissionsKnown.value) {
+    rows.value = []
+    total.value = 0
+    loading.value = false
+    loadError.value = '权限列表加载失败，无法确认审核权限；请点上方「重试加载权限」。'
+    return
+  }
   if (!canListReviews.value) {
     rows.value = []
     total.value = 0
@@ -118,8 +141,8 @@ async function fetchPending() {
   loadError.value = ''
   try {
     const page = await listPendingReviews(buildPendingQuery({
-      keyword: filters.keyword, categoryId: filters.categoryId,
-      authorId: filters.authorId, current: current.value, size: size.value,
+      keyword: appliedFilters.keyword, categoryId: appliedFilters.categoryId,
+      authorId: appliedFilters.authorId, current: current.value, size: size.value,
     }))
     if (requestSeq !== pendingRequestSeq) return
     rows.value = Array.isArray(page?.records) ? page.records : []
@@ -145,6 +168,10 @@ function handleSearch() {
     ElMessage.warning({ message: errors[0], grouping: true })
     return
   }
+  // 只有通过校验的输入才进入"已应用条件"，翻页/改页大小沿用它。
+  appliedFilters.keyword = filters.keyword.trim()
+  appliedFilters.categoryId = filters.categoryId.trim()
+  appliedFilters.authorId = filters.authorId.trim()
   current.value = 1
   void fetchPending()
 }
@@ -174,6 +201,9 @@ function handleReset() {
   filters.keyword = ''
   filters.categoryId = ''
   filters.authorId = ''
+  appliedFilters.keyword = ''
+  appliedFilters.categoryId = ''
+  appliedFilters.authorId = ''
   current.value = 1
   void fetchPending()
 }
@@ -318,7 +348,9 @@ onMounted(async () => {
     <ElAlert v-if="permissionStatus === 'loading'" class="review-alert" type="info" :closable="false" show-icon
       title="正在加载当前账号权限…" />
     <ElAlert v-else-if="permissionStatus === 'unavailable'" class="review-alert" type="warning" :closable="false" show-icon
-      title="权限列表接口暂不可用，操作入口先按登录身份显示；后端仍会按权限码强校验。" />
+      title="权限列表加载失败，审核入口已隐藏；请重试加载权限。">
+      <ElButton size="small" @click="retryPermissions">重试加载权限</ElButton>
+    </ElAlert>
     <ElAlert v-if="permissionsKnown && !canListReviews" class="review-alert" type="warning" :closable="false" show-icon
       title="当前账号缺少 article:review-list 权限，无法查看待审核队列。" />
     <ElAlert v-if="loadError" class="review-alert" :title="loadError" type="error" :closable="false" show-icon>
