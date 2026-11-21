@@ -139,19 +139,19 @@ export function normalizeComment(value) {
   return text
 }
 
-export async function approveArticle(articleId, { version, comment } = {}) {
+export async function approveArticle(articleId, { version, comment } = {}, config = {}) {
   const api = await apiClient()
   const body = { version }
   const normalizedComment = normalizeComment(comment)
   if (normalizedComment) body.comment = normalizedComment
-  return api.post(`/admin/articles/${encodeURIComponent(articleId)}/approve`, body)
+  return api.post(`/admin/articles/${encodeURIComponent(articleId)}/approve`, body, config)
 }
 
-export async function rejectArticle(articleId, { version, comment } = {}) {
+export async function rejectArticle(articleId, { version, comment } = {}, config = {}) {
   const api = await apiClient()
   const normalizedComment = normalizeComment(comment)
   if (!normalizedComment) throw new TypeError('驳回意见不能为空')
   return api.post(`/admin/articles/${encodeURIComponent(articleId)}/reject`, {
     version, comment: normalizedComment,
-  })
+  }, config)
 }

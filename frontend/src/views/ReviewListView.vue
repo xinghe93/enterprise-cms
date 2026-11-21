@@ -67,6 +67,7 @@ onUnmounted(() => {
   pendingAbortController?.abort()
   historyAbortController?.abort()
   articlePreviewAbortController?.abort()
+  decisionAbortController?.abort()
 })
 
 // 权限加载失败后重试：成功后立即按已通过校验的筛选条件刷新待审核列表。
@@ -118,6 +119,8 @@ const decisionDialog = reactive({
 // 正文预览：在审核弹窗内加载正文，提交中的意见与弹窗状态不会因跳转丢失。
 const articlePreview = reactive({ visible: false, loading: false, error: '', data: null })
 let articlePreviewAbortController = null
+// 审核提交请求：离开工作台时取消，旧会话的迟到 401 不清理新会话。
+let decisionAbortController = null
 const historyDrawer = reactive({
   visible: false, articleId: '', articleTitle: '', rows: [], total: 0,
   current: 1, size: 10, loading: false, error: '',
@@ -314,19 +317,25 @@ async function submitDecision() {
     return
   }
   decisionDialog.submitting = true
+  decisionAbortController?.abort()
+  decisionAbortController = new AbortController()
+  const requestConfig = { signal: decisionAbortController.signal }
   try {
     if (decisionDialog.mode === 'approve') {
-      await approveArticle(row.id, { version: row.version, comment })
+      await approveArticle(row.id, { version: row.version, comment }, requestConfig)
       ElMessage.success({ message: '审核通过，文章状态已更新', grouping: true })
     } else {
-      await rejectArticle(row.id, { version: row.version, comment })
+      await rejectArticle(row.id, { version: row.version, comment }, requestConfig)
       ElMessage.success({ message: '已驳回并记录审核意见', grouping: true })
     }
+    if (requestConfig.signal.aborted) return
     decisionDialog.visible = false
     decisionDialog.row = null
     decisionDialog.comment = ''
     await fetchPending()
   } catch (error) {
+    // 已取消（离开工作台）：不提示、不再改写页面状态。
+    if (requestConfig.signal.aborted) return
     // 409 表示版本/状态已变化：全局提示已给出，这里刷新列表让用户基于最新数据重试。
     if (error?.status === 409 || error?.code === 409) {
       decisionDialog.visible = false
