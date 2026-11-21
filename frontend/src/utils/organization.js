@@ -45,8 +45,14 @@ function compareId(a, b) {
 
 /** 各层按 sortOrder ASC、id ASC 排序，返回新树，不改原数组。 */
 export function sortDepartmentTree(nodes = []) {
+  // sortOrder 服务端恒为合法整数；防御性兜底：脏值转 NaN 会让 sort 结果未定义，
+  // 统一回退 0，保证排序始终确定（DeepSeek 审查）。
+  const orderOf = (node) => {
+    const order = Number(node?.sortOrder ?? 0)
+    return Number.isFinite(order) ? order : 0
+  }
   return [...(nodes ?? [])]
-    .sort((a, b) => (Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0)) || compareId(a, b))
+    .sort((a, b) => (orderOf(a) - orderOf(b)) || compareId(a, b))
     .map((node) => ({ ...node, children: sortDepartmentTree(node.children) }))
 }
 
@@ -127,11 +133,66 @@ export function normalizeRoleIds(ids) {
 }
 
 /**
+ * 校验员工账号表单（功能① 账号管理页）。返回错误文案，空串表示通过。
+ *
+ * 与后端反序列化器保持一致（UserCreateRequestDeserializer / UserUpdateRequestDeserializer）：
+ *  - username 1～64、password 8～128、realName 1～100，按 Unicode 空白 strip 后判非空；
+ *  - 纯空白（含 U+3000 全角空格）视为非法，与后端 strip() 判定一致；
+ *  - departmentId 可空，非空必须是合法十进制 ID。
+ *
+ * mode=create 校验全部四项；mode=edit 只校验 realName 与 departmentId（完整 PUT）。
+ * allowedDepartmentIds 为可选部门 ID 集合，传入时校验所选部门在候选内。
+ *
+ * retainedDepartmentId 是编辑时从员工详情读到的原部门（PR #47 审查 #3/#7）：契约
+ * 允许原引用不变时保留停用/不可选的原部门，因此只要提交值与详情原值一致就放行；
+ * 换成其他部门（候选缺失时无法验证启用链）仍必须拒绝，新建也没有原部门可依据。
+ */
+export function validateAccountForm(mode, form, allowedDepartmentIds = null,
+  retainedDepartmentId = null) {
+  if (mode !== 'create' && mode !== 'edit') return '未知的编辑模式'
+  const value = (key) => (typeof form?.[key] === 'string' ? form[key].trim() : '')
+  const blank = (s) => s.length === 0 || !/[^\s\u3000]/.test(s)
+
+  if (mode === 'create') {
+    const username = value('username')
+    if (blank(username) || username.length > 64) return '登录账号必填且不超过 64 字'
+    const password = typeof form?.password === 'string' ? form.password : ''
+    if (password.length < 8 || password.length > 128) return '密码长度需为 8～128 字'
+  }
+
+  const realName = value('realName')
+  if (blank(realName) || realName.length > 100) return '姓名必填且不超过 100 字'
+
+  const departmentId = form?.departmentId
+  if (departmentId !== '' && departmentId !== null && departmentId !== undefined) {
+    const id = String(departmentId)
+    if (!isValidId(id)) return '所属部门 ID 非法'
+    const keepingDetailDepartment = mode === 'edit' && retainedDepartmentId != null
+      && id === String(retainedDepartmentId)
+    if (allowedDepartmentIds && !allowedDepartmentIds.has(id) && !keepingDetailDepartment) {
+      return '所属部门不可选：仅能选择启用部门或保留原部门'
+    }
+  }
+  return ''
+}
+
+/**
+ * 角色分配保存门禁（纯函数）：目录加载失败、员工详情未就绪，或详情里存在
+ * 不在完整启用目录中的启用角色时，禁止全量替换——任何一条不满足都可能把
+ * 现有角色清空。抽成纯函数让 Node 测试直接断言行为，而不是对 .vue 源码做
+ * 正则匹配（DeepSeek 审查：源码正则无法验证真实门禁逻辑）。
+ */
+export function roleSaveBlocked({ rolesLoadFailed, roleDetailFailed, missingEnabledCount }) {
+  return Boolean(rolesLoadFailed || roleDetailFailed || missingEnabledCount > 0)
+}
+
+/**
  * 按完整启用角色目录拆分员工详情里的已分配角色：
  *  - selected：启用且在完整目录中，作为可保留项；
- *  - removed：停用或不在目录中，全量替换后会被移除并提示用户；
+ *  - removed：不在目录中且未标记为启用（停用或状态缺失），全量替换后会被移除并提示用户；
  *  - missingEnabledRoles：详情标记为启用、却不在启用目录中——目录不完整或数据不一致，
  *    此时绝不能当作「停用待移除」直接保存，调用方必须阻止提交。
+ *    启用缺失项也不进 removed：弹窗对它们展示的是「禁止保存」警告，而不是「将被移除」。
  * ID 统一转字符串比较，避免详情与目录类型不一致导致误判；候选必须完整，否则会把
  * 第二页的启用角色误当成 removed，保存时误删。
  */
@@ -147,7 +208,7 @@ export function partitionAssignedRoles(assigned = [], assignable = []) {
   const idOf = (role) => String(typeof role === 'object' ? role.id ?? role : role)
   return {
     selectedRoleIds: list.filter((role) => available.has(idOf(role))).map(idOf),
-    removedRoles: list.filter((role) => !available.has(idOf(role))),
+    removedRoles: list.filter((role) => !available.has(idOf(role)) && role?.status !== 1),
     missingEnabledRoles: list.filter((role) => role?.status === 1 && !available.has(idOf(role))),
   }
 }

@@ -35,7 +35,7 @@ export function createRoleApi(client) {
      */
     listAssignableRoles: async () => {
       const records = []
-      const seenRoleIds = new Set()
+      const seenIds = new Set()
       let declaredTotal = null
       for (let current = 1; current <= MAX_PAGES; current += 1) {
         const page = await client.get('/admin/roles', {
@@ -43,12 +43,16 @@ export function createRoleApi(client) {
         })
         const rows = page?.records
         const rawTotal = page?.total
-        if (!Array.isArray(rows) || !Number.isSafeInteger(rawTotal) || rawTotal < 0) {
+        // 契约 total 为 int64；部分 JSON 序列化会把长整型写成字符串。
+        // 只接受「纯十进制整数字符串」，不接受小数/指数/空串，避免把脏值静默转成 0。
+        const total = typeof rawTotal === 'string' && /^\d+$/.test(rawTotal.trim())
+          ? Number(rawTotal.trim()) : rawTotal
+        if (!Array.isArray(rows) || !Number.isSafeInteger(total) || total < 0) {
           throw new TypeError('角色目录分页数据异常，已中止加载以避免误删现有角色')
         }
         if (declaredTotal === null) {
-          declaredTotal = rawTotal
-        } else if (rawTotal !== declaredTotal) {
+          declaredTotal = total
+        } else if (total !== declaredTotal) {
           throw new TypeError('角色目录分页总数不一致，已中止加载以避免误删现有角色')
         }
         if (rows.length === 0) {
@@ -58,16 +62,17 @@ export function createRoleApi(client) {
           }
           break
         }
-        // 逐项检查 ID 唯一性：重复会让「已取条数」虚高、掩盖漏取的角色。
+        // 重复记录会让 records.length 误达 total 而掩盖真实缺失；缺 ID 同样无法
+        // 证明目录完整，都按不可信中止（DeepSeek 审查 #2）。
         for (const row of rows) {
-          const roleId = String(row?.id ?? '')
-          if (!roleId) {
-            throw new TypeError('角色目录存在缺失 ID 的记录，已中止加载以避免误删现有角色')
+          if (row?.id === null || row?.id === undefined) {
+            throw new TypeError('角色目录记录缺少 ID，已中止加载以避免误删现有角色')
           }
-          if (seenRoleIds.has(roleId)) {
-            throw new TypeError('角色目录出现重复角色 ID，已中止加载以避免误删现有角色')
+          const key = String(row.id)
+          if (seenIds.has(key)) {
+            throw new RangeError('角色目录出现重复角色 ID，已中止加载以避免误删现有角色')
           }
-          seenRoleIds.add(roleId)
+          seenIds.add(key)
           records.push(row)
         }
         if (records.length >= declaredTotal) break

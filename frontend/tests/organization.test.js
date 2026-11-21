@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   collectSubtreeIds, compactParams, findDepartment, flattenDepartments, isValidId,
-  normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree,
+  normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree,
+  validateAccountForm,
 } from '../src/utils/organization.js'
 
 const node = (id, parentId, deptName, sortOrder, status, children = []) => ({
@@ -30,6 +31,17 @@ test('树各层按 sortOrder ASC、id 数值 ASC 排序，不按字符串字典�
   assert.deepEqual(sorted[0].children[1].children.map((n) => n.id), ['3'])
   // 不修改原树
   assert.equal(tree[0].children[0].id, '10')
+})
+
+test('sortOrder 脏值（非数字）回退 0，排序结果仍然确定', () => {
+  // 服务端 sortOrder 恒为合法整数；脏值转 NaN 会让 sort 行为未定义，统一兜底 0。
+  const dirty = [
+    { id: '3', sortOrder: 'abc' },
+    { id: '1', sortOrder: 5 },
+    { id: '2', sortOrder: null },
+  ]
+  const sorted = sortDepartmentTree(dirty)
+  assert.deepEqual(sorted.map((n) => n.id), ['2', '3', '1'])
 })
 
 test('扁平化保留深度与父链真实状态，停用祖先不被伪装成启用', () => {
@@ -117,10 +129,13 @@ test('候选目录为空或被截断时不会把第二页启用角色当作可�
   // 目录只加载到第一页（100 项以内），101 被误判为 removed——这正是必须分页拉全的原因。
   const truncated = partitionAssignedRoles(assigned, [{ id: '2' }])
   assert.deepEqual(truncated.selectedRoleIds, [])
-  assert.equal(truncated.removedRoles.length, 1)
+  // 启用缺失项进 missingEnabledRoles（阻止保存），不再混入「将被移除」集合误导用户。
+  assert.equal(truncated.removedRoles.length, 0)
+  assert.deepEqual(truncated.missingEnabledRoles.map((role) => role.id), ['101'])
   const complete = partitionAssignedRoles(assigned, [{ id: '2' }, { id: '101' }])
   assert.deepEqual(complete.selectedRoleIds, ['101'])
   assert.equal(complete.removedRoles.length, 0)
+  assert.equal(complete.missingEnabledRoles.length, 0)
 })
 
 test('员工持有的启用角色缺失于目录时单独标记，调用方必须阻止全量替换', () => {
@@ -134,9 +149,70 @@ test('员工持有的启用角色缺失于目录时单独标记，调用方必�
     [{ id: '2' }, { id: '7' }],
   )
   assert.deepEqual(selectedRoleIds, ['2'])
-  // 停用项与缺失的启用项都进 removed，但只有后者触发保存门禁。
-  assert.deepEqual(removedRoles.map((role) => role.id), ['9', '5'])
+  // 缺失的启用项只进 missingEnabledRoles（触发保存门禁），不混入「将被移除」集合；
+  // 停用项仍进 removed。
+  assert.deepEqual(removedRoles.map((role) => role.id), ['5'])
   assert.deepEqual(missingEnabledRoles.map((role) => role.id), ['9'])
+})
+
+test('账号表单：新建校验账号/密码/姓名/部门，长度与纯空白按后端契约判定', () => {
+  const allowed = new Set(['3'])
+  const valid = { username: 'zhangsan', password: 'Passw0rd!', realName: '张三', departmentId: '3' }
+  assert.equal(validateAccountForm('create', valid, allowed), '')
+
+  // 必填项与长度：与 UserCreateRequestDeserializer 一致（1-64 / 8-128 / 1-100）。
+  assert.match(validateAccountForm('create', { ...valid, username: '' }), /登录账号/)
+  assert.match(validateAccountForm('create', { ...valid, username: 'x'.repeat(65) }), /登录账号/)
+  assert.match(validateAccountForm('create', { ...valid, password: 'short' }), /密码/)
+  assert.match(validateAccountForm('create', { ...valid, password: 'x'.repeat(129) }), /密码/)
+  assert.match(validateAccountForm('create', { ...valid, realName: '' }), /姓名/)
+  assert.match(validateAccountForm('create', { ...valid, realName: 'x'.repeat(101) }), /姓名/)
+
+  // 纯空白（含 U+3000 全角空格）必须拒绝，与后端 strip() 判定一致。
+  assert.match(validateAccountForm('create', { ...valid, realName: '　　　' }), /姓名/)
+  assert.match(validateAccountForm('create', { ...valid, username: '   ' }), /登录账号/)
+
+  // 部门可空；非空必须是合法 ID 且在候选集合内。
+  assert.equal(validateAccountForm('create', { ...valid, departmentId: '' }), '')
+  assert.equal(validateAccountForm('create', { ...valid, departmentId: null }), '')
+  assert.match(validateAccountForm('create', { ...valid, departmentId: '0' }), /部门 ID/)
+  assert.match(validateAccountForm('create', { ...valid, departmentId: '9' }, allowed), /所属部门不可选/)
+})
+
+test('账号表单：部门树加载失败时编辑可保留详情原部门，换部门仍拒绝', () => {
+  const emptyTree = new Set()
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, emptyTree, '3'), '',
+    '只改姓名、保留详情原部门应允许保存')
+  assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, emptyTree, '3'),
+    /所属部门不可选/, '换成其他部门时候选缺失，无法验证启用链，仍须拒绝')
+  assert.match(validateAccountForm('create',
+    { username: 'zhangsan', password: 'Passw0rd!', realName: '张三', departmentId: '3' },
+    emptyTree, '3'), /所属部门不可选/, '新建没有详情原部门可依据')
+  // 树成功但原部门停用 / 已不在候选时，只要仍提交详情原值就允许保留。
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, new Set(['9']), '3'), '',
+    '原引用不变可保留停用/不可选部门')
+  // 换成其他部门时仍按候选规则校验，不能因传入 retained 而放宽。
+  assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, new Set(['3']), '3'),
+    /所属部门不可选/)
+})
+
+test('账号表单：编辑只校验姓名与部门，不要求账号/密码，保留原停用部门引用', () => {
+  const allowed = new Set(['3'])
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, allowed), '')
+  // 编辑模式不校验 username/password——它们不在完整 PUT 的请求体里。
+  assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '', username: '', password: '' }), '')
+  assert.match(validateAccountForm('edit', { realName: '', departmentId: '3' }), /姓名/)
+  assert.match(validateAccountForm('edit', { realName: '张三', departmentId: '9' }, allowed), /所属部门不可选/)
+  assert.match(validateAccountForm('unknown', { realName: '张三' }), /模式/)
+})
+
+test('角色保存门禁：目录失败/详情未就绪/启用角色缺失任一成立即阻止全量替换', () => {
+  // 纯函数行为断言，取代对 .vue 源码的正则匹配（DeepSeek 审查：正则证明不了门禁）。
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: false, roleDetailFailed: false, missingEnabledCount: 0 }), false)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: true, roleDetailFailed: false, missingEnabledCount: 0 }), true)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: false, roleDetailFailed: true, missingEnabledCount: 0 }), true)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: false, roleDetailFailed: false, missingEnabledCount: 1 }), true)
+  assert.equal(roleSaveBlocked({ rolesLoadFailed: true, roleDetailFailed: true, missingEnabledCount: 2 }), true)
 })
 
 test('候选目录含 null 项或缺失 ID 的记录时不进可用集合，避免占位键混淆', () => {
