@@ -66,15 +66,11 @@ public class RoleQueryServiceImpl implements RoleQueryService {
      * LIKE 通配符按字面转义：{@code !} 为转义字符，与 Mapper 中
      * {@code ESCAPE '!'} 对应；{@code %}、{@code _}、{@code !} 一律前置
      * 转义符，其余字符原样保留。
+     *
+     * <p>实现已提取到 {@link ContractLike#escape}（权限分页共用同一真源），
+     * 本方法保留委托以维持既有调用与测试引用。</p>
      */
     static String escapeLike(String raw) {
-        StringBuilder builder = new StringBuilder(raw.length());
-        for (char ch : raw.toCharArray()) {
-            if (ch == '!' || ch == '%' || ch == '_') {
-                builder.append('!');
-            }
-            builder.append(ch);
-        }
-        return builder.toString();
+        return com.xinghe.cms.permission.support.ContractLike.escape(raw);
     }
 }
