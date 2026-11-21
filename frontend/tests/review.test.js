@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   MAX_COMMENT_LENGTH, buildPendingQuery, buildReviewQuery, formatLocalDateTime,
-  formatReviewTime, isValidArticleId, normalizeComment,
+  formatReviewTime, isValidArticleId, normalizeComment, validatePendingFilters,
 } from '../src/api/review.js'
 
 test('isValidArticleId 接受合法 ID 并拒绝非法 ID', () => {
@@ -68,4 +68,20 @@ test('normalizeComment trim 后按码点限长', () => {
   assert.equal(normalizeComment(null), '')
   assert.equal([...normalizeComment('请'.repeat(MAX_COMMENT_LENGTH))].length, MAX_COMMENT_LENGTH)
   assert.throws(() => normalizeComment('请'.repeat(MAX_COMMENT_LENGTH + 1)), TypeError)
+})
+
+test('validatePendingFilters 只提示非空的非法 ID', () => {
+  assert.deepEqual(validatePendingFilters(), [])
+  assert.deepEqual(validatePendingFilters({ categoryId: '', authorId: '   ' }), [])
+  assert.deepEqual(validatePendingFilters({ categoryId: '12', authorId: '990101' }), [])
+  assert.deepEqual(validatePendingFilters({ categoryId: '0' }), [
+    '分类 ID 无效：请输入 1–19 位正整数，且不超过 Long 上限',
+  ])
+  assert.deepEqual(validatePendingFilters({ authorId: '9223372036854775808' }), [
+    '作者 ID 无效：请输入 1–19 位正整数，且不超过 Long 上限',
+  ])
+  const both = validatePendingFilters({ categoryId: '001', authorId: 'abc' })
+  assert.equal(both.length, 2)
+  assert.match(both[0], /分类 ID 无效/)
+  assert.match(both[1], /作者 ID 无效/)
 })

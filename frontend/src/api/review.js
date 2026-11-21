@@ -62,6 +62,19 @@ export function formatReviewTime(value) {
   return toLocalTimestamp(value) ?? '—'
 }
 
+/** 筛选 ID 校验：空值跳过；非空但不合契约时返回具体字段提示（页面据此提示并保留当前结果）。 */
+export function validatePendingFilters({ categoryId, authorId } = {}) {
+  const errors = []
+  const isBlank = (value) => value === undefined || value === null || String(value).trim() === ''
+  if (!isBlank(categoryId) && !isValidArticleId(String(categoryId).trim())) {
+    errors.push('分类 ID 无效：请输入 1–19 位正整数，且不超过 Long 上限')
+  }
+  if (!isBlank(authorId) && !isValidArticleId(String(authorId).trim())) {
+    errors.push('作者 ID 无效：请输入 1–19 位正整数，且不超过 Long 上限')
+  }
+  return errors
+}
+
 /** 待审核队列查询参数：空值剔除、keyword 去首尾空白、ID 校验、分页兜底。 */
 export function buildPendingQuery({ keyword, categoryId, authorId, current, size } = {}) {
   const query = {}
@@ -87,6 +100,12 @@ export function buildReviewQuery({ current, size } = {}) {
 async function apiClient() {
   const { api } = await import('./index.js')
   return api
+}
+
+/** 当前账号有效权限编码（OpenAPI GET /api/auth/permissions，x-owner B；返回 string[]）。 */
+export async function fetchMyPermissions() {
+  const api = await apiClient()
+  return api.get('/auth/permissions')
 }
 
 export async function listPendingReviews(query) {
