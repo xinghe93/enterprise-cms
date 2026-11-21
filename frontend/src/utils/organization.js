@@ -45,8 +45,14 @@ function compareId(a, b) {
 
 /** 各层按 sortOrder ASC、id ASC 排序，返回新树，不改原数组。 */
 export function sortDepartmentTree(nodes = []) {
+  // sortOrder 服务端恒为合法整数；防御性兜底：脏值转 NaN 会让 sort 结果未定义，
+  // 统一回退 0，保证排序始终确定（DeepSeek 审查）。
+  const orderOf = (node) => {
+    const order = Number(node?.sortOrder ?? 0)
+    return Number.isFinite(order) ? order : 0
+  }
   return [...(nodes ?? [])]
-    .sort((a, b) => (Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0)) || compareId(a, b))
+    .sort((a, b) => (orderOf(a) - orderOf(b)) || compareId(a, b))
     .map((node) => ({ ...node, children: sortDepartmentTree(node.children) }))
 }
 
@@ -183,9 +189,10 @@ export function roleSaveBlocked({ rolesLoadFailed, roleDetailFailed, missingEnab
 /**
  * 按完整启用角色目录拆分员工详情里的已分配角色：
  *  - selected：启用且在完整目录中，作为可保留项；
- *  - removed：停用或不在目录中，全量替换后会被移除并提示用户；
+ *  - removed：不在目录中且未标记为启用（停用或状态缺失），全量替换后会被移除并提示用户；
  *  - missingEnabledRoles：详情标记为启用、却不在启用目录中——目录不完整或数据不一致，
  *    此时绝不能当作「停用待移除」直接保存，调用方必须阻止提交。
+ *    启用缺失项也不进 removed：弹窗对它们展示的是「禁止保存」警告，而不是「将被移除」。
  * ID 统一转字符串比较，避免详情与目录类型不一致导致误判；候选必须完整，否则会把
  * 第二页的启用角色误当成 removed，保存时误删。
  */
@@ -201,7 +208,7 @@ export function partitionAssignedRoles(assigned = [], assignable = []) {
   const idOf = (role) => String(typeof role === 'object' ? role.id ?? role : role)
   return {
     selectedRoleIds: list.filter((role) => available.has(idOf(role))).map(idOf),
-    removedRoles: list.filter((role) => !available.has(idOf(role))),
+    removedRoles: list.filter((role) => !available.has(idOf(role)) && role?.status !== 1),
     missingEnabledRoles: list.filter((role) => role?.status === 1 && !available.has(idOf(role))),
   }
 }

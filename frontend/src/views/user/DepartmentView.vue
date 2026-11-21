@@ -75,6 +75,7 @@ async function loadTree() {
 }
 
 function openCreate(parentId = '') {
+  if (submitting.value) return
   formError.value = ''
   editor.value = {
     mode: 'create',
@@ -83,6 +84,7 @@ function openCreate(parentId = '') {
 }
 
 function openEdit(node) {
+  if (submitting.value) return
   formError.value = ''
   editor.value = {
     mode: 'edit',
@@ -105,16 +107,19 @@ function closeEditor() {
 function validateForm() {
   const { form, mode, node } = editor.value
   if (mode === 'create' && (!form.deptCode || form.deptCode.length > 64)) return '部门编码必填且不超过 64 字'
-  if (!form.deptName || form.deptName.length > 100) return '部门名称必填且不超过 100 字'
+  // 名称先做与后端一致的纯空白拒绝（trim 含 U+3000 等全角空白），再查长度。
+  if (!form.deptName.trim() || form.deptName.length > 100) return '部门名称必填且不超过 100 字'
   const order = Number(form.sortOrder)
   if (!Number.isInteger(order) || order < 0 || order > 2147483647) return '排序值需为 0～2147483647 的整数'
-  if (form.parentId && !isValidId(form.parentId)) return '上级部门 ID 非法'
+  // parentId 统一按字符串校验：select 候选与服务端返回均为字符串，防数字类型绕判。
+  const parentId = form.parentId ? String(form.parentId) : ''
+  if (parentId && !isValidId(parentId)) return '上级部门 ID 非法'
   // 完整 PUT 切换父节点时目标与全部祖先必须启用；原父不变可保留停用引用（keepParentId）。
   // 候选来自完整树，不受表格 statusFilter 影响；ID 统一按字符串比较，避免类型不一致误拒。
   // 保持原父引用不变时跳过候选校验：完整树偶发加载失败不应拦下合法的
   // 「只改名称/排序」编辑（DeepSeek 审查 #7）；只有切换父节点才必须校验候选。
-  const keepParentId = mode === 'edit' ? node?.parentId ?? '' : ''
-  if (form.parentId && form.parentId !== keepParentId && !candidates.value.some((option) => String(option.id) === String(form.parentId))) {
+  const keepParentId = mode === 'edit' ? String(node?.parentId ?? '') : ''
+  if (parentId && parentId !== keepParentId && !candidates.value.some((option) => String(option.id) === parentId)) {
     return '上级部门不可为自身、后代或停用分支'
   }
   return ''
@@ -161,10 +166,12 @@ async function toggleStatus(node) {
   // 列表行可能来自筛选前的快照；提交前按 ID 从最新完整树回读真实状态，
   // 避免基于过期 status 反向切换（DeepSeek 审查 #7）。
   const current = findDepartment(fullTree.value, node.id) ?? findDepartment(tree.value, node.id) ?? node
-  if (current.status !== 0 && current.status !== 1) return
+  // 服务端 status 恒为数字 0/1；防御性归一化，字符串类型不静默失效。
+  const status = Number(current.status)
+  if (status !== 0 && status !== 1) return
   submitting.value = true
   try {
-    await userApi.setDepartmentStatus(current.id, current.status === 1 ? 0 : 1)
+    await userApi.setDepartmentStatus(current.id, status === 1 ? 0 : 1)
     await loadTree()
   } catch {
     // 公共层已提示 404 / 409 / 500，此处不吞异常也不重复弹窗。
