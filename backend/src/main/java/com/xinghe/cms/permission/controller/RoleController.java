@@ -206,8 +206,10 @@ public class RoleController {
      * 阶段校验，未知字段/类型错误/重复/越界一律 400。
      *
      * <p>审计：{@code @AuditLog(operation="role.assign-permission")} 标注在事务
-     * 边界内的 {@code RoleWriteAuditMarker#rolePermissionsChanged} 锚点上，仅在
-     * 权限集合实际变化时记录；幂等（相同集合）路径不写库、不产生审计记录。
+     * 边界内的 {@code RoleWriteAuditMarker#rolePermissionsChanged(Runnable)} 受审计
+     * 代理上，实际差集写入以 {@code Runnable} 传入、在代理内部执行（切面在写库前
+     * 注册回滚回调）：仅在权限集合实际变化时进入，幂等（相同集合）路径不写库、
+     * 不产生审计；差集写入失败导致事务回滚时，切面用独立新事务补记 FAILURE 审计。
      *
      * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
      */

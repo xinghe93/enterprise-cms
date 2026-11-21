@@ -42,11 +42,14 @@ import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
  * 角色权限全量替换的审计事务回归（与 {@code RoleAdminAuditTransactionTests} 同源）。
  *
  * <p>验证 {@code @AuditLog(operation="role.assign-permission")} 挂在
- * {@link RoleWriteAuditMarker#rolePermissionsChanged} 锚点、仅在集合实际变化时
- * 经事务内代理调用后：success 日志经 {@code beforeCommit} 随替换事务一起提交；
- * 审计写入失败回滚整个替换事务；幂等（相同集合）与业务校验失败路径完全跳过
- * 审计（与 role.status 的评审 P2 结论一致：无状态变更路径不产生审计记录，
- * 审计写入失败也不拖垮本应 200 的幂等请求）。</p>
+ * {@link RoleWriteAuditMarker} 的受审计代理 {@code rolePermissionsChanged(Runnable)}
+ * 上：差集写入动作经 {@link Runnable} 传入、在代理内部执行（切面进入时先注册
+ * 事务同步器，再执行写入）。因此：success 日志经 {@code beforeCommit} 随替换
+ * 事务一起提交；<b>差集写入（删除成功、插入抛错）失败时事务回滚，切面仍通过
+ * {@code afterCompletion} 用独立新事务补记 FAILURE</b>（本轮评审 P2）；审计写入
+ * 失败同样回滚整个替换事务；幂等（相同集合）与业务校验失败路径完全跳过审计
+ * （与 role.status 的评审 P2 结论一致：无状态变更路径不产生审计记录，审计写入
+ * 失败也不拖垮本应 200 的幂等请求）。</p>
  *
  * <p>不连真实数据库：用记录提交/回滚结果的桩事务管理器驱动真实事务拦截器、
  * 事务同步器与审计切面（Spring 代理链与生产一致），Writer 用记录型替身，
@@ -125,6 +128,57 @@ class RolePermissionAuditTransactionTests {
                 .isEqualTo("role.assign-permission");
     }
 
+    /**
+     * 本轮评审 P2 ②：删除成功、插入抛错——差集写入在受审计代理内部执行，切面
+     * 已进入并注册 {@code afterCompletion} 回调，事务回滚后仍用独立新事务补记
+     * FAILURE。修复前写入在空锚点调用之前（锚点在写入返回后才进入），Mapper
+     * 抛错时切面从未进入、同步器未注册，回滚后漏记失败审计（《跨模块服务接口
+     * V1.0》第 120、126 行）。
+     */
+    @Test
+    void mapperInsertFailureRollsBackAndWritesFailureAudit() {
+        stubChangedReplacement();
+        when(sysRolePermissionMapper.insertPermissions(
+                org.mockito.ArgumentMatchers.eq(37L), anyList()))
+                .thenThrow(new IllegalStateException("模拟插入失败"));
+
+        assertThatThrownBy(() -> service.replacePermissions(37L,
+                new RolePermissionsUpdateRequest(List.of(1L, 2L))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("模拟插入失败");
+
+        assertThat(txManager.outcomes).containsExactly("ROLLBACK");
+        // 删除已执行但随事务回滚；SUCCESS 未写，仅独立新事务补记 FAILURE
+        verify(sysRolePermissionMapper).deletePermissions(37L, List.of(9L));
+        assertThat(writer.written).isEmpty();
+        assertThat(writer.writtenInNewTransaction).hasSize(1);
+        OperationLog failure = writer.writtenInNewTransaction.get(0);
+        assertThat(failure.getResult()).isEqualTo("FAILURE");
+        assertThat(failure.getOperation()).isEqualTo("role.assign-permission");
+    }
+
+    /** 本轮评审 P2 ②：删除阶段就抛错，切面同样先于写入注册，回滚并补记 FAILURE。 */
+    @Test
+    void mapperDeleteFailureRollsBackAndWritesFailureAudit() {
+        stubChangedReplacement();
+        when(sysRolePermissionMapper.deletePermissions(
+                org.mockito.ArgumentMatchers.eq(37L), anyList()))
+                .thenThrow(new IllegalStateException("模拟删除失败"));
+
+        assertThatThrownBy(() -> service.replacePermissions(37L,
+                new RolePermissionsUpdateRequest(List.of(1L, 2L))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("模拟删除失败");
+
+        assertThat(txManager.outcomes).containsExactly("ROLLBACK");
+        verify(sysRolePermissionMapper, never()).insertPermissions(any(), anyList());
+        assertThat(writer.written).isEmpty();
+        assertThat(writer.writtenInNewTransaction).hasSize(1);
+        assertThat(writer.writtenInNewTransaction.get(0).getResult()).isEqualTo("FAILURE");
+        assertThat(writer.writtenInNewTransaction.get(0).getOperation())
+                .isEqualTo("role.assign-permission");
+    }
+
     /** 幂等（相同集合）：不写库、不进审计切面、事务正常提交。 */
     @Test
     void idempotentPermissionReplacementSkipsAuditEntirely() {
@@ -142,7 +196,7 @@ class RolePermissionAuditTransactionTests {
         assertThat(writer.writtenInNewTransaction).isEmpty();
     }
 
-    /** 业务校验失败（角色 404）在审计锚点之前：回滚，且切面从未进入、无审计记录。 */
+    /** 业务校验失败（角色 404）在受审计代理之前：回滚，且切面从未进入、无审计记录。 */
     @Test
     void businessFailureBeforeAnchorRollsBackWithoutAnyAudit() {
         when(sysRoleMapper.selectByIdForUpdate(999L)).thenReturn(null);
@@ -156,7 +210,7 @@ class RolePermissionAuditTransactionTests {
         assertThat(writer.writtenInNewTransaction).isEmpty();
     }
 
-    /** 校验失败（停用权限 409）同样在锚点之前回滚，不产生审计。 */
+    /** 校验失败（停用权限 409）同样在受审计代理之前回滚，不产生审计。 */
     @Test
     void disabledPermissionFailureBeforeAnchorRollsBackWithoutAnyAudit() {
         when(sysRoleMapper.selectByIdForUpdate(37L)).thenReturn(role());
