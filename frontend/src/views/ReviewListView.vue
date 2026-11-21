@@ -5,7 +5,7 @@
 // 只有权限加载成功后才显示审核入口，按 article:review-list / article:approve /
 // article:reject / review:list 严格门控；加载失败时隐藏操作并提供重试，不按身份猜测。
 // 正文：标题与审核对话框提供到 /admin/articles/:id 的正文入口（C 的文章详情页，article:read）。
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   ElAlert, ElButton, ElDialog, ElDrawer, ElEmpty, ElInput, ElLoading, ElMessage,
   ElPagination, ElTable, ElTableColumn, ElTag,
@@ -35,18 +35,37 @@ const canReadHistory = computed(() => permissionsKnown.value && session.hasPermi
 const canReadArticle = computed(() => permissionsKnown.value && session.hasPermission('article:read'))
 const vLoading = ElLoading.directive
 
+// 权限请求保护：旧页面实例/被替代的请求/已切换的登录会话都不能再写会话权限，
+// 否则快速离开再进入时，旧实例的迟到响应会把新页面的权限覆盖回旧值。
+let permissionRequestSeq = 0
+let permissionAbortController = null
+let disposed = false
+
 async function loadPermissions() {
   // 每次进入页面都向后端取一次有效权限：管理员可能已增删该账号的权限，
   // 会话里的旧权限码不能作为"已加载"依据（否则新增权限不出现、撤销权限仍显示按钮）。
+  const requestSeq = ++permissionRequestSeq
+  const tokenAtStart = session.accessToken
+  permissionAbortController?.abort()
+  permissionAbortController = new AbortController()
   permissionStatus.value = 'loading'
   try {
-    const codes = await fetchMyPermissions()
+    const codes = await fetchMyPermissions({ signal: permissionAbortController.signal })
+    if (disposed || requestSeq !== permissionRequestSeq || tokenAtStart !== session.accessToken) return
     session.setPermissions(Array.isArray(codes) ? codes : [])
     permissionStatus.value = 'loaded'
   } catch {
+    // 请求被取消（页面卸载/被新请求替代）不算加载失败，直接忽略。
+    if (disposed || requestSeq !== permissionRequestSeq || tokenAtStart !== session.accessToken) return
+    if (permissionAbortController?.signal.aborted) return
     permissionStatus.value = 'unavailable'
   }
 }
+
+onUnmounted(() => {
+  disposed = true
+  permissionAbortController?.abort()
+})
 
 // 权限加载失败后重试：成功后立即按已通过校验的筛选条件刷新待审核列表。
 async function retryPermissions() {
@@ -89,7 +108,7 @@ let pendingRequestSeq = 0
 let historyRequestSeq = 0
 
 const decisionDialog = reactive({
-  visible: false, mode: 'approve', row: null, comment: '', submitting: false,
+  visible: false, mode: 'approve', row: null, comment: '', submitting: false, instanceKey: 0,
 })
 const historyDrawer = reactive({
   visible: false, articleId: '', articleTitle: '', rows: [], total: 0,
@@ -212,11 +231,21 @@ function handleCurrentChange(nextPage) {
 }
 
 function openDecision(row, mode) {
+  // instanceKey 递增让弹窗在"父组件 visible 仍为 true、但 Element 内部已关闭"的
+  // 异常状态下也能重新挂载显示，避免提交失败后再次点击无反应。
+  decisionDialog.instanceKey += 1
   decisionDialog.visible = true
   decisionDialog.mode = mode
   decisionDialog.row = row
   decisionDialog.comment = ''
   decisionDialog.submitting = false
+}
+
+// 提交中禁止 Esc / 遮罩 / 关闭按钮关闭弹窗：Element Plus 若先关闭而 @close 因
+// submitting 提前返回，父组件 visible 会停在 true，接口失败后无法再次打开。
+function handleDecisionBeforeClose(done) {
+  if (decisionDialog.submitting) return
+  done()
 }
 
 function closeDecision() {
@@ -387,8 +416,13 @@ onMounted(async () => {
     </div>
 
     <ElDialog
+      :key="decisionDialog.instanceKey"
       :model-value="decisionDialog.visible" :title="decisionDialog.mode === 'approve' ? '审核通过' : '驳回文章'"
-      width="480px" append-to-body @close="closeDecision"
+      width="480px" append-to-body
+      :before-close="handleDecisionBeforeClose"
+      :close-on-press-escape="!decisionDialog.submitting"
+      :close-on-click-modal="!decisionDialog.submitting"
+      @close="closeDecision"
     >
       <p class="dialog-tip">
         文章：<strong>{{ decisionDialog.row?.title || '—' }}</strong>
