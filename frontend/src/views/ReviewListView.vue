@@ -31,13 +31,13 @@ const canListReviews = computed(() => permissionsKnown.value && session.hasPermi
 const canApprove = computed(() => permissionsKnown.value && session.hasPermission('article:approve'))
 const canReject = computed(() => permissionsKnown.value && session.hasPermission('article:reject'))
 const canReadHistory = computed(() => permissionsKnown.value && session.hasPermission('review:list'))
+// 正文入口按 article:read 控制：自定义角色可能只有待审列表权限，没有 article:read。
+const canReadArticle = computed(() => permissionsKnown.value && session.hasPermission('article:read'))
 const vLoading = ElLoading.directive
 
 async function loadPermissions() {
-  if (Array.isArray(session.permissionCodes) && session.permissionCodes.length > 0) {
-    permissionStatus.value = 'loaded'
-    return
-  }
+  // 每次进入页面都向后端取一次有效权限：管理员可能已增删该账号的权限，
+  // 会话里的旧权限码不能作为"已加载"依据（否则新增权限不出现、撤销权限仍显示按钮）。
   permissionStatus.value = 'loading'
   try {
     const codes = await fetchMyPermissions()
@@ -111,10 +111,6 @@ function reviewResultMeta(result) {
   return { type: 'info', label: result || '未知' }
 }
 
-function onNumericInput(field) {
-  filters[field] = filters[field].replace(/\D/g, '').slice(0, 19)
-}
-
 async function fetchPending() {
   const requestSeq = ++pendingRequestSeq
   if (permissionStatus.value === 'loading' || permissionStatus.value === 'idle') {
@@ -174,10 +170,6 @@ function handleSearch() {
   appliedFilters.authorId = filters.authorId.trim()
   current.value = 1
   void fetchPending()
-}
-
-function onHistoryArticleIdInput(value) {
-  historyForm.articleId = String(value ?? '').replace(/\D/g, '').slice(0, 19)
 }
 
 // 按文章 ID 查历史：审核完成后（行已从待审队列移除）仍可核对审核记录。
@@ -331,8 +323,8 @@ onMounted(async () => {
 
     <div class="review-filter">
       <ElInput v-model="filters.keyword" class="filter-input" clearable maxlength="255" placeholder="标题关键词" />
-      <ElInput :model-value="filters.categoryId" class="filter-input" clearable maxlength="19" placeholder="分类 ID" @update:model-value="filters.categoryId = $event; onNumericInput('categoryId')" />
-      <ElInput :model-value="filters.authorId" class="filter-input" clearable maxlength="19" placeholder="作者 ID" @update:model-value="filters.authorId = $event; onNumericInput('authorId')" />
+      <ElInput v-model="filters.categoryId" class="filter-input" clearable maxlength="64" placeholder="分类 ID（提交时校验）" />
+      <ElInput v-model="filters.authorId" class="filter-input" clearable maxlength="64" placeholder="作者 ID（提交时校验）" />
       <ElButton type="primary" @click="handleSearch">查询</ElButton>
       <ElButton @click="handleReset">重置</ElButton>
       <span v-if="lastLoadedAt" class="filter-meta">更新于 {{ lastLoadedAt }}</span>
@@ -340,8 +332,7 @@ onMounted(async () => {
 
     <div v-if="canReadHistory" class="review-history-lookup">
       <span class="filter-meta">审核完成后仍可核对记录：</span>
-      <ElInput :model-value="historyForm.articleId" class="filter-input" clearable maxlength="19" placeholder="文章 ID"
-        @update:model-value="onHistoryArticleIdInput" />
+      <ElInput v-model="historyForm.articleId" class="filter-input" clearable maxlength="64" placeholder="文章 ID（提交时校验）" />
       <ElButton @click="openHistoryById">查看该文章审核历史</ElButton>
     </div>
 
@@ -362,7 +353,8 @@ onMounted(async () => {
         <ElTableColumn prop="id" label="文章 ID" width="120" />
         <ElTableColumn label="标题" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
-            <RouterLink class="article-link" :to="{ name: 'article-detail', params: { id: row.id } }">{{ row.title }}</RouterLink>
+            <RouterLink v-if="canReadArticle" class="article-link" :to="{ name: 'article-detail', params: { id: row.id } }">{{ row.title }}</RouterLink>
+            <span v-else>{{ row.title }}</span>
           </template>
         </ElTableColumn>
         <ElTableColumn prop="categoryName" label="分类" width="140" show-overflow-tooltip />
@@ -403,7 +395,7 @@ onMounted(async () => {
         <span class="dialog-version">当前版本 {{ decisionDialog.row?.version ?? '—' }}</span>
       </p>
       <p class="dialog-tip">
-        <ElButton link type="primary" @click="openArticle(decisionDialog.row)">在新页面查看正文</ElButton>
+        <ElButton v-if="canReadArticle" link type="primary" @click="openArticle(decisionDialog.row)">在新页面查看正文</ElButton>
       </p>
       <ElInput
         v-model="decisionDialog.comment" type="textarea" :rows="4" maxlength="1000" show-word-limit

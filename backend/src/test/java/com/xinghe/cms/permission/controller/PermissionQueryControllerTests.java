@@ -4,6 +4,8 @@ import com.xinghe.cms.common.contract.AuthorizationSnapshot;
 import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.security.CurrentUserProvider;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,8 +64,10 @@ class PermissionQueryControllerTests {
     }
 
     @Test
-    void returnsPermissionCodesOfAuthenticatedUser() throws Exception {
-        stubAuthorizationQueryService.permissionCodes = Set.of("article:read", "article:review-list");
+    void returnsPermissionCodesOfAuthenticatedUserInSortedOrder() throws Exception {
+        // 快照内部是 Set，迭代顺序不保证；接口按 OpenAPI 约定输出字典升序。
+        stubAuthorizationQueryService.permissionCodes = new LinkedHashSet<>(
+                List.of("review:list", "article:review-list", "article:approve", "article:read"));
 
         MvcResult result = mockMvc.perform(get("/api/auth/permissions")
                         .requestAttr(CurrentUserProvider.REQUEST_ATTRIBUTE,
@@ -75,11 +79,11 @@ class PermissionQueryControllerTests {
         assertThat(body.get("code").asInt()).isEqualTo(200);
         JsonNode data = body.get("data");
         assertThat(data.isArray()).isTrue();
-        assertThat(data.size()).isEqualTo(2);
+        assertThat(data.size()).isEqualTo(4);
         assertThat(stubAuthorizationQueryService.lastUserId).isEqualTo(USER_ID);
-        String first = data.get(0).asString();
-        String second = data.get(1).asString();
-        assertThat(Set.of(first, second)).containsExactlyInAnyOrder("article:read", "article:review-list");
+        List<String> actual = List.of(data.get(0).asString(), data.get(1).asString(),
+                data.get(2).asString(), data.get(3).asString());
+        assertThat(actual).containsExactly("article:approve", "article:read", "article:review-list", "review:list");
     }
 
     @Test

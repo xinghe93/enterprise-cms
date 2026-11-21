@@ -48,6 +48,9 @@ public class PermissionQueryController {
     public ApiResponse<List<String>> permissions() {
         CurrentUser currentUser = currentUserProvider.requireCurrentUser();
         AuthorizationSnapshot snapshot = authorizationQueryService.getForUser(currentUser.userId());
-        return ApiResponse.success(List.copyOf(snapshot.permissionCodes()));
+        // 授权快照用 Set 保存、迭代顺序不保证；接口按 OpenAPI 约定输出自然序（字典升序），
+        // 便于前端/测试与文档示例保持一致。
+        List<String> codes = snapshot.permissionCodes().stream().sorted().toList();
+        return ApiResponse.success(codes);
     }
 }
