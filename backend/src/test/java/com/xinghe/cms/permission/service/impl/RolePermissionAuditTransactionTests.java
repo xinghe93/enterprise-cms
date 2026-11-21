@@ -15,6 +15,7 @@ import com.xinghe.cms.log.entity.OperationLog;
 import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.permission.entity.SysPermission;
 import com.xinghe.cms.permission.entity.SysRole;
+import com.xinghe.cms.permission.mapper.OperatorRowLockMapper;
 import com.xinghe.cms.permission.mapper.SysPermissionMapper;
 import com.xinghe.cms.permission.mapper.SysRoleMapper;
 import com.xinghe.cms.permission.mapper.SysRolePermissionMapper;
@@ -67,6 +68,9 @@ class RolePermissionAuditTransactionTests {
     private SysRolePermissionMapper sysRolePermissionMapper;
 
     @Autowired
+    private OperatorRowLockMapper operatorRowLockMapper;
+
+    @Autowired
     private RecordingAuditLogWriter writer;
 
     @Autowired
@@ -74,7 +78,8 @@ class RolePermissionAuditTransactionTests {
 
     @BeforeEach
     void resetStatefulFakes() {
-        Mockito.reset(sysRoleMapper, sysPermissionMapper, sysRolePermissionMapper);
+        Mockito.reset(sysRoleMapper, sysPermissionMapper, sysRolePermissionMapper,
+                operatorRowLockMapper);
         writer.failOnWrite = false;
         writer.written.clear();
         writer.writtenInNewTransaction.clear();
@@ -110,8 +115,8 @@ class RolePermissionAuditTransactionTests {
                 .hasMessage("审计写入失败");
 
         assertThat(txManager.outcomes).containsExactly("ROLLBACK");
-        // 删除 + 插入已执行但随事务回滚；成功日志未写，仅独立事务补记 FAILURE
-        verify(sysRolePermissionMapper).deleteByRoleId(37L);
+        // 差集删除 + 插入已执行但随事务回滚；成功日志未写，仅独立事务补记 FAILURE
+        verify(sysRolePermissionMapper).deletePermissions(37L, List.of(9L));
         verify(sysRolePermissionMapper).insertPermissions(org.mockito.ArgumentMatchers.eq(37L), anyList());
         assertThat(writer.written).isEmpty();
         assertThat(writer.writtenInNewTransaction).hasSize(1);
@@ -131,7 +136,7 @@ class RolePermissionAuditTransactionTests {
         service.replacePermissions(37L, new RolePermissionsUpdateRequest(List.of(1L, 2L)));
 
         assertThat(txManager.outcomes).containsExactly("COMMIT");
-        verify(sysRolePermissionMapper, never()).deleteByRoleId(any());
+        verify(sysRolePermissionMapper, never()).deletePermissions(any(), anyList());
         verify(sysRolePermissionMapper, never()).insertPermissions(any(), anyList());
         assertThat(writer.written).isEmpty();
         assertThat(writer.writtenInNewTransaction).isEmpty();
@@ -163,7 +168,7 @@ class RolePermissionAuditTransactionTests {
                 .isInstanceOf(BusinessException.class);
 
         assertThat(txManager.outcomes).containsExactly("ROLLBACK");
-        verify(sysRolePermissionMapper, never()).deleteByRoleId(any());
+        verify(sysRolePermissionMapper, never()).deletePermissions(any(), anyList());
         assertThat(writer.written).isEmpty();
         assertThat(writer.writtenInNewTransaction).isEmpty();
     }
@@ -280,6 +285,11 @@ class RolePermissionAuditTransactionTests {
         }
 
         @Bean
+        OperatorRowLockMapper operatorRowLockMapper() {
+            return mock(OperatorRowLockMapper.class);
+        }
+
+        @Bean
         RoleWriteAuditMarker roleWriteAuditMarker() {
             return new RoleWriteAuditMarker();
         }
@@ -288,9 +298,12 @@ class RolePermissionAuditTransactionTests {
         RolePermissionServiceImpl rolePermissionService(SysRoleMapper sysRoleMapper,
                 SysPermissionMapper sysPermissionMapper,
                 SysRolePermissionMapper sysRolePermissionMapper,
+                OperatorRowLockMapper operatorRowLockMapper,
+                CurrentUserProvider currentUserProvider,
                 RoleWriteAuditMarker roleWriteAuditMarker) {
             return new RolePermissionServiceImpl(sysRoleMapper, sysPermissionMapper,
-                    sysRolePermissionMapper, roleWriteAuditMarker);
+                    sysRolePermissionMapper, operatorRowLockMapper, currentUserProvider,
+                    roleWriteAuditMarker);
         }
 
         @Bean

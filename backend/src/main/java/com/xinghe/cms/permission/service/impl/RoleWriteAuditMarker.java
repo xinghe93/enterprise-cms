@@ -40,8 +40,8 @@ public class RoleWriteAuditMarker {
      * 角色权限集合变更的审计锚点：调用即表示本次事务中角色权限关联集合已发生
      * 变化（并非幂等的相同集合），切面据此在事务提交时记录
      * {@code role.assign-permission / SUCCESS}。仅供
-     * {@link RolePermissionServiceImpl#replacePermissions} 在删除 + 插入完成后
-     * 经代理调用；幂等（相同集合）路径不调用，不产生审计记录。
+     * {@link RolePermissionServiceImpl#replacePermissions} 在差集删除 / 插入完成后
+     * 经代理调用；幂等（相同集合、差集均为空）路径不调用，不产生审计记录。
      */
     @AuditLog(operation = "role.assign-permission")
     public void rolePermissionsChanged() {
