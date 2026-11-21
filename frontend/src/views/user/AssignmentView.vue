@@ -196,8 +196,8 @@ async function openRoleDialog(user) {
   roleDetailLoaded.value = false
   missingEnabledRoles.value = []
   try {
-    const detail = await userApi.getUser(user.id)
-    const ok = await ensureRoles()
+    // 详情与目录相互独立，并行请求缩短开窗等待（DeepSeek 审查）。
+    const [detail, ok] = await Promise.all([userApi.getUser(user.id), ensureRoles()])
     if (ok) {
       applyRoleDetail(detail)
     } else {
@@ -210,8 +210,11 @@ async function openRoleDialog(user) {
     dialog.value = {
       type: 'role',
       user: { ...user, id: detail?.id ?? user.id, realName: detail?.realName ?? user.realName },
+      // 打开时刻的角色快照：保存前重读详情比对，角色被他人调整时拒绝提交（并发防护）。
+      roleSnapshot: (detail?.roles ?? []).map((role) => String(role?.id ?? role)).sort(),
     }
-    // 详情成功才置位：即使随后目录加载失败，也只由 rolesLoadFailed 控制保存。
+    // 仅表示「员工详情已成功」，与目录是否成功无关：保存同时检查
+    // rolesLoadFailed 与 roleDetailLoaded，两者任一失败都禁用保存（有意设计）。
     roleDetailLoaded.value = true
     if (!ok) formError.value = '启用角色目录加载失败，为避免误删现有角色已禁止保存，请重试'
   } catch {
@@ -239,6 +242,8 @@ async function retryRoles() {
     }
     const detail = await userApi.getUser(dialog.value.user.id)
     applyRoleDetail(detail)
+    // 重试成功后刷新并发快照，保存时与最新详情比对。
+    dialog.value.roleSnapshot = (detail?.roles ?? []).map((role) => String(role?.id ?? role)).sort()
     roleDetailLoaded.value = true
   } catch {
     formError.value = '员工详情加载失败，已禁止保存；请重试'
@@ -326,12 +331,28 @@ async function saveRoles() {
   submitting.value = true
   formError.value = ''
   try {
+    // 并发校验：重读详情比对开窗时的角色快照，被其他管理员调整过就拒绝提交，
+    // 避免用旧勾选静默覆盖对方的分配（与 saveDepartment 的部门并发校验同一策略）。
+    const latest = await userApi.getUser(dialog.value.user.id)
+    const latestIds = (latest?.roles ?? []).map((role) => String(role?.id ?? role)).sort()
+    const snapshot = dialog.value.roleSnapshot ?? []
+    if (latestIds.length !== snapshot.length || latestIds.some((id, index) => id !== snapshot[index])) {
+      formError.value = '该员工的角色已被其他管理员修改，请关闭后重新打开再操作'
+      return
+    }
     // 全量替换：空数组即清空；先在本地归一化，超限/非法 ID 不发请求。
     const roleIds = normalizeRoleIds(selectedRoleIds.value)
     await userApi.setUserRoles(dialog.value.user.id, roleIds)
     dialog.value = null
     await loadUsers()
   } catch (error) {
+    if (error?.code === 404 || error?.status === 404) {
+      // 重读详情或提交时员工已被并发删除：公共层已提示，弹窗保留只会让管理员
+      // 对失效数据继续操作（与 saveDepartment 同一处理）。
+      dialog.value = null
+      await loadUsers()
+      return
+    }
     formError.value = error?.message || '保存失败，请按提示检查后重试'
   } finally {
     submitting.value = false
@@ -457,7 +478,7 @@ onMounted(() => {
       </div>
 
       <div v-else>
-        <p class="org-note">角色为全量替换：取消勾选即移除，最多 100 项；保存后重新加载列表以刷新回显。</p>
+        <p class="org-note">角色为全量替换：取消勾选即移除，最多 100 项；保存前会重新读取详情，角色已被其他管理员调整时会提示重新打开。</p>
         <div v-if="removedRoles.length" class="org-alert" role="status">
           以下已分配角色当前不可分配（停用或不存在），保存后将被移除：
           {{ removedRoles.map((role) => role.roleName).join('、') }}

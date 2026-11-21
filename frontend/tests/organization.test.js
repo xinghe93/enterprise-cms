@@ -32,6 +32,17 @@ test('树各层按 sortOrder ASC、id 数值 ASC 排序，不按字符串字典�
   assert.equal(tree[0].children[0].id, '10')
 })
 
+test('sortOrder 脏值（非数字）回退 0，排序结果仍然确定', () => {
+  // 服务端 sortOrder 恒为合法整数；脏值转 NaN 会让 sort 行为未定义，统一兜底 0。
+  const dirty = [
+    { id: '3', sortOrder: 'abc' },
+    { id: '1', sortOrder: 5 },
+    { id: '2', sortOrder: null },
+  ]
+  const sorted = sortDepartmentTree(dirty)
+  assert.deepEqual(sorted.map((n) => n.id), ['2', '3', '1'])
+})
+
 test('扁平化保留深度与父链真实状态，停用祖先不被伪装成启用', () => {
   const rows = flattenDepartments(sortDepartmentTree(tree))
   assert.equal(rows.length, 7)
@@ -117,10 +128,13 @@ test('候选目录为空或被截断时不会把第二页启用角色当作可�
   // 目录只加载到第一页（100 项以内），101 被误判为 removed——这正是必须分页拉全的原因。
   const truncated = partitionAssignedRoles(assigned, [{ id: '2' }])
   assert.deepEqual(truncated.selectedRoleIds, [])
-  assert.equal(truncated.removedRoles.length, 1)
+  // 启用缺失项进 missingEnabledRoles（阻止保存），不再混入「将被移除」集合误导用户。
+  assert.equal(truncated.removedRoles.length, 0)
+  assert.deepEqual(truncated.missingEnabledRoles.map((role) => role.id), ['101'])
   const complete = partitionAssignedRoles(assigned, [{ id: '2' }, { id: '101' }])
   assert.deepEqual(complete.selectedRoleIds, ['101'])
   assert.equal(complete.removedRoles.length, 0)
+  assert.equal(complete.missingEnabledRoles.length, 0)
 })
 
 test('员工持有的启用角色缺失于目录时单独标记，调用方必须阻止全量替换', () => {
@@ -134,8 +148,9 @@ test('员工持有的启用角色缺失于目录时单独标记，调用方必�
     [{ id: '2' }, { id: '7' }],
   )
   assert.deepEqual(selectedRoleIds, ['2'])
-  // 停用项与缺失的启用项都进 removed，但只有后者触发保存门禁。
-  assert.deepEqual(removedRoles.map((role) => role.id), ['9', '5'])
+  // 缺失的启用项只进 missingEnabledRoles（触发保存门禁），不混入「将被移除」集合；
+  // 停用项仍进 removed。
+  assert.deepEqual(removedRoles.map((role) => role.id), ['5'])
   assert.deepEqual(missingEnabledRoles.map((role) => role.id), ['9'])
 })
 

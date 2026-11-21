@@ -256,15 +256,17 @@ test('角色目录每页不足量时继续翻页；病态服务端由安全上�
   assert.equal(pathological, 100)
 })
 
-test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', () => {
+test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', async () => {
+  // 映射表用可导入的纯数据断言行为（避免改键顺序等重构被源码正则误报）。
+  const { moduleViews } = await import('../src/router/viewComponents.js')
+  assert.deepEqual(Object.keys(moduleViews).sort(),
+    ['articles', 'categories', 'departments', 'logs', 'portal', 'users'])
+  for (const view of Object.values(moduleViews)) assert.equal(typeof view, 'function')
+  // router/index.js 的接线方式（查表 + 占位回退 + entry props）仍以源码断言覆盖。
   const routerSource = readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
-  const viewsSource = readFileSync(new URL('../src/router/viewComponents.js', import.meta.url), 'utf8')
   const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
   assert.match(routerSource, /moduleViews\[entry\.name\] \?\?/)
   assert.match(routerSource, /props: \{ entry \}/)
-  assert.match(viewsSource, /departments: \(\) => import\('\.\.\/views\/user\/DepartmentView\.vue'\)/)
-  assert.match(viewsSource, /users: \(\) => import\('\.\.\/views\/user\/AssignmentView\.vue'\)/)
-  assert.match(viewsSource, /categories: \(\) => import\('\.\.\/views\/content\/TaxonomyView\.vue'\)/)
   assert.match(mainSource, /import '\.\/styles\/organization\.css'/)
   // PR #41 审查 P2：按需引入 ElDialog 必须同时带 dialog + overlay 样式。
   assert.match(mainSource, /el-dialog\.css/)
