@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   MAX_COMMENT_LENGTH, buildPendingQuery, buildReviewQuery, formatLocalDateTime,
-  formatReviewTime, isValidArticleId, normalizeComment, validatePendingFilters,
+  formatReviewTime, getArticleDetail, isValidArticleId, normalizeComment, validatePendingFilters,
 } from '../src/api/review.js'
 
 test('isValidArticleId 接受合法 ID 并拒绝非法 ID', () => {
@@ -84,4 +84,11 @@ test('validatePendingFilters 只提示非空的非法 ID', () => {
   assert.equal(both.length, 2)
   assert.match(both[0], /分类 ID 无效/)
   assert.match(both[1], /作者 ID 无效/)
+})
+
+test('getArticleDetail 在发出请求前拒绝非法文章 ID', async () => {
+  await assert.rejects(() => getArticleDetail('0'), /无效的文章 ID/)
+  await assert.rejects(() => getArticleDetail('001'), /无效的文章 ID/)
+  await assert.rejects(() => getArticleDetail('9223372036854775808'), /无效的文章 ID/)
+  await assert.rejects(() => getArticleDetail(null), /无效的文章 ID/)
 })

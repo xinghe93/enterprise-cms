@@ -13,15 +13,13 @@ import {
 // 骨架项目未在 main.js 全局注册 Element Plus，本页按需引入组件并加载样式。
 import 'element-plus/dist/index.css'
 import {
-  approveArticle, buildPendingQuery, buildReviewQuery, fetchMyPermissions,
+  approveArticle, buildPendingQuery, buildReviewQuery, fetchMyPermissions, getArticleDetail,
   formatLocalDateTime, formatReviewTime, isValidArticleId, listPendingReviews,
   listReviewHistory, rejectArticle, validatePendingFilters,
 } from '../api/review.js'
 import { useSessionStore } from '../stores/session.js'
-import { useRouter } from 'vue-router'
 
 const session = useSessionStore()
-const router = useRouter()
 // idle / loading / loaded / unavailable：区分"权限加载中"与"已加载但为空"。
 // 只有 loaded 才显示操作并按权限码严格门控（空数组=无任何权限，隐藏全部操作）；
 // 加载中不显示操作；加载失败显示重试入口，不按登录身份猜测权限。
@@ -64,7 +62,11 @@ async function loadPermissions() {
 
 onUnmounted(() => {
   disposed = true
+  // 卸载时取消在途请求：账号 A 的 401 迟到响应不能再清掉账号 B 刚建立的会话。
   permissionAbortController?.abort()
+  pendingAbortController?.abort()
+  historyAbortController?.abort()
+  articlePreviewAbortController?.abort()
 })
 
 // 权限加载失败后重试：成功后立即按已通过校验的筛选条件刷新待审核列表。
@@ -104,12 +106,18 @@ const loadError = ref('')
 const lastLoadedAt = ref('')
 // 列表请求序号：快速翻页时只允许最新一次请求回写页面状态。
 let pendingRequestSeq = 0
+// 列表请求取消器：翻页/重查/卸载时取消在途请求，避免旧会话的 401 影响新会话。
+let pendingAbortController = null
 // 审核历史请求序号：切换文章或快速翻页时只允许最新一次请求回写抽屉状态。
 let historyRequestSeq = 0
+let historyAbortController = null
 
 const decisionDialog = reactive({
   visible: false, mode: 'approve', row: null, comment: '', submitting: false, instanceKey: 0,
 })
+// 正文预览：在审核弹窗内加载正文，提交中的意见与弹窗状态不会因跳转丢失。
+const articlePreview = reactive({ visible: false, loading: false, error: '', data: null })
+let articlePreviewAbortController = null
 const historyDrawer = reactive({
   visible: false, articleId: '', articleTitle: '', rows: [], total: 0,
   current: 1, size: 10, loading: false, error: '',
@@ -154,11 +162,13 @@ async function fetchPending() {
   }
   loading.value = true
   loadError.value = ''
+  pendingAbortController?.abort()
+  pendingAbortController = new AbortController()
   try {
     const page = await listPendingReviews(buildPendingQuery({
       keyword: appliedFilters.keyword, categoryId: appliedFilters.categoryId,
       authorId: appliedFilters.authorId, current: current.value, size: size.value,
-    }))
+    }), { signal: pendingAbortController.signal })
     if (requestSeq !== pendingRequestSeq) return
     rows.value = Array.isArray(page?.records) ? page.records : []
     total.value = Number.isFinite(Number(page?.total)) ? Number(page.total) : 0
@@ -202,10 +212,35 @@ function openHistoryById() {
   openHistory({ id: rawId, title: '' })
 }
 
-// 正文入口：跳转 C 的文章详情页（路由 article-detail，权限 article:read）。
-function openArticle(row) {
-  if (!row?.id) return
-  router.push({ name: 'article-detail', params: { id: row.id } })
+// 正文入口：在审核弹窗内加载正文（不跳转），避免已填写的审核意见丢失。
+async function toggleArticlePreview() {
+  if (!canReadArticle.value) return
+  if (articlePreview.visible) {
+    articlePreviewAbortController?.abort()
+    articlePreview.visible = false
+    articlePreview.data = null
+    articlePreview.error = ''
+    return
+  }
+  const articleId = decisionDialog.row?.id
+  if (!articleId) return
+  articlePreview.visible = true
+  articlePreview.loading = true
+  articlePreview.error = ''
+  articlePreview.data = null
+  articlePreviewAbortController?.abort()
+  const controller = new AbortController()
+  articlePreviewAbortController = controller
+  try {
+    const detail = await getArticleDetail(articleId, { signal: controller.signal })
+    if (controller.signal.aborted) return
+    articlePreview.data = detail ?? null
+  } catch {
+    if (controller.signal.aborted) return
+    articlePreview.error = '正文加载失败，请稍后重试。'
+  } finally {
+    if (!controller.signal.aborted) articlePreview.loading = false
+  }
 }
 
 function handleReset() {
@@ -239,6 +274,12 @@ function openDecision(row, mode) {
   decisionDialog.row = row
   decisionDialog.comment = ''
   decisionDialog.submitting = false
+  // 每次打开新文章重新加载正文，不复用上一篇文章的内容。
+  articlePreviewAbortController?.abort()
+  articlePreview.visible = false
+  articlePreview.data = null
+  articlePreview.error = ''
+  articlePreview.loading = false
 }
 
 // 提交中禁止 Esc / 遮罩 / 关闭按钮关闭弹窗：Element Plus 若先关闭而 @close 因
@@ -250,6 +291,11 @@ function handleDecisionBeforeClose(done) {
 
 function closeDecision() {
   if (decisionDialog.submitting) return
+  articlePreviewAbortController?.abort()
+  articlePreview.visible = false
+  articlePreview.data = null
+  articlePreview.error = ''
+  articlePreview.loading = false
   decisionDialog.visible = false
   decisionDialog.row = null
   decisionDialog.comment = ''
@@ -308,10 +354,12 @@ async function fetchHistory() {
   const requestSeq = ++historyRequestSeq
   historyDrawer.loading = true
   historyDrawer.error = ''
+  historyAbortController?.abort()
+  historyAbortController = new AbortController()
   try {
     const page = await listReviewHistory(historyDrawer.articleId, buildReviewQuery({
       current: historyDrawer.current, size: historyDrawer.size,
-    }))
+    }), { signal: historyAbortController.signal })
     if (requestSeq !== historyRequestSeq) return
     historyDrawer.rows = Array.isArray(page?.records) ? page.records : []
     historyDrawer.total = Number.isFinite(Number(page?.total)) ? Number(page.total) : 0
@@ -429,8 +477,19 @@ onMounted(async () => {
         <span class="dialog-version">当前版本 {{ decisionDialog.row?.version ?? '—' }}</span>
       </p>
       <p class="dialog-tip">
-        <ElButton v-if="canReadArticle" link type="primary" @click="openArticle(decisionDialog.row)">在新页面查看正文</ElButton>
+        <ElButton v-if="canReadArticle" link type="primary" @click="toggleArticlePreview">
+          {{ articlePreview.visible ? '收起正文' : '在本页查看正文' }}
+        </ElButton>
+        <span class="dialog-version">正文在弹窗内查看，已填写的审核意见不会丢失</span>
       </p>
+      <div v-if="articlePreview.visible" class="article-preview" v-loading="articlePreview.loading">
+        <ElAlert v-if="articlePreview.error" :title="articlePreview.error" type="error" :closable="false" show-icon />
+        <template v-else-if="articlePreview.data">
+          <p class="preview-title">{{ articlePreview.data.title }}</p>
+          <p v-if="articlePreview.data.summary" class="preview-summary">{{ articlePreview.data.summary }}</p>
+          <div class="preview-content">{{ articlePreview.data.content || '（正文为空）' }}</div>
+        </template>
+      </div>
       <ElInput
         v-model="decisionDialog.comment" type="textarea" :rows="4" maxlength="1000" show-word-limit
         :placeholder="decisionDialog.mode === 'reject' ? '驳回意见（必填）' : '审核意见（可选）'"
@@ -487,6 +546,10 @@ onMounted(async () => {
 .dialog-tip { margin: 0 0 12px; color: var(--ink, #111827); }
 .dialog-version { margin-left: 8px; color: var(--muted, #6b7280); font-size: 12px; }
 .review-history-lookup { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.article-preview { max-height: 300px; overflow: auto; padding: 12px 14px; margin-bottom: 12px; border: 1px solid var(--line, #e4e7ed); border-radius: 8px; background: var(--surface, #f8fafc); }
+.preview-title { margin: 0 0 6px; font-weight: 600; color: var(--ink, #1f2937); }
+.preview-summary { margin: 0 0 8px; color: var(--muted, #6b7280); font-size: 13px; }
+.preview-content { white-space: pre-wrap; word-break: break-word; line-height: 1.7; font-size: 13px; color: var(--ink, #1f2937); }
 .article-link { color: var(--el-color-primary, #409eff); text-decoration: none; }
 .article-link:hover { text-decoration: underline; }
 </style>

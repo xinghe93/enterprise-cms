@@ -111,14 +111,21 @@ export async function fetchMyPermissions({ signal } = {}) {
   return api.get('/auth/permissions', { silent: true, ...(signal ? { signal } : {}) })
 }
 
-export async function listPendingReviews(query) {
+export async function listPendingReviews(query, config = {}) {
   const api = await apiClient()
-  return api.get('/admin/reviews/pending', { params: query })
+  return api.get('/admin/reviews/pending', { ...config, params: query })
 }
 
-export async function listReviewHistory(articleId, query) {
+export async function listReviewHistory(articleId, query, config = {}) {
   const api = await apiClient()
-  return api.get(`/admin/articles/${encodeURIComponent(articleId)}/reviews`, { params: query })
+  return api.get(`/admin/articles/${encodeURIComponent(articleId)}/reviews`, { ...config, params: query })
+}
+
+/** 审核弹窗内查看正文（GET /api/admin/articles/{id}，权限 article:read）。 */
+export async function getArticleDetail(articleId, { signal } = {}) {
+  if (!isValidArticleId(articleId)) throw new TypeError('无效的文章 ID')
+  const api = await apiClient()
+  return api.get(`/admin/articles/${encodeURIComponent(articleId)}`, { ...(signal ? { signal } : {}) })
 }
 
 export const MAX_COMMENT_LENGTH = 1000
