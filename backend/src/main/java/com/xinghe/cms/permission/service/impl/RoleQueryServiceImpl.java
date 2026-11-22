@@ -9,6 +9,7 @@ import com.xinghe.cms.permission.entity.SysRole;
 import com.xinghe.cms.permission.mapper.SysRoleMapper;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.RoleQueryService;
+import com.xinghe.cms.permission.support.ContractWhitespace;
 import java.util.List;
 import java.util.Objects;
 import org.springframework.stereotype.Service;
@@ -16,7 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 角色只读查询实现。筛选与校验规则对齐 OpenAPI {@code GET /api/admin/roles}：
- * keyword 最长 100、LIKE 通配符字面匹配；status 仅允许 0/1。
+ * keyword 最长 100、首尾空白按契约 ECMAScript {@code \s} 语义去除
+ * （{@link ContractWhitespace#strip}，与权限分页同一真源）、LIKE 通配符字面
+ * 匹配；status 仅允许 0/1。
  */
 @Service
 @Transactional(readOnly = true)
@@ -42,7 +45,11 @@ public class RoleQueryServiceImpl implements RoleQueryService {
         if (keyword != null && keyword.codePointCount(0, keyword.length()) > MAX_KEYWORD_LENGTH) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "关键词最长 100 个字符");
         }
-        String trimmed = keyword == null ? null : keyword.strip();
+        // 契约空白规则（评审 P2）：与权限分页同一真源 ContractWhitespace.strip
+        //（契约 ECMAScript \s 语义，认 NBSP 等 Zs 类字符），不能用
+        // String.strip——其 Character.isWhitespace 不认 NBSP。null 保持 null
+        //（strip 不接受 null），纯空白按契约 8.2"空串不筛选"转为 null
+        String trimmed = keyword == null ? null : ContractWhitespace.strip(keyword);
         if (trimmed != null && trimmed.isEmpty()) {
             trimmed = null;
         }

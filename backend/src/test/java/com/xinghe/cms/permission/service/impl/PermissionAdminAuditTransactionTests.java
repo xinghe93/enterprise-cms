@@ -14,6 +14,7 @@ import com.xinghe.cms.log.aspect.AuditLogAspect;
 import com.xinghe.cms.log.entity.OperationLog;
 import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.permission.entity.SysPermission;
+import com.xinghe.cms.permission.mapper.OperatorRowLockMapper;
 import com.xinghe.cms.permission.mapper.SysPermissionMapper;
 import com.xinghe.cms.permission.request.PermissionCreateRequest;
 import com.xinghe.cms.permission.request.PermissionStatusRequest;
@@ -362,9 +363,19 @@ class PermissionAdminAuditTransactionTests {
         }
 
         @Bean
+        OperatorRowLockMapper operatorRowLockMapper() {
+            return mock(OperatorRowLockMapper.class);
+        }
+
+        @Bean
         PermissionAdminServiceImpl permissionAdminService(SysPermissionMapper sysPermissionMapper,
-                PermissionWriteAuditMarker permissionWriteAuditMarker) {
-            return new PermissionAdminServiceImpl(sysPermissionMapper, permissionWriteAuditMarker);
+                OperatorRowLockMapper operatorRowLockMapper,
+                PermissionWriteAuditMarker permissionWriteAuditMarker,
+                CurrentUserProvider currentUserProvider) {
+            // 真实 CurrentUserProvider 在无请求上下文时抛 UNAUTHORIZED，
+            // 服务按"无认证上下文跳过操作人锁"处理（与生产一致）
+            return new PermissionAdminServiceImpl(sysPermissionMapper, operatorRowLockMapper,
+                    permissionWriteAuditMarker, currentUserProvider);
         }
 
         @Bean

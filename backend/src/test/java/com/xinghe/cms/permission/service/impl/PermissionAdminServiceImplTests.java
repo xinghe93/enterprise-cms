@@ -5,20 +5,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.permission.entity.SysPermission;
+import com.xinghe.cms.permission.mapper.OperatorRowLockMapper;
 import com.xinghe.cms.permission.mapper.SysPermissionMapper;
 import com.xinghe.cms.permission.request.PermissionCreateRequest;
 import com.xinghe.cms.permission.request.PermissionStatusRequest;
 import com.xinghe.cms.permission.request.PermissionUpdateRequest;
 import com.xinghe.cms.permission.response.PermissionView;
+import com.xinghe.cms.security.CurrentUserProvider;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,7 +37,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
  * 权限项管理写服务单测（Mockito 桩、不连库）。覆盖：创建（默认启用、编码/名称
  * 去空白、唯一键冲突 409、类型条件不变量 400：API 路径结构/方法枚举、MENU/BUTTON
  * method 必须 null）、修改（按数据库类型校验、404、显式 null 合法）、启停
- * （排他锁下幂等跳过、变更经审计代理执行）。审计随事务提交由
+ * （排他锁下幂等跳过、变更经审计代理执行）、<b>取锁顺序</b>（评审 P2：事务
+ * 开头先共享锁操作人用户行、再触碰权限行）。审计随事务提交由
  * {@code PermissionAdminAuditTransactionTests} 覆盖；SQL 与行锁由联调验证。
  */
 @ExtendWith(MockitoExtension.class)
@@ -43,7 +48,13 @@ class PermissionAdminServiceImplTests {
     private SysPermissionMapper sysPermissionMapper;
 
     @Mock
+    private OperatorRowLockMapper operatorRowLockMapper;
+
+    @Mock
     private PermissionWriteAuditMarker permissionWriteAuditMarker;
+
+    @Mock
+    private CurrentUserProvider currentUserProvider;
 
     @InjectMocks
     private PermissionAdminServiceImpl service;
@@ -354,5 +365,40 @@ class PermissionAdminServiceImplTests {
         assertThatThrownBy(() -> service.setStatus(9L, new PermissionStatusRequest(0)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("模拟更新失败");
+    }
+
+    /**
+     * 评审 P2 锁序回归：事务开头先 {@code FOR SHARE} 共享锁操作人用户行，
+     * 之后才锁定/触碰权限行——统一"用户 → 权限"顺序，打破"权限修改/启停 ×
+     * 角色权限替换 × 用户角色分配"三事务并发下的 P→U→R→P 锁环。
+     */
+    @Test
+    void operatorSharedLockIsTakenBeforePermissionRowLock() {
+        when(currentUserProvider.requireCurrentUser())
+                .thenReturn(new CurrentUser(501L, "admin", null));
+        when(operatorRowLockMapper.selectOperatorForShare(501L)).thenReturn(501L);
+        when(sysPermissionMapper.selectByIdForUpdate(9L))
+                .thenReturn(permission(9L, "article:read", "API", 1));
+        when(sysPermissionMapper.update(any(SysPermission.class), any(Wrapper.class))).thenReturn(1);
+
+        service.setStatus(9L, new PermissionStatusRequest(0));
+
+        org.mockito.InOrder ordered = inOrder(operatorRowLockMapper, sysPermissionMapper);
+        ordered.verify(operatorRowLockMapper).selectOperatorForShare(501L);
+        ordered.verify(sysPermissionMapper).selectByIdForUpdate(9L);
+        ordered.verify(sysPermissionMapper).update(any(SysPermission.class), any(Wrapper.class));
+    }
+
+    /** 无认证上下文（单测/内部调用）：跳过操作人锁，不阻断业务（与切面记 null user_id 一致）。 */
+    @Test
+    void missingAuthContextSkipsOperatorLockWithoutBlocking() {
+        when(sysPermissionMapper.selectByIdForUpdate(9L))
+                .thenReturn(permission(9L, "article:read", "API", 1));
+        when(sysPermissionMapper.update(any(SysPermission.class), any(Wrapper.class))).thenReturn(1);
+
+        service.setStatus(9L, new PermissionStatusRequest(0));
+
+        verifyNoInteractions(operatorRowLockMapper);
+        verify(sysPermissionMapper).update(any(SysPermission.class), any(Wrapper.class));
     }
 }

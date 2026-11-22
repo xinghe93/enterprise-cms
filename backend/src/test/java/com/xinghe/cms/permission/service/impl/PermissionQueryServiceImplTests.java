@@ -92,6 +92,26 @@ class PermissionQueryServiceImplTests {
         verify(sysPermissionMapper).selectPermissionPage(any(), isNull(), isNull(), isNull());
     }
 
+    /**
+     * 评审 P2 回归：keyword 空白按契约 ECMAScript \s 处理——纯 NBSP（U+00A0）
+     * 是契约空白，须视为"空关键词不筛选"；String.strip 的
+     * Character.isWhitespace 不认 NBSP，旧实现会把它当字面关键词送进 LIKE。
+     */
+    @Test
+    void nbspOnlyKeywordIsTreatedAsNoFilter() {
+        service.page(new PageQuery(), "\u00A0", null, null);
+
+        verify(sysPermissionMapper).selectPermissionPage(any(), isNull(), isNull(), isNull());
+    }
+
+    /** 评审 P2 回归：NBSP 包夹的关键词被契约空白规则去除首尾后进入 LIKE。 */
+    @Test
+    void nbspPaddedKeywordIsTrimmedBeforeEscaping() {
+        service.page(new PageQuery(), "\u00A0EDITOR\u00A0", null, null);
+
+        verify(sysPermissionMapper).selectPermissionPage(any(), eq("EDITOR"), isNull(), isNull());
+    }
+
     /** keyword 超 100 码点返回 400（原始长度先校验再去空白）。 */
     @Test
     void keywordBeyond100CodePointsReturns400() {

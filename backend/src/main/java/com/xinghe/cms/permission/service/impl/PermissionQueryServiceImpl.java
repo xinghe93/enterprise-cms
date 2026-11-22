@@ -10,6 +10,7 @@ import com.xinghe.cms.permission.mapper.SysPermissionMapper;
 import com.xinghe.cms.permission.response.PermissionView;
 import com.xinghe.cms.permission.service.PermissionQueryService;
 import com.xinghe.cms.permission.support.ContractLike;
+import com.xinghe.cms.permission.support.ContractWhitespace;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -18,8 +19,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 权限项只读查询实现。筛选与校验规则对齐 OpenAPI
- * {@code GET /api/admin/permissions}：keyword 最长 100、LIKE 通配符字面匹配；
- * status 仅允许 0/1；permissionType 严格匹配 MENU/BUTTON/API。
+ * {@code GET /api/admin/permissions}：keyword 最长 100、首尾空白按契约
+ * ECMAScript {@code \s} 语义去除（{@link ContractWhitespace#strip}，与角色分页
+ * 同一真源）、LIKE 通配符字面匹配；status 仅允许 0/1；permissionType 严格
+ * 匹配 MENU/BUTTON/API。
  */
 @Service
 @Transactional(readOnly = true)
@@ -53,7 +56,12 @@ public class PermissionQueryServiceImpl implements PermissionQueryService {
         if (keyword != null && keyword.codePointCount(0, keyword.length()) > MAX_KEYWORD_LENGTH) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "关键词最长 100 个字符");
         }
-        String trimmed = keyword == null ? null : keyword.strip();
+        // 契约空白规则（评审 P2）：keyword 首尾空白按契约 ECMAScript \s 语义
+        // 用 ContractWhitespace.strip 去除（认 NBSP U+00A0 等 Zs 类字符），不能
+        // 用 String.strip——其 Character.isWhitespace 不认 NBSP，会导致
+        // "\u00A0abc\u00A0" 带空白进入 LIKE。null 保持 null（strip 不接受
+        // null），纯空白按契约 8.2"空串不筛选"转为 null
+        String trimmed = keyword == null ? null : ContractWhitespace.strip(keyword);
         if (trimmed != null && trimmed.isEmpty()) {
             trimmed = null;
         }

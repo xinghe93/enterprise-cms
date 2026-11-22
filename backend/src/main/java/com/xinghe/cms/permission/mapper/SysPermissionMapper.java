@@ -60,9 +60,10 @@ public interface SysPermissionMapper extends BaseMapper<SysPermission> {
      * 幂等判断不再有并发窗口，随后的无条件 UPDATE 也必然命中 1 行。
      *
      * <p>与角色模块的取锁惯例一致（{@code SysRoleMapper#selectByIdForUpdate}）：
-     * 权限项启停/修改/替换的写锁在同一行上串行。本表不参与"用户 → 角色"锁序
-     * （A 模块用户角色分配不锁权限行、审计外键对操作人行是共享锁），见
-     * {@code PermissionAdminServiceImpl} 的并发说明。</p>
+     * 权限项启停/修改/替换的写锁在同一行上串行。调用方（权限项写服务）必须在
+     * 本查询之前先共享锁操作人用户行（{@code OperatorRowLockMapper#selectOperatorForShare}），
+     * 统一"用户 → 权限"锁序、避免与角色权限替换 / 用户角色分配的三事务锁环，
+     * 见 {@code PermissionAdminServiceImpl} 的并发说明。</p>
      *
      * <p>权限项不存在时返回 {@code null} → 服务层 404。</p>
      */

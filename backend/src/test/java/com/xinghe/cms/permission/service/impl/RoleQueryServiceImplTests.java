@@ -83,6 +83,34 @@ class RoleQueryServiceImplTests {
         verify(sysRoleMapper).selectRolePage(any(Page.class), isNull(), isNull());
     }
 
+    /**
+     * 评审 P2 回归：keyword 空白按契约 ECMAScript \s 处理——纯 NBSP（U+00A0）
+     * 是契约空白，须视为"空关键词不筛选"；String.strip 的
+     * Character.isWhitespace 不认 NBSP，旧实现会把它当字面关键词送进 LIKE。
+     */
+    @Test
+    void nbspOnlyKeywordIsTreatedAsNoFilter() {
+        Page<SysRole> empty = new Page<>(1, 10);
+        when(sysRoleMapper.selectRolePage(any(), isNull(), isNull())).thenReturn(empty);
+
+        service.page(new PageQuery(), "\u00A0", null);
+
+        verify(sysRoleMapper).selectRolePage(any(Page.class), isNull(), isNull());
+    }
+
+    /** 评审 P2 回归：NBSP 包夹的关键词被契约空白规则去除首尾后进入 LIKE。 */
+    @Test
+    void nbspPaddedKeywordIsTrimmedBeforeEscaping() {
+        Page<SysRole> empty = new Page<>(1, 10);
+        when(sysRoleMapper.selectRolePage(any(), eq("EDITOR"), isNull())).thenReturn(empty);
+
+        service.page(new PageQuery(), "\u00A0EDITOR\u00A0", null);
+
+        ArgumentCaptor<String> keywordCaptor = ArgumentCaptor.forClass(String.class);
+        verify(sysRoleMapper).selectRolePage(any(Page.class), keywordCaptor.capture(), isNull());
+        assertThat(keywordCaptor.getValue()).isEqualTo("EDITOR");
+    }
+
     @Test
     void rejectsStatusOtherThanZeroOrOne() {
         assertThatThrownBy(() -> service.page(new PageQuery(), null, 2))

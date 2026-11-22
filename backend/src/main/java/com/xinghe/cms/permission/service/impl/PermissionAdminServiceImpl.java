@@ -1,10 +1,12 @@
 package com.xinghe.cms.permission.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.permission.entity.SysPermission;
+import com.xinghe.cms.permission.mapper.OperatorRowLockMapper;
 import com.xinghe.cms.permission.mapper.SysPermissionMapper;
 import com.xinghe.cms.permission.request.PermissionCreateRequest;
 import com.xinghe.cms.permission.request.PermissionStatusRequest;
@@ -12,6 +14,7 @@ import com.xinghe.cms.permission.request.PermissionUpdateRequest;
 import com.xinghe.cms.permission.response.PermissionView;
 import com.xinghe.cms.permission.service.PermissionAdminService;
 import com.xinghe.cms.permission.support.ContractWhitespace;
+import com.xinghe.cms.security.CurrentUserProvider;
 import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.dao.DuplicateKeyException;
@@ -45,9 +48,24 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>并发与锁（评审 P2 结论的适用性分析）：本服务的写事务锁定
  * <b>sys_permission 行</b>（X），审计外键对 sys_user 操作人行加共享锁（S）。
- * 与角色编辑（先角色 X、后操作人 S）并发时操作人锁为 S/S 兼容，不存在锁环；
- * 与 A 模块用户角色分配（先用户 X、后角色 S）无共同资源——因此<b>无需</b>
- * 像"用户 → 角色"锁序那样预锁操作人行。启停在事务开头
+ * <b>事务开头必须先取操作人共享锁</b>（{@link #lockOperatorFirst}）：三个写事务
+ * 并发时会形成锁环——T1（本服务修改/启停）持权限行 P 锁、事务末尾写审计时等
+ * 操作人行 U 的 S 锁；T2（角色权限替换）持角色 R 锁、等待对 P 行的 S 锁；
+ * T3（A 模块用户角色分配）持 U 行 X 锁、等待对 R 行的 S 锁。InnoDB 锁队列中
+ * 排在 X 之后等待的 S 请求会被阻塞（防写饥饿），T1 末尾才请求的 U(S) 被 T3
+ * 排队阻塞，而 T3 又在等 T2、T2 在等 T1 → P→U→R→P 循环等待，死锁 1213 /
+ * HTTP 500。修复：所有写事务<b>在触碰权限行之前</b>先对操作人行取 S 锁
+ * （{@link OperatorRowLockMapper#selectOperatorForShare}），统一"用户 → 权限"
+ * 顺序打破锁环——此后三个事务都在 U 行上排队（S/S 兼容、S 与 A 的 X 互斥），
+ * 任何交错均无环。</p>
+ *
+ * <p>操作人锁只用 S 不用 X：角色改名/启停先 {@code UPDATE sys_role} 持角色 X 锁、
+ * 事务末尾审计外键对同一操作人行加 S 锁；若本服务用 {@code FOR UPDATE}（X）先
+ * 锁操作人再等权限行，X 与 S 互斥会与角色编辑形成新锁环。S/S 与审计外键检查
+ * 兼容、S 与 A 模块 {@code findStatusForUpdate}（X）互斥，既消除锁环又保持
+ * "用户 → 权限"串行（详见 {@link OperatorRowLockMapper} 类 JavaDoc 的锁兼容
+ * 分析）。无认证上下文（内部调用、单测）时跳过——与 {@code AuditLogAspect}
+ * 把 {@code user_id} 记为 null、外键不检查父表的行为一致。启停在事务开头
  * {@code selectByIdForUpdate} 排他锁定目标权限项行：锁下读到的 status 即为
  * 最新值，"重复同状态"幂等判断没有并发窗口，随后的无条件 UPDATE 必然命中
  * 1 行（角色启停的"条件更新 WHERE status&lt;&gt;?"在此不再需要——那是为了
@@ -89,16 +107,27 @@ public class PermissionAdminServiceImpl implements PermissionAdminService {
     /** 启停审计代理（评审 P2）：状态更新以 Runnable 传入、在代理内执行。 */
     private final PermissionWriteAuditMarker permissionWriteAuditMarker;
 
+    /** 操作人用户行共享锁（评审 P2）：统一"用户 → 权限"取锁顺序。 */
+    private final OperatorRowLockMapper operatorRowLockMapper;
+
+    /** 当前请求身份（A 提供）：操作人 ID 只取已验证身份，不接受请求参数。 */
+    private final CurrentUserProvider currentUserProvider;
+
     public PermissionAdminServiceImpl(SysPermissionMapper sysPermissionMapper,
-            PermissionWriteAuditMarker permissionWriteAuditMarker) {
+            OperatorRowLockMapper operatorRowLockMapper,
+            PermissionWriteAuditMarker permissionWriteAuditMarker,
+            CurrentUserProvider currentUserProvider) {
         this.sysPermissionMapper = sysPermissionMapper;
+        this.operatorRowLockMapper = operatorRowLockMapper;
         this.permissionWriteAuditMarker = permissionWriteAuditMarker;
+        this.currentUserProvider = currentUserProvider;
     }
 
     @Override
     @Transactional
     @AuditLog(operation = "permission.create")
     public PermissionView create(PermissionCreateRequest request) {
+        lockOperatorFirst();
         String permissionCode = normalizeCode(request.permissionCode());
         String permissionName = normalizeName(request.permissionName());
         String permissionType = requireValidType(request.permissionType());
@@ -135,6 +164,7 @@ public class PermissionAdminServiceImpl implements PermissionAdminService {
     @Transactional
     @AuditLog(operation = "permission.update")
     public PermissionView update(long id, PermissionUpdateRequest request) {
+        lockOperatorFirst();
         String permissionName = normalizeName(request.permissionName());
         String path = validateOptionalPath(request.path());
         String method = validateOptionalMethod(request.method(), null);
@@ -173,6 +203,10 @@ public class PermissionAdminServiceImpl implements PermissionAdminService {
         if (status == null || (status != 0 && status != 1)) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "状态取值仅支持 0（停用）或 1（启用）");
         }
+
+        // 评审 P2：参数校验通过后、锁定权限行之前，先共享锁操作人用户行
+        //（统一"用户 → 权限"顺序，详见类 JavaDoc 的三事务锁环分析）
+        lockOperatorFirst();
 
         // 排他锁定目标权限项行（评审 P2 惯例）：锁下读到的 status 即最新值，
         // 幂等判断无并发窗口，随后的无条件 UPDATE 必然命中 1 行；
@@ -324,5 +358,29 @@ public class PermissionAdminServiceImpl implements PermissionAdminService {
             i += Character.charCount(codePoint);
         }
         return true;
+    }
+
+    /**
+     * 评审 P2：在触碰权限行（读 / 写 / 锁）之前先 {@code FOR SHARE} 共享锁定
+     * 操作人用户行，统一"用户 → 权限"取锁顺序，打破"权限修改/启停 × 角色
+     * 权限替换 × 用户角色分配"三事务并发下的 P→U→R→P 锁环；且与角色编辑的
+     * 审计外键 S 锁兼容（详见类 JavaDoc 与 {@link OperatorRowLockMapper} 的
+     * 锁兼容分析）。
+     *
+     * <p>操作人只取 A 的 {@code CurrentUserProvider}（已验证身份），不接受请求
+     * 参数。无认证上下文（内部调用、单元测试）时 {@code requireCurrentUser()}
+     * 抛 UNAUTHORIZED，此处跳过——与 {@code AuditLogAspect#resolveUserId} 一致：
+     * 此时审计 {@code user_id} 为 {@code null}、外键不检查父表，本来就不会产生
+     * 隐式加锁，跳过既不破坏顺序也不隐藏已认证请求的锁。</p>
+     */
+    private void lockOperatorFirst() {
+        try {
+            CurrentUser current = currentUserProvider.requireCurrentUser();
+            if (current != null && current.userId() != null) {
+                operatorRowLockMapper.selectOperatorForShare(current.userId());
+            }
+        } catch (BusinessException exception) {
+            // 与 AuditLogAspect 一致：无认证上下文不伪造身份，也不加这把锁。
+        }
     }
 }
