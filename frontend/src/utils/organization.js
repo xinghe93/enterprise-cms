@@ -177,6 +177,23 @@ export function validateAccountForm(mode, form, allowedDepartmentIds = null,
 }
 
 /**
+ * 部门树加载失败后的筛选处置（纯函数，PR #47 复审 P2）。
+ *
+ * 场景：用户先选了部门筛选，随后点「刷新」且部门树请求失败——目录被清空、
+ * 部门下拉被禁用，但 filters.departmentId 仍保留旧 ID，后续员工查询继续
+ * 带着已不可见的部门过滤条件，且下拉禁用后用户无法切回「全部部门」。
+ *
+ * 返回值：
+ *  - { departmentId: '', current: 1 }：需要重置筛选并回到第 1 页重新查询（覆盖全部员工）；
+ *  - null：原本就是「全部部门」，无需重置，也不应触发重复请求（如首次进入页面时）。
+ */
+export function treeFailureFilterPatch(filters = {}) {
+  const departmentId = filters?.departmentId
+  if (departmentId === '' || departmentId === null || departmentId === undefined) return null
+  return { departmentId: '', current: 1 }
+}
+
+/**
  * 角色分配保存门禁（纯函数）：目录加载失败、员工详情未就绪，或详情里存在
  * 不在完整启用目录中的启用角色时，禁止全量替换——任何一条不满足都可能把
  * 现有角色清空。抽成纯函数让 Node 测试直接断言行为，而不是对 .vue 源码做

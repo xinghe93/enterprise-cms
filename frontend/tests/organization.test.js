@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   collectSubtreeIds, compactParams, findDepartment, flattenDepartments, isValidId,
   normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree,
-  validateAccountForm,
+  treeFailureFilterPatch, validateAccountForm,
 } from '../src/utils/organization.js'
 
 const node = (id, parentId, deptName, sortOrder, status, children = []) => ({
@@ -234,4 +234,23 @@ test('候选目录含 null 项或缺失 ID 的记录时不进可用集合，避�
   const withNullAssigned = partitionAssignedRoles([{ id: '2' }, null], [{ id: '2' }, { id: '9' }])
   assert.deepEqual(withNullAssigned.selectedRoleIds, ['2'])
   assert.equal(withNullAssigned.removedRoles.length, 0)
+})
+
+test('部门树失败后：已选部门筛选必须重置回全部部门并回到第 1 页', () => {
+  // 老师复审 P2 路径：先选部门 → 刷新时部门树请求失败 → 清除筛选并查询全部员工。
+  // 下拉在 treeFailed 时被禁用，旧 ID 若不清除会永久锁死过滤条件。
+  assert.deepEqual(
+    treeFailureFilterPatch({ keyword: '', departmentId: '7', status: '', current: 3, size: 10 }),
+    { departmentId: '', current: 1 },
+    '旧部门 ID 必须清除，且页码回到第 1 页重新查询',
+  )
+  // 数字型脏值（理论上 select 只产字符串）同样被视为「已选部门」需要重置。
+  assert.deepEqual(treeFailureFilterPatch({ departmentId: 7 }), { departmentId: '', current: 1 })
+  // 防御：缺失 filters 对象不抛错，视为无需处置。
+  assert.equal(treeFailureFilterPatch(), null)
+  assert.equal(treeFailureFilterPatch(null), null)
+  // 本来就是「全部部门」：返回 null，不触发重复请求（首次进入页面树失败的场景）。
+  assert.equal(treeFailureFilterPatch({ departmentId: '' }), null)
+  assert.equal(treeFailureFilterPatch({ departmentId: null }), null)
+  assert.equal(treeFailureFilterPatch({ departmentId: undefined }), null)
 })

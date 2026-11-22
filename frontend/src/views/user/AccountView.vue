@@ -21,7 +21,7 @@ import { ElButton, ElDialog, ElTag } from 'element-plus'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
-import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree, validateAccountForm } from '../../utils/organization.js'
+import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree, treeFailureFilterPatch, validateAccountForm } from '../../utils/organization.js'
 
 const router = useRouter()
 const userApi = createUserApi(api)
@@ -67,6 +67,15 @@ async function loadTree() {
   } catch {
     fullTree.value = []
     treeFailed.value = true
+    // 老师复审 P2：树失败后部门下拉被禁用，若仍保留旧部门 ID，查询会一直带着
+    // 已不可见的过滤条件且用户无法切回「全部部门」。目录被清空时重置筛选并
+    // 重新查询（本来就是全部部门则不重复请求）。requestId 保证并发中以后到的
+    // 重置查询为准，刷新触发的旧查询结果会被丢弃。
+    const patch = treeFailureFilterPatch(filters.value)
+    if (patch) {
+      Object.assign(filters.value, patch)
+      void loadUsers()
+    }
   } finally {
     treeLoaded.value = true
   }
@@ -266,7 +275,7 @@ onMounted(() => {
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
-    <p v-if="treeFailed" class="org-alert" role="alert">部门树未加载，点击「刷新」可重试；编辑时仍可保留员工详情返回的部门并只改姓名。</p>
+    <p v-if="treeFailed" class="org-alert" role="alert">部门树未加载，已清除部门筛选并查询全部员工；点击「刷新」可重试。编辑时仍可保留员工详情返回的部门并只改姓名。</p>
 
     <div class="org-card">
       <table class="org-table">
