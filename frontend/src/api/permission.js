@@ -30,9 +30,14 @@ export function createPermissionApi(client) {
     // 已分配权限回显：返回全部已分配权限（含停用项），按关联 ID 升序。
     // 评审 P2：只读账号（有 role:read-permission 但无 permission:list）也能独立
     // 查看它——目录请求 403 不得阻断这个结果的展示，故视图需单独请求、单独保存。
+    // 评审 P1 并发覆盖：它还承担「保存前重读」——视图在提交全量替换前用它重新
+    // 读取最新分配，与打开弹窗时的基线签名（utils/rolePermission.js 的
+    // permissionBaseline）比对，防止陈旧快照覆盖其他管理员的增删。
     getRolePermissions: (id) => client.get(`/admin/roles/${pathId(id)}/permissions`),
     // 全量替换：permissionIds 已由视图经 normalizePermissionIds 规范化（去重、≤100、合法 ID）；
-    // 契约：不存在/停用权限分别 404/409，既有停用权限不能保留在本次请求中
+    // 契约：不存在/停用权限分别 404/409，既有停用权限不能保留在本次请求中。
+    // 语义是「最终集合 = 本次提交集合」——并发覆盖防护由视图的保存前基线比对
+    // 负责（后端契约 RolePermissionsUpdate 暂无版本/期望集合字段）。
     setRolePermissions: (id, permissionIds) =>
       client.put(`/admin/roles/${pathId(id)}/permissions`, { permissionIds }),
 

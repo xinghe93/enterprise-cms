@@ -39,9 +39,11 @@ import {
   buildPermissionUpdatePayload,
   buildRoleCreatePayload,
   buildRoleUpdatePayload,
+  findStatusConflicts,
   findUnpreselectableAssigned,
   formatDateTime,
   normalizePermissionIds,
+  permissionBaseline,
   validatePermissionCreateForm,
   validateRoleForm,
 } from '../../utils/rolePermission.js'
@@ -100,6 +102,18 @@ async function retryPermissions() {
     fetchRoles()
     fetchPermissions()
   }
+}
+
+// 评审 P2：所有写操作（角色/权限项增删改、启停、分配权限）成功后统一走这里——
+// 先重新加载当前账号有效权限，再按最新权限刷新两个列表。操作者撤销自身唯一角色
+// 的 permission:list / role:list 等权限、或角色/权限启停改变有效授权后，页面立即
+// 反映：会话权限快照更新，且 fetchRoles/fetchPermissions 的既有三态门禁会自动
+// 清空已失去访问权的列表，而不是等下一次查询才收到 403。
+async function afterWrite() {
+  await loadPermissions()
+  if (disposed) return
+  fetchRoles()
+  fetchPermissions()
 }
 
 // ── 请求守卫：快速翻页/快速打开弹窗时，只允许最新一次请求写回页面状态 ──
@@ -250,7 +264,7 @@ async function submitRoleDialog() {
       ElMessage.success('角色已更新')
     }
     roleDialog.visible = false
-    fetchRoles()
+    await afterWrite()
   } catch {
     // api/index.js 的 onError 已统一提示（409 编码冲突等），这里只结束加载状态。
   } finally {
@@ -278,7 +292,7 @@ async function toggleRoleStatus(row) {
   try {
     await permissionApi.setRoleStatus(row.id, target)
     ElMessage.success(`角色已${label}`)
-    fetchRoles()
+    await afterWrite()
   } catch {
     // 全局提示已弹出。
   }
@@ -300,6 +314,8 @@ const assignDialog = reactive({
   loadError: '',           // 目录加载失败提示
   readOnly: false,         // 只读模式：只展示已分配，不请求/不勾选目录
   consistencyError: '',    // 评审 P1：状态不一致时阻止保存并提示重新加载
+  baseline: '',            // 评审 P1 并发覆盖：打开弹窗时已分配集合的基线签名
+  concurrencyError: '',    // 评审 P1 并发覆盖：基线不一致/保存前重读失败时阻止保存
 })
 const assignTableRef = ref(null)
 const assignSelectedIds = ref([])
@@ -325,6 +341,8 @@ async function openAssignDialog(row) {
   assignDialog.catalogLoaded = false
   assignDialog.loadError = ''
   assignDialog.consistencyError = ''
+  assignDialog.baseline = ''
+  assignDialog.concurrencyError = ''
   assignRemovedDisabled.value = []
   assignSelectedIds.value = []
   // 只读账号：有查看权、但缺 permission:list（目录接口会 403）或缺
@@ -343,6 +361,8 @@ async function openAssignDialog(row) {
     if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
     assigned = Array.isArray(result) ? result : []
     assignDialog.assigned = assigned
+    // 评审 P1 并发覆盖：记录打开弹窗时的已分配集合基线，保存前与重读结果比对。
+    assignDialog.baseline = permissionBaseline(assigned)
   } catch (error) {
     if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
     assignDialog.assignedError = error?.message
@@ -373,14 +393,23 @@ async function openAssignDialog(row) {
     return
   }
 
-  // ③ 评审 P1 一致性校验：所有「已分配且启用」的权限都必须能在目录中预选。
-  // 目录与已分配是两次独立请求，期间可能有其他管理员启停某项：若目录把它
-  // 读成停用/缺失，弹窗既不预选也不提示，全量保存会静默解除授权。发现不一致
-  // 立即阻止保存并提示重新加载（不进入可勾选状态）。
+  // ③ 评审 P1/P2 一致性校验：所有「已分配且启用」的权限都必须能在目录中预选
+  // （findUnpreselectableAssigned），且两份读取中每个共有权限的 status 必须一致
+  // （findStatusConflicts：避免按 assigned 状态提示「移除」、按 catalog 状态预选
+  // 「保留」的自相矛盾 UI）。目录与已分配是两次独立请求，期间可能有其他管理员
+  // 启停某项。任一校验不通过立即阻止保存并提示重新加载（不进入可勾选状态）。
   const unpreselectable = findUnpreselectableAssigned(assigned, catalog)
-  if (unpreselectable.length > 0) {
+  const statusConflicts = findStatusConflicts(assigned, catalog)
+  if (unpreselectable.length > 0 || statusConflicts.length > 0) {
+    const reasons = []
+    if (unpreselectable.length > 0) {
+      reasons.push(`${unpreselectable.length} 个已分配且启用的权限在权限目录中无法预选`)
+    }
+    if (statusConflicts.length > 0) {
+      reasons.push(`${statusConflicts.length} 个权限的状态在两次读取之间发生了变化`)
+    }
     assignDialog.consistencyError =
-      `检测到 ${unpreselectable.length} 个已分配且启用的权限在权限目录中无法预选（可能有其他管理员刚变更了权限状态），已阻止保存；请重新加载后再分配。`
+      `检测到${reasons.join('、')}（可能有其他管理员刚变更了权限状态），已阻止保存；请重新加载后再分配。`
     assignDialog.loading = false
     return
   }
@@ -389,9 +418,12 @@ async function openAssignDialog(row) {
   assignDialog.catalog = catalog
   assignDialog.catalogLoaded = true
   const assignedIds = new Set(assigned.map((item) => String(item.id)))
-  // 契约：停用权限不能保留在替换请求中——只回显启用项；已分配的停用项在列表中
-  // 单独标记，保存后将从角色移除。
-  assignRemovedDisabled.value = assigned.filter((item) => item.status !== 1)
+  // 评审 P2：统一依据同一份（catalog）状态生成「停用·保存后移除」提示——不再
+  // 混用 assigned 的 status 判提示、catalog 的 status 判预选，避免两份读取之间
+  // 被启停时出现「一边提示移除、一边预选保留」的矛盾。契约：停用权限不能保留
+  // 在替换请求中，保存后将从角色移除。
+  assignRemovedDisabled.value = catalog
+    .filter((item) => item.status !== 1 && assignedIds.has(String(item.id)))
   assignDialog.loading = false
   await nextTick()
   catalog
@@ -405,20 +437,16 @@ function onAssignSelectionChange(selection) {
 
 async function submitAssignDialog() {
   if (assignDialog.saving) return
-  // 评审 P1/P2 保存守卫：只读、目录未就绪、加载失败或检测到状态不一致时，
-  // 绝不发全量替换（否则会误删角色授权）。这些情况下保存按钮也已禁用。
+  const roleId = assignDialog.role?.id
+  if (roleId == null) return
+  // 评审 P1/P2 保存守卫：只读、目录未就绪、加载失败、检测到状态不一致或并发
+  // 冲突时，绝不发全量替换（否则会误删角色授权或覆盖其他管理员的变更）。
+  // 这些情况下保存按钮也已禁用。
   if (assignDialog.readOnly || !assignDialog.catalogLoaded
       || !!assignDialog.loadError || !!assignDialog.assignedError
-      || !!assignDialog.consistencyError) {
-    ElMessage.warning('当前不可保存：权限目录未就绪或状态不一致，请重新加载后再分配。')
-    return
-  }
-  // 二次一致性校验：打开弹窗后到点击保存之间，目录/已分配数据若被改动，
-  // 再次确认所有「已分配且启用」的项仍在可预选目录内，否则阻止保存。
-  const lateConflict = findUnpreselectableAssigned(assignDialog.assigned, assignDialog.catalog)
-  if (lateConflict.length > 0) {
-    assignDialog.consistencyError =
-      `检测到 ${lateConflict.length} 个已分配且启用的权限在权限目录中无法预选，已阻止保存；请重新加载后再分配。`
+      || !!assignDialog.consistencyError || !!assignDialog.concurrencyError
+      || !canReadRolePermissions.value || !canListPermissions.value) {
+    ElMessage.warning('当前不可保存：权限目录未就绪或状态/并发校验未通过，请重新加载后再分配。')
     return
   }
   let permissionIds
@@ -430,9 +458,50 @@ async function submitAssignDialog() {
   }
   assignDialog.saving = true
   try {
-    await permissionApi.setRolePermissions(assignDialog.role.id, permissionIds)
+    // 评审 P1 并发覆盖：保存前重读最新「已分配 + 目录」，与打开弹窗时的基线比对。
+    // 全量替换的语义是「最终集合 = 本次提交集合」，后端行锁只能让并发写入依次
+    // 执行、不能识别陈旧快照：若弹窗打开期间其他管理员增删过该角色权限（基线
+    // 不同），陈旧快照的提交会覆盖对方变更。基线不一致即阻止保存并要求重新加载。
+    let latestAssigned = []
+    try {
+      const result = await permissionApi.getRolePermissions(roleId)
+      if (!assignDialog.visible || assignDialog.role?.id !== roleId) return
+      latestAssigned = Array.isArray(result) ? result : []
+    } catch (error) {
+      assignDialog.concurrencyError = error?.message
+        ? `保存前重读已分配权限失败：${error.message}；已阻止保存，请重新加载后再分配。`
+        : '保存前重读已分配权限失败；已阻止保存，请重新加载后再分配。'
+      return
+    }
+    let latestCatalog = []
+    try {
+      latestCatalog = (await permissionApi.listAllPermissions()).records
+      if (!assignDialog.visible || assignDialog.role?.id !== roleId) return
+    } catch (error) {
+      assignDialog.concurrencyError = error?.message
+        ? `保存前重读权限目录失败：${error.message}；已阻止保存，请重新加载后再分配。`
+        : '保存前重读权限目录失败；已阻止保存，请重新加载后再分配。'
+      return
+    }
+    if (permissionBaseline(latestAssigned) !== assignDialog.baseline) {
+      assignDialog.concurrencyError =
+        '该角色的权限在弹窗打开期间已被其他管理员变更，为避免覆盖对方修改，已阻止保存；请重新加载后再分配。'
+      return
+    }
+    // 用最新读取的数据重算一致性（此前只校验了打开弹窗时的快照）。
+    const lateConflict = findUnpreselectableAssigned(latestAssigned, latestCatalog)
+    const lateStatusConflicts = findStatusConflicts(latestAssigned, latestCatalog)
+    if (lateConflict.length > 0 || lateStatusConflicts.length > 0) {
+      assignDialog.consistencyError =
+        '检测到权限状态在弹窗打开期间被其他管理员变更，已阻止保存；请重新加载后再分配。'
+      return
+    }
+    await permissionApi.setRolePermissions(roleId, permissionIds)
     ElMessage.success('角色权限已更新')
     assignDialog.visible = false
+    // 评审 P2：分配会立即改变当前账号的有效权限（含撤销自身权限的可能），
+    // 成功后重载会话权限并刷新列表。
+    await afterWrite()
   } catch {
     // 全局提示已弹出（409：请求中含停用权限；404：权限不存在）。
   } finally {
@@ -555,9 +624,10 @@ function openPermEdit(row) {
   }
   permDialog.mode = 'edit'
   permDialog.row = row
-  // 编码与类型不可改，回显只读。评审 P1：MENU/BUTTON 的 path 是「菜单路由」，
-  // 必须回显已有值并随完整 PUT 原样提交（不能像旧实现那样提交 null 清空）——
-  // 表单里这些类型不显示路径输入框，form.path 承载 row.path 供 payload 保留。
+  // 编码与类型不可改，回显只读。评审 P2：MENU/BUTTON 的 path 是「菜单路由」，
+  // payload 以数据库已有值 row.path 为准【原样提交】（不 trim、不按 JS length
+  // 复检长度，见 buildPermissionUpdatePayload）；form.path 只是编辑表单的回显
+  // 载体（这些类型不显示路径输入框，仅 row 缺 path 字段时才作回退源）。
   permDialog.form = {
     permissionCode: row.permissionCode,
     permissionName: row.permissionName,
@@ -572,7 +642,8 @@ function openPermEdit(row) {
 function onPermTypeChange() {
   // MENU/BUTTON 的 path 是菜单路由：编辑时类型选择框禁用，本函数只在创建时触发；
   // 创建不采集菜单路由（提交 null 是合法终态），清空只是防 API 旧值串到 MENU/BUTTON。
-  // 编辑场景绝不能清空——form.path 承载 row.path 供 payload 原样保留。
+  // 编辑场景的 payload 以 row.path 为准原样提交（见 buildPermissionUpdatePayload），
+  // 不受 form.path 被清空影响。
   if (!isApiType(permDialog.form.permissionType)) {
     permDialog.form.path = ''
     permDialog.form.method = ''
@@ -588,9 +659,14 @@ async function submitPermDialog() {
     payload = isCreate
       ? buildPermissionCreatePayload(permDialog.form)
       : buildPermissionUpdatePayload(permDialog.row, permDialog.form)
-  } catch {
+  } catch (error) {
     // create/edit 共用同一校验器（编辑表单回显了编码/类型，字段齐全可直接复用）。
     permDialog.errors = validatePermissionCreateForm(permDialog.form)
+    // 评审 P2 兜底：纯函数抛错但校验器没有对应字段可提示时，静默 return 会让
+    // 页面看起来「点了保存没反应」——此时给全局提示。
+    if (Object.keys(permDialog.errors).length === 0) {
+      ElMessage.error(error?.message || '保存失败，请检查输入或稍后重试')
+    }
     return
   }
   permDialog.errors = {}
@@ -604,7 +680,7 @@ async function submitPermDialog() {
       ElMessage.success('权限项已更新')
     }
     permDialog.visible = false
-    fetchPermissions()
+    await afterWrite()
   } catch {
     // 全局提示已弹出（409：编码/名称冲突；400：格式错误）。
   } finally {
@@ -632,7 +708,7 @@ async function togglePermStatus(row) {
   try {
     await permissionApi.setPermissionStatus(row.id, target)
     ElMessage.success(`权限项已${label}`)
-    fetchPermissions()
+    await afterWrite()
   } catch {
     // 全局提示已弹出。
   }
@@ -915,6 +991,19 @@ onUnmounted(() => {
           <ElButton link type="primary" :disabled="assignDialog.loading" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
         </template>
       </ElAlert>
+      <!-- 评审 P1 并发覆盖：保存前基线比对不通过/重读失败时阻止保存并提示重新加载。 -->
+      <ElAlert
+        v-if="assignDialog.concurrencyError"
+        type="error"
+        :closable="false"
+        show-icon
+        class="assign-alert"
+        :title="assignDialog.concurrencyError"
+      >
+        <template #default>
+          <ElButton link type="primary" :disabled="assignDialog.loading" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
+        </template>
+      </ElAlert>
       <ElAlert
         v-if="assignDialog.loadError || assignDialog.assignedError"
         type="error"
@@ -928,7 +1017,7 @@ onUnmounted(() => {
         </template>
       </ElAlert>
       <ElAlert
-        v-if="assignDialog.readOnly && !assignDialog.assignedError && !assignDialog.consistencyError"
+        v-if="assignDialog.readOnly && !assignDialog.assignedError && !assignDialog.consistencyError && !assignDialog.concurrencyError"
         type="info"
         :closable="false"
         show-icon
@@ -1004,7 +1093,7 @@ onUnmounted(() => {
           :loading="assignDialog.saving"
           :disabled="assignDialog.loading || assignDialog.readOnly || !assignDialog.catalogLoaded
             || !!assignDialog.loadError || !!assignDialog.assignedError || !!assignDialog.consistencyError
-            || !canAssignRolePermissions"
+            || !!assignDialog.concurrencyError || !canAssignRolePermissions"
           @click="submitAssignDialog"
         >保存分配</ElButton>
       </template>

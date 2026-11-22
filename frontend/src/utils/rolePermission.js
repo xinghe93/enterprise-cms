@@ -7,12 +7,17 @@
  *    （OpenAPI pattern \S：必须含非空白字符）；
  *  - 权限项 API 类型必须提供有效 path（^/api/(auth|admin|portal)(/[^\s?#]*)?$）
  *    与大写 method；MENU/BUTTON 的 method 必须为 null；
- *  - path 对 MENU/BUTTON 是「菜单路由」（后端契约不限格式、仅限长 255）；
- *    权限完整 PUT 的 set("path", ...) 会无条件写库，故修改 MENU/BUTTON 时
- *    必须按已有值保留 path，不能提交 null 清空（评审 P1 数据丢失）；
+ *  - path 对 MENU/BUTTON 是「菜单路由」（后端 validateOptionalPath 只按 Unicode
+ *    码点限长 255，不限格式、不 trim）；权限完整 PUT 的 set("path", ...) 会
+ *    无条件写库，故修改 MENU/BUTTON 时必须【原样回传 row.path】：不能提交
+ *    null 清空（评审 P1 数据丢失），也不能 trim 丢尾部空格、或按 JS .length
+ *    （UTF-16 码元）复检长度而误拒后端按码点接受的路径（评审 P2）；
  *    permissionName/path/method 三个键都必填，permissionCode / permissionType 不可改；
  *  - 权限全量替换 permissionIds：唯一、最多 100 项、空数组表示清空；
- *  - 保存前校验「已分配且启用」的权限都能在目录中预选（评审 P1 防误删授权）。
+ *  - 分配弹窗保存前用「原权限集合」基线（permissionBaseline）与最新读取比对，
+ *    防止陈旧快照的全量替换覆盖其他管理员的增删（评审 P1 并发覆盖）；
+ *  - 保存前校验「已分配且启用」都能在目录中预选（评审 P1 防误删），且两份
+ *    读取的 status 一致（评审 P2：避免「提示移除」与「预选保留」自相矛盾）。
  *
  * 不依赖 Vue / DOM，便于 Node 原生测试直接覆盖这些规则。
  */
@@ -45,16 +50,29 @@ export function isValidPermissionId(value) {
 }
 
 /**
+ * 按 Unicode 码点计数（与后端 {@code String.codePointCount} 对齐）。JS 的
+ * {@code .length} 按 UTF-16 码元计数，含增补平面字符（emoji、部分汉字）时会
+ * 把 1 个码点算成 2，据此做的长度校验会误拒后端接受的合法输入（评审 P2）。
+ * {@code for...of} 按码点迭代字符串，可正确处理代理对。
+ */
+function codePointLength(value) {
+  let count = 0
+  for (const _char of String(value)) count += 1
+  return count
+}
+
+/**
  * 名称/编码统一处理（契约 8.1）：先验原始长度（「类型及原始长度先按模型校验」），
- * 再去首尾空白并验证非空（pattern \S）。非法时返回 null，由调用方给出行内提示。
+ * 再去首尾空白并验证非空（pattern \S）。长度一律按码点计数，与后端一致。
+ * 非法时返回 null，由调用方给出行内提示。
  */
 export function normalizeText(value, max) {
   if (value === null || value === undefined) return null
   const raw = String(value)
-  if (raw.length > max) return null
+  if (codePointLength(raw) > max) return null
   const trimmed = raw.trim()
   if (trimmed.length === 0) return null
-  if (trimmed.length > max) return null
+  if (codePointLength(trimmed) > max) return null
   return trimmed
 }
 
@@ -151,26 +169,19 @@ export function buildPermissionCreatePayload(form) {
 }
 
 /**
- * 菜单路由归一化（MENU/BUTTON 的 path）：后端契约不限格式、仅限长 255，
- * 且完整 PUT 会无条件 {@code set("path", path)} 写库。去首尾空白，空串归一
- * 为 null；超长抛错（与后端 validateOptionalPath 的码点上限一致）。
- */
-function normalizeMenuRoute(value) {
-  if (value === null || value === undefined) return null
-  const trimmed = String(value).trim()
-  if (trimmed.length > PATH_MAX) {
-    throw new TypeError(`菜单路由不能超过 ${PATH_MAX} 个字符`)
-  }
-  return trimmed.length === 0 ? null : trimmed
-}
-
-/**
  * 权限项修改 payload（完整 PUT）：permissionName/path/method 三个键都必填，
  * 基于 row 中的数据库 permissionType 校验（编码与类型不可改）：
  *  - API：path 必须是三个 API 前缀下的有效路径、method 为大写方法；
- *  - MENU/BUTTON：method 必须 null；path 是「菜单路由」，必须按<b>已有值保留</b>，
- *    不能提交 null 清空——否则仅改名称也会清空原路由（评审 P1 数据丢失）。
- *    取 form.path（编辑表单以 row.path 回显）为准，未带则回退 row.path 兜底。
+ *  - MENU/BUTTON：method 必须 null；path 是「菜单路由」，必须【原样回传
+ *    数据库已有值 row.path】（评审 P1 数据丢失 + 评审 P2 原样保留）：
+ *    完整 PUT 的 {@code set("path", path)} 无条件写库，提交 null 会清空原路由；
+ *    不 trim——只改名称也会触发，会丢掉原路径的尾部空格；不按 JS {@code .length}
+ *    复检长度——UTF-16 码元口径与后端 {@code codePointCount} 码点口径不一致，
+ *    会误拒后端接受的路径，而本类表单没有对应字段可提示该错误；长度合法性
+ *    由后端 {@code validateOptionalPath} 在同一请求中裁决。
+ *    form.path 只是编辑表单的回显载体（openPermEdit 把 row.path 写入它），
+ *    MENU/BUTTON 表单不提供 path 输入框，故一律以 row.path 为准；仅当 row
+ *    未携带 path 字段（纯逻辑复用/未来调用方）时才原样回退 form.path。
  */
 export function buildPermissionUpdatePayload(row, form) {
   // 名称校验与角色一致，复用同一 normalizeText 规则：
@@ -190,12 +201,13 @@ export function buildPermissionUpdatePayload(row, form) {
     }
     return { permissionName: form.permissionName.trim(), path: form.path.trim(), method: form.method }
   }
-  // MENU/BUTTON：保留已有菜单路由（评审 P1）。form.path 由编辑表单以 row.path
-  // 回显；调用方未带 form.path 或显式传 null（纯逻辑测试/未来复用）时回退
-  // row.path 兜底，绝不以 null 覆盖数据库已有值。method 恒 null（契约 oneOf）。
-  const rawPath = form.path !== undefined && form.path !== null ? form.path : row?.path
-  const menuRoute = normalizeMenuRoute(rawPath)
-  return { permissionName: form.permissionName.trim(), path: menuRoute, method: null }
+  // MENU/BUTTON：path 原样回传数据库已有值，零加工。仅把 null/undefined 归一
+  // 为 null 以保证契约「path 键必填」；其余（尾部空格、Unicode 增补字符、
+  // 空串）一律原样提交，让后端的 validateOptionalPath 去裁决长度。
+  const menuRoute = row != null && Object.prototype.hasOwnProperty.call(row, 'path')
+    ? row.path
+    : form.path
+  return { permissionName: form.permissionName.trim(), path: menuRoute ?? null, method: null }
 }
 
 /**
@@ -219,6 +231,45 @@ export function findUnpreselectableAssigned(assigned, catalog) {
   )
   return (Array.isArray(assigned) ? assigned : [])
     .filter((item) => item && item.status === 1 && !selectable.has(String(item.id)))
+    .map((item) => String(item.id))
+}
+
+/**
+ * 权限分配弹窗的并发基线签名（评审 P1 并发覆盖）：把「打开弹窗时读到的已分配
+ * 权限 ID 集合」归一化为可比较的字符串（排序去重后逗号连接）。保存前重读最新
+ * 分配并重新计算基线，两个签名不同即说明弹窗打开期间其他管理员增删过该角色的
+ * 权限——陈旧快照的全量替换会覆盖对方变更，调用方必须阻止保存并要求重新加载。
+ */
+export function permissionBaseline(assigned) {
+  return [...new Set((Array.isArray(assigned) ? assigned : [])
+    .filter((item) => item && item.id !== undefined && item.id !== null)
+    .map((item) => String(item.id)))]
+    .sort()
+    .join(',')
+}
+
+/**
+ * 两份读取的 status 漂移检测（评审 P2：避免「提示移除」与「预选保留」矛盾）：
+ * 返回「在已分配与权限目录两份数据中 status 不一致」的权限 ID 列表。
+ *
+ * <p>目录与已分配是两个独立请求，之间可能穿插其他管理员的启停操作。若仅按
+ * assigned 的 status 生成「保存后移除」提示、按 catalog 的 status 决定预选，
+ * 同一权限可能一边被提示移除、一边被预选保留，实际保存仍保留授权（矛盾 UI）。
+ * 返回非空即表示状态漂移，调用方必须<b>阻止保存并重新加载</b>。</p>
+ *
+ * <p>只对两份都存在的项比对：catalog 缺失的已分配项由 findUnpreselectableAssigned
+ * 负责（那是「无法预选」问题，不是状态不一致问题）；防御性容忍非数组输入。</p>
+ */
+export function findStatusConflicts(assigned, catalog) {
+  const catalogStatus = new Map(
+    (Array.isArray(catalog) ? catalog : [])
+      .filter((item) => item && item.id !== undefined && item.id !== null)
+      .map((item) => [String(item.id), item.status]),
+  )
+  return (Array.isArray(assigned) ? assigned : [])
+    .filter((item) => item && item.id !== undefined && item.id !== null
+      && catalogStatus.has(String(item.id))
+      && item.status !== catalogStatus.get(String(item.id)))
     .map((item) => String(item.id))
 }
 

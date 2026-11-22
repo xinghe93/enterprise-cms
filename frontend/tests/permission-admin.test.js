@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { createApiClient } from '../src/api/client.js'
 import { createPermissionApi } from '../src/api/permission.js'
 import {
@@ -7,9 +8,11 @@ import {
   buildPermissionUpdatePayload,
   buildRoleCreatePayload,
   buildRoleUpdatePayload,
+  findStatusConflicts,
   findUnpreselectableAssigned,
   formatDateTime,
   normalizePermissionIds,
+  permissionBaseline,
   validatePermissionCreateForm,
   validateRoleForm,
 } from '../src/utils/rolePermission.js'
@@ -226,37 +229,52 @@ test('权限修改 payload：完整 PUT 且按数据库类型校验，编码/类
   assert.throws(() => buildPermissionUpdatePayload(menuRow, { permissionName: '   ' }), TypeError)
 })
 
-test('权限修改 payload（评审 P1）：MENU/BUTTON 编辑保留菜单路由，绝不提交 null 清空', () => {
-  // 场景一：仅改名称，路由按表单回显值原样保留（评审复现路径：旧实现会清空 /content/reviews）
+test('权限修改 payload（评审 P2）：MENU/BUTTON 编辑原样提交数据库已有值 row.path', () => {
+  // 场景一：仅改名称——row.path 原样保留（评审复现路径：旧实现提交 null 清空 /content/reviews）
   const menuRow = { permissionType: 'MENU', path: '/content/reviews' }
   assert.deepEqual(
     buildPermissionUpdatePayload(menuRow, { permissionName: '审核菜单改', path: '/content/reviews' }),
     { permissionName: '审核菜单改', path: '/content/reviews', method: null },
   )
-  // 场景二：表单带回显空白，trim 后保留
+  // 场景二（评审 P2 复现）：row.path 带尾部空格也必须原样提交——后端按码点计数、
+  // 不 trim，原样写库；旧实现只改名称也会触发 trim 而丢掉尾部空格
   assert.deepEqual(
-    buildPermissionUpdatePayload(menuRow, { permissionName: 'x', path: ' /content/reviews ' }),
+    buildPermissionUpdatePayload({ permissionType: 'MENU', path: '/content/reviews ' }, { permissionName: 'x', path: 'ignored' }),
+    { permissionName: 'x', path: '/content/reviews ', method: null },
+  )
+  // 场景三：row.path 存在时 form.path 一律被忽略（form.path 只是回显载体）
+  assert.deepEqual(
+    buildPermissionUpdatePayload(menuRow, { permissionName: 'x', path: '/form/other' }),
     { permissionName: 'x', path: '/content/reviews', method: null },
   )
-  // 场景三：调用方未带 form.path（纯逻辑复用），回退 row.path 兜底
+  // 场景四：row 未携带 path 字段（纯逻辑复用/未来调用方）才回退 form.path
+  const rowWithoutPath = { permissionType: 'MENU' }
   assert.deepEqual(
-    buildPermissionUpdatePayload(menuRow, { permissionName: 'x' }),
-    { permissionName: 'x', path: '/content/reviews', method: null },
+    buildPermissionUpdatePayload(rowWithoutPath, { permissionName: 'x', path: '/fallback/route' }),
+    { permissionName: 'x', path: '/fallback/route', method: null },
   )
-  // 场景四：调用方显式传 null，也回退 row.path——绝不以 null 覆盖数据库已有值
+  // 场景五：row.path 显式为 null → 提交 null（契约：path 键必填，null 是合法终态）
   assert.deepEqual(
-    buildPermissionUpdatePayload(menuRow, { permissionName: 'x', path: null }),
-    { permissionName: 'x', path: '/content/reviews', method: null },
+    buildPermissionUpdatePayload({ permissionType: 'MENU', path: null }, { permissionName: 'x', path: 'ignored' }),
+    { permissionName: 'x', path: null, method: null },
   )
-  // BUTTON 同规则
+  // 场景六：BUTTON 同规则
   assert.deepEqual(
     buildPermissionUpdatePayload({ permissionType: 'BUTTON', path: '/content/publish' }, { permissionName: 'b' }),
     { permissionName: 'b', path: '/content/publish', method: null },
   )
-  // 超长菜单路由（后端 validateOptionalPath 限 255 码点）拒绝
-  assert.throws(
-    () => buildPermissionUpdatePayload(menuRow, { permissionName: 'x', path: '/' + 'a'.repeat(255) }),
-    /菜单路由不能超过 255 个字符/,
+  // 场景七（评审 P2）：前端不按 JS .length 复检长度——130 个 emoji 占 130 个
+  // 码点（后端按 codePointCount 计 139 码点 ≤ 255，接受）但占 260 个 UTF-16 码元
+  // （旧实现按 .length = 269 > 255 误拒且无处提示）；超长裁决交给后端
+  // validateOptionalPath（同一请求 400），这里原样透传
+  const emojiRoute = '/content/' + '📋'.repeat(130)
+  assert.ok(emojiRoute.length > 255, '前置条件：按 UTF-16 码元确实超 255')
+  const emojiCodePoints = [...emojiRoute].length
+  assert.ok(emojiCodePoints <= 255, '前置条件：按 Unicode 码点后端会接受')
+  const emojiRow = { permissionType: 'MENU', path: emojiRoute }
+  assert.deepEqual(
+    buildPermissionUpdatePayload(emojiRow, { permissionName: 'x' }),
+    { permissionName: 'x', path: emojiRoute, method: null },
   )
   // API 分支不受影响：仍按 API_PATH_PATTERN 校验
   assert.deepEqual(
@@ -300,6 +318,75 @@ test('分配权限一致性校验（评审 P1）：已分配且启用但目录�
   // 防御性输入：catalog/assigned 非数组时按空处理，不抛错
   assert.deepEqual(findUnpreselectableAssigned([assignedRow('3')], null), ['3'])
   assert.deepEqual(findUnpreselectableAssigned(null, [catalogRow('3')]), [])
+})
+
+test('并发基线签名（评审 P1 并发覆盖）：顺序无关、去重、变化可检出', () => {
+  // 相同集合不同顺序 → 同一签名（对比必须忽略读取顺序）
+  assert.equal(
+    permissionBaseline([{ id: '3' }, { id: '9' }]),
+    permissionBaseline([{ id: '9' }, { id: '3' }]),
+  )
+  // 重复 ID 去重；数字 ID 与字符串 ID 归一为同一签名（后端统一返回字符串）
+  assert.equal(permissionBaseline([{ id: '3' }, { id: 3 }, { id: '9' }]), '3,9')
+  // 空集合 / 缺失 ID 的脏数据项被忽略
+  assert.equal(permissionBaseline([]), '')
+  assert.equal(permissionBaseline([{ id: '3' }, { status: 1 }, null]), '3')
+  // 防御性输入：非数组按空处理
+  assert.equal(permissionBaseline(null), '')
+  // 变化检出：增/删都改变签名（评审回归场景：甲撤销 X 后乙的基线比对必须失败）
+  const before = permissionBaseline([{ id: '3' }, { id: '9' }])
+  assert.notEqual(before, permissionBaseline([{ id: '9' }]), '甲撤销权限 3 后基线必须不同')
+  assert.notEqual(before, permissionBaseline([{ id: '3' }, { id: '9' }, { id: '12' }]), '乙新增权限 12 后基线必须不同')
+})
+
+test('状态漂移检测（评审 P2）：两份读取的 status 不一致必须报告，避免「提示移除+预选保留」矛盾', () => {
+  const assignedRow = (id, status = 1) => ({ id, status })
+  const catalogRow = (id, status = 1) => ({ id, status })
+
+  // 场景一：目录比已分配新（期间被停用）→ 报告 3
+  assert.deepEqual(
+    findStatusConflicts([assignedRow('3', 1)], [catalogRow('3', 0)]),
+    ['3'],
+  )
+  // 场景二：目录比已分配旧（评审复现：读取已分配后被启用）→ 报告 9
+  assert.deepEqual(
+    findStatusConflicts([assignedRow('9', 0)], [catalogRow('9', 1)]),
+    ['9'],
+  )
+  // 场景三：两边一致（含都是停用）→ 空
+  assert.deepEqual(
+    findStatusConflicts([assignedRow('3', 1), assignedRow('5', 0)], [catalogRow('3', 1), catalogRow('5', 0), catalogRow('7', 1)]),
+    [],
+  )
+  // 场景四：catalog 缺失的已分配项不算 status 冲突（那是 findUnpreselectableAssigned 的职责）
+  assert.deepEqual(findStatusConflicts([assignedRow('3', 1)], [catalogRow('9', 1)]), [])
+  // 防御性输入：非数组按空处理，不抛错
+  assert.deepEqual(findStatusConflicts([assignedRow('3')], null), [])
+  assert.deepEqual(findStatusConflicts(null, [catalogRow('3')]), [])
+})
+
+test('角色与权限页并发/一致性接线（评审四条修复的静态源码断言）', () => {
+  const source = readFileSync(new URL('../src/views/role/RolePermissionView.vue', import.meta.url), 'utf8')
+  const utilsSource = readFileSync(new URL('../src/utils/rolePermission.js', import.meta.url), 'utf8')
+
+  // P1 并发覆盖：打开弹窗记录基线、保存前重读并比对、冲突阻止保存并提示重新加载
+  assert.match(source, /assignDialog\.baseline = permissionBaseline\(assigned\)/)
+  assert.match(source, /await permissionApi\.getRolePermissions\(roleId\)/)
+  assert.match(source, /permissionBaseline\(latestAssigned\) !== assignDialog\.baseline/)
+  assert.match(source, /assignDialog\.concurrencyError/)
+  assert.match(source, /!!assignDialog\.concurrencyError/)
+  assert.match(utilsSource, /export function permissionBaseline/)
+  // P2 路径原样：payload 以 row.path 为准，不再有 trim 路由的 normalizeMenuRoute
+  assert.doesNotMatch(utilsSource, /normalizeMenuRoute/)
+  assert.match(utilsSource, /hasOwnProperty\.call\(row, 'path'\)/)
+  // P2 状态矛盾：双向漂移检测接线 + 「保存后移除」提示统一依据 catalog 状态
+  assert.match(source, /findStatusConflicts\(assigned, catalog\)/)
+  assert.match(source, /assignRemovedDisabled\.value = catalog/)
+  // P2 写入后刷新：5 个写成功点统一走 afterWrite（重载会话权限 + 刷新列表）
+  assert.match(source, /async function afterWrite\(\)/)
+  const afterWriteCalls = source.match(/await afterWrite\(\)/g) ?? []
+  assert.ok(afterWriteCalls.length >= 5, `5 个写成功点都应调用 afterWrite，实际 ${afterWriteCalls.length} 处`)
+  assert.match(source, /await loadPermissions\(\)\n  if \(disposed\) return\n  fetchRoles\(\)/)
 })
 
 test('permissionIds 规范化：trim 去重、上限 100、非法项拒绝、空数组合法', () => {
