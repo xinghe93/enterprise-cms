@@ -91,6 +91,8 @@ mvn -B -o clean verify "-Dtest=$ex" "-Dsurefire.failIfNoSpecifiedTests=false"
 
 前置条件：`database/005_seed_review_log_demo.sql`（PR #53）已导入目标库；种子在隔离库的导入命令与幂等复核见 `docs/操作日志说明.md` §9.2。种子使用固定 ID：文章 `990301`–`990305`、审核历史 `990601`/`990602`。
 
+> **执行顺序**：先按 §9.2 的“导入命令”准备隔离库（该代码块只准备、不清理）→ 再按本节启动后端并完成验收 → 最后执行 §9.2 末尾的“验收完成后清理”代码块。不要在准备后立即清理，否则本节会连不上库。
+
 ```powershell
 # 1) 启动后端（Docker mysql8/redis 已运行，001–005 已按 docs/操作日志说明.md §9.2 导入隔离库）
 cd D:\大三第一学期\JAVA框架技术（一）\课程设计\enterprise-cms\backend
@@ -99,6 +101,8 @@ $jar = (Get-ChildItem target\enterprise-cms-backend-*.jar | Select-Object -First
 # 必须显式连到种子所在的库（与 §9.2 的 $db 保持一致），否则会查询默认库 enterprise_cms
 $env:SPRING_DATASOURCE_URL = "jdbc:mysql://127.0.0.1:3306/enterprise_cms_seedtest"
 $env:JAVA_HOME="E:\Java\jdk-25.0.5.0.3"; $env:SPRING_DATASOURCE_PASSWORD="<root 密码>"; $env:TZ="Asia/Shanghai"
+# 本机 Docker redis 若开启了密码（团队环境为 6379 且 requirepass），登录创建会话需要它；无密码可省略
+$env:SPRING_DATA_REDIS_PASSWORD="<redis 密码>"
 java -jar "target\$jar"   # 默认端口 8080
 
 # 2) 登录拿 Token（字段是 accessToken；账号密码由本机提供，不写入仓库）
@@ -129,7 +133,9 @@ if ($tagIds.Count -lt 2) { throw "启用的演示标签不足 2 个：请先按 
 
 > 版本约定：审核裁决、发布/下架、标签绑定都会自增 `version`，后续步骤必须使用**接口返回的新 `version`**；如果沿用种子里的旧版本会得到 409。
 
-**复验记录（2026-11-22，按本节最终命令）：** 在 Docker mysql8 的隔离库 `enterprise_cms_seedtest` 上按本节顺序实测（启动时显式设置 `SPRING_DATASOURCE_URL`，标签列表带 `?status=1`；真实 `ADMIN` 与 `EMPLOYEE` 账号、真实 HTTP 请求），16 项检查全部 PASS、0 FAIL；其中包括标签绑定落在 `REJECTED` 的 `990305` 上返回 `version=2`、`990303` 发布后再用新版本下架成功、审计日志记录 `article.approve`/`article.reject`/`article.bind-tag`/`article.publish`/`article.offline` 五类 SUCCESS。另外插入一条 `status=0` 的停用标签后验证：`GET /api/admin/tags` 会把它排在最前，而 `GET /api/admin/tags?status=1` 只返回两个启用标签，因此按本节取标签不会把停用标签提交给文章。原始输出见仓库外 `项目指导/evidence/e2e_reviewer_seedtest_20261122_153124.txt`。
+**复验记录（2026-11-22，按 §9.2 准备 → 本节启动/验收 → §9.2 清理的完整顺序实跑）：** 使用仓库外脚本 `项目指导/scripts/verify_acceptance_order.ps1`（隔离库 `enterprise_cms_verify54`，启动前显式设置 `SPRING_DATASOURCE_URL`、`SPRING_DATA_REDIS_PASSWORD`，标签列表带 `?status=1`；真实登录态 HTTP 请求），**19 项断言全部 PASS、0 FAIL**：准备后计数 `article=5,review=2,tag=2`；启动可访问；匿名 401；登录返回 `accessToken`；53 项权限；待审含 `990301`/`990302`；正文非空；通过 `v0→v1`；审核历史；驳回；启用标签 ≥2；绑定 `990305` 得 `v2`；发布 `990303` `v1→v2`；下架 `v2→v3`；五类 SUCCESS 日志；日志详情；未知参数 400；普通员工 403；最后清理隔离库并确认 `SHOW DATABASES` 为空。证据 `项目指导/evidence/acceptance_seedtest_order_20261122_155911.txt`。
+
+> 复验时补充发现：本机 Docker redis 开启了密码，而启动命令只设了 `SPRING_DATASOURCE_PASSWORD` 时登录会报 `RedisConnectionFailureException`（500），因此本节已补 `SPRING_DATA_REDIS_PASSWORD`。另外插入一条 `status=0` 的停用标签后验证：`GET /api/admin/tags` 会把它排在最前，而 `?status=1` 只返回两个启用标签，按本节取标签不会把停用标签提交给文章。
 
 ## 5. 压测结果（2026-11-19）
 
