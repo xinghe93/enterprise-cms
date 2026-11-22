@@ -19,6 +19,8 @@ export const moduleViews = {
   logs: () => import('../views/LogListView.vue'),
   // D 的 #34 审核工作台：同样迁入映射表，避免与 logs 的硬编码分支冲突。
   reviews: () => import('../views/ReviewListView.vue'),
+  // B 的角色与权限管理页：单页双 Tab（角色管理 + 权限项），自取权限编码写入会话。
+  roles: () => import('../views/role/RolePermissionView.vue'),
 }
 
 /**
