@@ -6,14 +6,18 @@ import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
+import com.xinghe.cms.permission.request.RolePermissionsUpdateRequest;
 import com.xinghe.cms.permission.request.RoleStatusRequest;
 import com.xinghe.cms.permission.request.RoleUpdateRequest;
+import com.xinghe.cms.permission.response.PermissionView;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.RoleAdminService;
+import com.xinghe.cms.permission.service.RolePermissionService;
 import com.xinghe.cms.permission.service.RoleQueryService;
 import com.xinghe.cms.security.annotation.RequirePermission;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,12 +29,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 角色管理接口。当前批次：分页/详情查询（D5）+ 创建（role-admin 第一批）+
- * 修改/启停（role-write 第二批）；权限查询与全量替换在后续迭代补充。
+ * 角色管理接口。已覆盖 OpenAPI 全部 7 个角色管理端点：分页/详情查询（D5）+
+ * 创建（role-admin 第一批）+ 修改/启停（role-write 第二批）+ 已分配权限查询/
+ * 全量替换（role-permission 第三批）。
  *
  * <p>鉴权：按 OpenAPI {@code x-permission}，分页需要 {@code role:list}，
  * 详情需要 {@code role:read}，创建需要 {@code role:create}，修改需要
- * {@code role:update}，启停需要 {@code role:status}，
+ * {@code role:update}，启停需要 {@code role:status}，已分配权限查询需要
+ * {@code role:read-permission}，全量替换需要 {@code role:assign-permission}，
  * 由 {@code RequirePermissionAspect} 统一校验。
  * 注解包名遵循契约（《跨模块服务接口》第 49 行）：
  * {@code com.xinghe.cms.security.annotation.RequirePermission}。</p>
@@ -57,9 +63,13 @@ public class RoleController {
 
     private final RoleAdminService roleAdminService;
 
-    public RoleController(RoleQueryService roleQueryService, RoleAdminService roleAdminService) {
+    private final RolePermissionService rolePermissionService;
+
+    public RoleController(RoleQueryService roleQueryService, RoleAdminService roleAdminService,
+            RolePermissionService rolePermissionService) {
         this.roleQueryService = roleQueryService;
         this.roleAdminService = roleAdminService;
+        this.rolePermissionService = rolePermissionService;
     }
 
     /**
@@ -168,6 +178,48 @@ public class RoleController {
             HttpServletRequest httpRequest) {
         QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
         roleAdminService.setStatus(Ids.parse(id), request);
+        return ApiResponse.success();
+    }
+
+    /**
+     * 角色已分配权限回显（OpenAPI {@code GET /api/admin/roles/{id}/permissions}，
+     * 权限 {@code role:read-permission}）。契约：角色不存在 404；返回全部已分配
+     * 权限（含停用项及真实 status）按 permissionId 升序；未分配为 {@code []}。
+     * 该列表仅用于管理界面回显，鉴权只认 {@code AuthorizationSnapshot}。
+     *
+     * <p>路径 ID 遵循契约十进制字符串规则，非法格式 400；不接受任何查询参数。</p>
+     */
+    @GetMapping("/{id}/permissions")
+    @RequirePermission("role:read-permission")
+    public ApiResponse<List<PermissionView>> permissions(@PathVariable String id,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
+        return ApiResponse.success(rolePermissionService.getPermissions(Ids.parse(id)));
+    }
+
+    /**
+     * 全量替换角色权限（OpenAPI {@code PUT /api/admin/roles/{id}/permissions}，
+     * 权限 {@code role:assign-permission}）。契约：空数组清空；不存在/停用权限
+     * 分别 404/409；单事务校验并替换、失败回滚；相同集合幂等 200（data=null）。
+     * 请求体 {@code RolePermissionsUpdate} 仅 {@code permissionIds}（IdList：
+     * 0～100 个十进制正整数字符串、去重），由 record 级严格反序列化器在绑定
+     * 阶段校验，未知字段/类型错误/重复/越界一律 400。
+     *
+     * <p>审计：{@code @AuditLog(operation="role.assign-permission")} 标注在事务
+     * 边界内的 {@code RoleWriteAuditMarker#rolePermissionsChanged(Runnable)} 受审计
+     * 代理上，实际差集写入以 {@code Runnable} 传入、在代理内部执行（切面在写库前
+     * 注册回滚回调）：仅在权限集合实际变化时进入，幂等（相同集合）路径不写库、
+     * 不产生审计；差集写入失败导致事务回滚时，切面用独立新事务补记 FAILURE 审计。
+     *
+     * <p>不接受任何查询参数（契约：写操作参数在 JSON 体中）。</p>
+     */
+    @PutMapping("/{id}/permissions")
+    @RequirePermission("role:assign-permission")
+    public ApiResponse<Void> setPermissions(@PathVariable String id,
+            @Valid @RequestBody RolePermissionsUpdateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), NO_QUERY_PARAMS);
+        rolePermissionService.replacePermissions(Ids.parse(id), request);
         return ApiResponse.success();
     }
 }
