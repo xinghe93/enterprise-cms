@@ -94,13 +94,19 @@ mvn -B -o clean verify "-Dtest=$ex" "-Dsurefire.failIfNoSpecifiedTests=false"
 ```powershell
 # 1) 启动后端（Docker mysql8/redis 已运行，001–005 已导入目标库）
 cd D:\大三第一学期\JAVA框架技术（一）\课程设计\enterprise-cms\backend
+# 当前 pom 版本 0.0.1-SNAPSHOT、未覆盖 finalName，实际产物为 enterprise-cms-backend-0.0.1-SNAPSHOT.jar
+$jar = (Get-ChildItem target\enterprise-cms-backend-*.jar | Select-Object -First 1).Name
 $env:JAVA_HOME="E:\Java\jdk-25.0.5.0.3"; $env:SPRING_DATASOURCE_PASSWORD="<root 密码>"; $env:TZ="Asia/Shanghai"
-java -jar target\enterprise-cms-backend-0.1.0-SNAPSHOT.jar   # 端口 8080
+java -jar "target\$jar"   # 默认端口 8080
 
-# 2) 登录拿 Token（账号密码由本机提供，不写入仓库）
+# 2) 登录拿 Token（字段是 accessToken；账号密码由本机提供，不写入仓库）
 $login = Invoke-RestMethod -Method Post http://127.0.0.1:8080/api/auth/login -ContentType 'application/json' `
   -Body '{"username":"admin","password":"<admin 密码>"}'
-$h = @{ Authorization = "Bearer $($login.data.token)"; 'Content-Type' = 'application/json' }
+$h = @{ Authorization = "Bearer $($login.data.accessToken)"; 'Content-Type' = 'application/json' }
+
+# 3) 标签 ID 取自标签列表（分页结构在 data.records，ID 为字符串）
+$tagIds = @((Invoke-RestMethod -Method Get http://127.0.0.1:8080/api/admin/tags -Headers $h).data.records |
+  Select-Object -First 2 | ForEach-Object { $_.id })
 ```
 
 | 步骤 | 请求 | 期望 |
@@ -112,11 +118,15 @@ $h = @{ Authorization = "Bearer $($login.data.token)"; 'Content-Type' = 'applica
 | 审核通过 | `POST /api/admin/articles/990301/approve`，body `{"version":0}` | 200，状态 `APPROVED`、`version=1` |
 | 审核历史 | `GET /api/admin/articles/990301/reviews` | 200，含当前审核人记录 |
 | 审核驳回 | `POST /api/admin/articles/990302/reject`，body `{"version":0,"comment":"演示驳回"}` | 200，状态 `REJECTED` |
-| 标签绑定 | `PUT /api/admin/articles/990303/tags`，body `{"version":1,"tagIds":["<tagIdA>","<tagIdB>"]}` | 200，返回升序 `tagIds`；tagId 从 `GET /api/admin/tags` 取 |
-| 发布/下架 | `POST /api/admin/articles/990303/publish`，body `{"version":1}`；再 `POST .../offline` body `{"version":2}` | 均 200 |
+| 标签绑定 | `PUT /api/admin/articles/990305/tags`，body `{"version":1,"tagIds":["<tagIdA>","<tagIdB>"]}` | 200，状态仍为 `REJECTED`、`version=2`，`tagIds` 升序；990305 初始为 `REJECTED`，而 BIND_TAGS 只允许 `DRAFT`/`REJECTED`/`OFFLINE` |
+| 发布/下架 | `POST /api/admin/articles/990303/publish`，body `{"version":1}` → `PUBLISHED`/`version=2`；再 `POST .../offline` body `{"version":2}` → `OFFLINE`/`version=3` | 均 200；每一步都用上一步返回的 `version` |
 | 日志查询 | `GET /api/admin/logs?current=1&size=10` | 200，能看到上述 `article.approve`/`article.reject` 等 SUCCESS 记录 |
 | 普通员工越权 | 用 `staff` 账号登录后 `GET /api/admin/logs` | 403「缺少访问权限: log:list」 |
 | 未知参数 | `GET /api/admin/logs?foo=1` | 400「请求参数错误」 |
+
+> 版本约定：审核裁决、发布/下架、标签绑定都会自增 `version`，后续步骤必须使用**接口返回的新 `version`**；如果沿用种子里的旧版本会得到 409。
+
+**复验记录（2026-11-22）：** 在 Docker mysql8 的隔离库 `enterprise_cms_e2e` 上按本节顺序实测（真实 `ADMIN` 与 `EMPLOYEE` 账号、真实 HTTP 请求），16 项检查全部 PASS、0 FAIL；其中包括标签绑定落在 `REJECTED` 的 `990305` 上返回 `version=2`、`990303` 发布后再用新版本下架成功、审计日志记录 `article.approve`/`article.reject`/`article.bind-tag`/`article.publish`/`article.offline` 五类 SUCCESS。原始输出见仓库外 `项目指导/evidence/e2e_reviewer_isolated_20261122_150929.txt`。
 
 ## 5. 压测结果（2026-11-19）
 
