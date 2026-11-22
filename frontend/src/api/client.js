@@ -29,7 +29,10 @@ function responseError(response) {
 export function createApiClient({ baseURL = '/api', getToken = () => '', onError = () => {}, onUnauthorized = () => {}, adapter } = {}) {
   const client = axios.create({ baseURL, timeout: 15000, ...(adapter ? { adapter } : {}) })
   client.interceptors.request.use((config) => {
-    const token = getToken()
+    // 记录发出请求时的会话令牌（允许为空字符串）：响应回来时若会话已切换，这条 401
+    // 属于旧会话，不能再清掉刚登录的新会话（账号 A 请求迟到、账号 B 已登录的场景）。
+    const token = getToken() ?? ''
+    config.sessionToken = token
     if (token) config.headers.set('Authorization', `Bearer ${token}`)
     else config.headers.delete('Authorization')
     return config
@@ -37,8 +40,13 @@ export function createApiClient({ baseURL = '/api', getToken = () => '', onError
 
   function reject(error, config) {
     if (axios.isCancel(error)) return Promise.reject(error)
-    if (error.code === 401) onUnauthorized()
-    if (!config?.silent) onError(error)
+    // 只有"发出请求时确实记录了快照、且快照与当前令牌不同"才算旧会话；空字符串也是有效快照，
+    // 覆盖"匿名请求发出后才登录"的情况。该判断只用于 401，其他状态码的全局提示保持原行为。
+    const requestToken = config?.sessionToken
+    const hasSnapshot = typeof requestToken === 'string'
+    const staleSession = hasSnapshot && error.code === 401 && requestToken !== (getToken() ?? '')
+    if (error.code === 401 && !staleSession) onUnauthorized()
+    if (!config?.silent && !staleSession) onError(error)
     return Promise.reject(error)
   }
 
