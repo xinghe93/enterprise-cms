@@ -22,11 +22,14 @@ import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
+import com.xinghe.cms.permission.request.RolePermissionsUpdateRequest;
 import com.xinghe.cms.permission.request.RoleStatusRequest;
 import com.xinghe.cms.permission.request.RoleUpdateRequest;
+import com.xinghe.cms.permission.response.PermissionView;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.permission.service.RoleAdminService;
+import com.xinghe.cms.permission.service.RolePermissionService;
 import com.xinghe.cms.permission.service.RoleQueryService;
 import com.xinghe.cms.security.CurrentUserProvider;
 import java.util.List;
@@ -63,6 +66,9 @@ class RoleControllerHttpTests {
     private RoleAdminService roleAdminService;
 
     @MockitoBean
+    private RolePermissionService rolePermissionService;
+
+    @MockitoBean
     private CurrentUserProvider currentUserProvider;
 
     @MockitoBean
@@ -84,7 +90,8 @@ class RoleControllerHttpTests {
                 .thenReturn(new CurrentUser(37L, "admin01", null));
         when(authorizationQueryService.getForUser(37L))
                 .thenReturn(new AuthorizationSnapshot(Set.of("ADMIN"),
-                        Set.of("role:list", "role:read", "role:create", "role:update", "role:status")));
+                        Set.of("role:list", "role:read", "role:create", "role:update", "role:status",
+                                "role:read-permission", "role:assign-permission")));
 
         mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
     }
@@ -717,5 +724,282 @@ class RoleControllerHttpTests {
                 .andExpect(jsonPath("$.code").value(400));
 
         verifyNoInteractions(roleAdminService);
+    }
+
+    // ---------- 已分配权限回显（GET /api/admin/roles/{id}/permissions） ----------
+
+    /** 回显成功：返回全部已分配权限（含停用项、真实 status），路径 ID 解析为 long。 */
+    @Test
+    void permissionsReturnsAllAssignedIncludingDisabled() throws Exception {
+        when(rolePermissionService.getPermissions(37L)).thenReturn(List.of(
+                new PermissionView("1", "article:read", "后台文章详情", "API",
+                        "/api/admin/articles/{id}", "GET", 1,
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0),
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0)),
+                new PermissionView("2", "article:publish", "发布文章", "BUTTON",
+                        null, null, 0,
+                        java.time.LocalDateTime.of(2026, 11, 3, 9, 0),
+                        java.time.LocalDateTime.of(2026, 11, 3, 9, 0))));
+
+        mockMvc.perform(get("/api/admin/roles/37/permissions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].id").value("1"))
+                .andExpect(jsonPath("$.data[0].permissionCode").value("article:read"))
+                .andExpect(jsonPath("$.data[0].status").value(1))
+                .andExpect(jsonPath("$.data[0].createdAt").value("2026-11-02T16:00:00.000"))
+                .andExpect(jsonPath("$.data[1].status").value(0)) // 停用项保留回显
+                .andExpect(jsonPath("$.data[1].method").value(nullValue())); // nullable 原样透传
+
+        verify(rolePermissionService).getPermissions(37L);
+    }
+
+    /** 回显：未分配权限返回空数组 []。 */
+    @Test
+    void permissionsReturnsEmptyArrayWhenNoneAssigned() throws Exception {
+        when(rolePermissionService.getPermissions(41L)).thenReturn(List.of());
+
+        mockMvc.perform(get("/api/admin/roles/41/permissions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(0));
+    }
+
+    /** 回显：角色不存在 404。 */
+    @Test
+    void permissionsNonexistentRoleReturns404() throws Exception {
+        when(rolePermissionService.getPermissions(999L))
+                .thenThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"));
+
+        mockMvc.perform(get("/api/admin/roles/999/permissions"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+    }
+
+    /** 回显：非法路径 ID（前导零）400，不进入服务。 */
+    @Test
+    void permissionsInvalidIdReturns400() throws Exception {
+        mockMvc.perform(get("/api/admin/roles/037/permissions"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 回显接口不接受任何查询参数。 */
+    @Test
+    void permissionsRejectsUnknownQueryParam() throws Exception {
+        mockMvc.perform(get("/api/admin/roles/37/permissions").param("foo", "1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 缺 role:read-permission 权限的登录用户 403，不进入服务。 */
+    @Test
+    void permissionsWithoutPermissionReturns403() throws Exception {
+        when(authorizationQueryService.getForUser(37L))
+                .thenReturn(new AuthorizationSnapshot(Set.of("EMPLOYEE"), Set.of("role:list")));
+
+        mockMvc.perform(get("/api/admin/roles/37/permissions"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    // ---------- 全量替换角色权限（PUT /api/admin/roles/{id}/permissions） ----------
+
+    /** 替换成功：200 且 data=null，IdList 字符串解析为 List&lt;Long&gt; 透传给服务。 */
+    @Test
+    void setPermissionsReturnsNullDataAndPassesParsedIdList() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1","2","3"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        ArgumentCaptor<RolePermissionsUpdateRequest> captor =
+                ArgumentCaptor.forClass(RolePermissionsUpdateRequest.class);
+        verify(rolePermissionService).replacePermissions(eq(37L), captor.capture());
+        assertThat(captor.getValue().permissionIds()).containsExactly(1L, 2L, 3L);
+    }
+
+    /** 空数组清空：200 且服务收到空集合。 */
+    @Test
+    void setPermissionsEmptyArrayClears() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":[]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        ArgumentCaptor<RolePermissionsUpdateRequest> captor =
+                ArgumentCaptor.forClass(RolePermissionsUpdateRequest.class);
+        verify(rolePermissionService).replacePermissions(eq(37L), captor.capture());
+        assertThat(captor.getValue().permissionIds()).isEmpty();
+    }
+
+    /** 替换：角色不存在 404（服务抛 BusinessException，验证 HTTP 映射）。 */
+    @Test
+    void setPermissionsNonexistentRoleReturns404() throws Exception {
+        doThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"))
+                .when(rolePermissionService).replacePermissions(eq(999L),
+                        any(RolePermissionsUpdateRequest.class));
+
+        mockMvc.perform(put("/api/admin/roles/999/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+    }
+
+    /** 替换：待分配权限已停用 409。 */
+    @Test
+    void setPermissionsDisabledPermissionReturns409() throws Exception {
+        doThrow(new BusinessException(ResultCode.CONFLICT, "权限已停用，无法分配"))
+                .when(rolePermissionService).replacePermissions(eq(37L),
+                        any(RolePermissionsUpdateRequest.class));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(409));
+    }
+
+    /** IdList 严格校验：非数组、元素非字符串、前导零/0、null 元素一律 400，不进服务。 */
+    @Test
+    void setPermissionsRejectsMalformedIdListWith400() throws Exception {
+        String[] badBodies = {
+                "{\"permissionIds\":\"1\"}",            // 非数组
+                "{\"permissionIds\":[1,2]}",           // 元素非字符串
+                "{\"permissionIds\":[\"01\"]}",        // 前导零
+                "{\"permissionIds\":[\"0\"]}",         // 0 非法
+                "{\"permissionIds\":[null]}",          // null 元素
+                "{\"permissionIds\":[\"-1\"]}",        // 负数
+                "{\"permissionIds\":[\"1.0\"]}",       // 非整数
+                "{\"permissionIds\":[\"9999999999999999999\"]}", // Long 溢出
+        };
+        for (String body : badBodies) {
+            mockMvc.perform(put("/api/admin/roles/37/permissions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
+        }
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** IdList 严格校验：重复 ID（uniqueItems:false 违反）400。 */
+    @Test
+    void setPermissionsRejectsDuplicateIdsWith400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1","2","1"]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** IdList 严格校验：超过 100 项 400（maxItems）。 */
+    @Test
+    void setPermissionsRejectsMoreThan100IdsWith400() throws Exception {
+        String ids = java.util.stream.IntStream.rangeClosed(1, 101)
+                .mapToObj(i -> "\"" + i + "\"")
+                .collect(java.util.stream.Collectors.joining(","));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"permissionIds\":[" + ids + "]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 100 项边界合法（maxItems 含等号），服务收到 100 个 ID。 */
+    @Test
+    void setPermissionsAcceptsExactly100Ids() throws Exception {
+        String ids = java.util.stream.IntStream.rangeClosed(1, 100)
+                .mapToObj(i -> "\"" + i + "\"")
+                .collect(java.util.stream.Collectors.joining(","));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"permissionIds\":[" + ids + "]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ArgumentCaptor<RolePermissionsUpdateRequest> captor =
+                ArgumentCaptor.forClass(RolePermissionsUpdateRequest.class);
+        verify(rolePermissionService).replacePermissions(eq(37L), captor.capture());
+        assertThat(captor.getValue().permissionIds()).hasSize(100);
+    }
+
+    /** 请求体缺 permissionIds / 未知字段 / 非对象一律 400（自定义反序列化器显式校验）。 */
+    @Test
+    void setPermissionsRejectsMissingUnknownOrNonObjectBodyWith400() throws Exception {
+        String[] badBodies = {
+                "{}",                                          // 缺字段
+                "{\"permissionIds\":[\"1\"],\"foo\":1}",      // 未知字段
+                "[]",                                          // 非对象
+                "{\"permissionIds\":null}",                    // 显式 null
+        };
+        for (String body : badBodies) {
+            mockMvc.perform(put("/api/admin/roles/37/permissions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
+        }
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 替换接口不接受任何查询参数。 */
+    @Test
+    void setPermissionsRejectsUnknownQueryParam() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .param("foo", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 缺 role:assign-permission 权限的登录用户 403，不进入服务。 */
+    @Test
+    void setPermissionsWithoutPermissionReturns403() throws Exception {
+        when(authorizationQueryService.getForUser(37L))
+                .thenReturn(new AuthorizationSnapshot(Set.of("EMPLOYEE"), Set.of("role:list")));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        verifyNoInteractions(rolePermissionService);
     }
 }
