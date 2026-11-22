@@ -24,7 +24,8 @@ import java.util.regex.Pattern;
  *
  * <p>权限由 B 的 {@link RequirePermission} 校验；状态/版本/写范围由 C 的
  * {@code ArticleWorkflowService#transition(BIND_TAGS)} 校验并自增版本；
- * 标签存在性、停用状态与重复校验由 {@code ArticleTagService#replaceBindings} 完成。
+ * 标签 ID 解析与重复校验在命令服务进入文章写流程前完成（契约 8.3），
+ * 标签存在性与停用状态由 {@code ArticleTagService#replaceBindings} 校验。
  * 契约 8.1：本接口不接受任何查询参数。</p>
  */
 @RestController

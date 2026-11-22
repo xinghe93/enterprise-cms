@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /** 标签绑定命令实现：参数校验 + 单一业务事务交给审计接入点。 */
 @Service
@@ -46,6 +47,12 @@ public class ArticleTagsCommandServiceImpl implements ArticleTagsCommandService 
         List<Long> tagIds = new ArrayList<>(rawTagIds.size());
         for (String rawTagId : rawTagIds) {
             tagIds.add(Ids.parse(rawTagId));
+        }
+        // 契约 §8.3：关联集合替换必须在进入文章写流程前完成全部参数校验。
+        // 重复 ID 若留到 replaceBindings 才拒绝，文章版本匹配时已先自增版本再回滚，
+        // 版本过期时又会被 transition 提前返回 409——同一种参数错误出现两种状态码。
+        if (Set.copyOf(tagIds).size() != tagIds.size()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST, "标签 ID 不能重复");
         }
         return auditRecorder.bind(articleId, version, tagIds);
     }

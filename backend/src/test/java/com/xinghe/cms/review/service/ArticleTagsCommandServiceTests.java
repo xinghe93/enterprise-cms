@@ -84,6 +84,26 @@ class ArticleTagsCommandServiceTests {
         assertThat(articleTagService.replaceCalls).isZero();
     }
 
+    @Test
+    void rejectsDuplicateTagIdsBeforeTouchingWorkflow() {
+        assertThatThrownBy(() -> service.update(ARTICLE_ID,
+                new ArticleTagsUpdateRequest(0, List.of("9901", "9901"))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("标签 ID 不能重复");
+        assertThat(workflowService.calls).isEmpty();
+        assertThat(articleTagService.replaceCalls).isZero();
+    }
+
+    @Test
+    void rejectsDuplicateTagIdsBeforeVersionCheckEvenWhenVersionIsStale() {
+        assertThatThrownBy(() -> service.update(ARTICLE_ID,
+                new ArticleTagsUpdateRequest(99, List.of("9901", "9901"))))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("标签 ID 不能重复");
+        assertThat(workflowService.calls).isEmpty();
+        assertThat(articleTagService.replaceCalls).isZero();
+    }
+
     private static final class StubWorkflowService implements ArticleWorkflowService {
 
         private final List<String> calls = new ArrayList<>();
