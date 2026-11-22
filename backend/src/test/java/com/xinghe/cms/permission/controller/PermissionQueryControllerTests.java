@@ -50,6 +50,8 @@ class PermissionQueryControllerTests {
     @BeforeEach
     void setUp() {
         stubAuthorizationQueryService.permissionCodes = Set.of();
+        // 桩是共享上下文里的单例，状态必须逐用例重置，避免用例间顺序依赖
+        stubAuthorizationQueryService.lastUserId = null;
         mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
     }
 
@@ -97,6 +99,25 @@ class PermissionQueryControllerTests {
         JsonNode body = body(result);
         assertThat(body.get("data").isArray()).isTrue();
         assertThat(body.get("data").isEmpty()).isTrue();
+    }
+
+    /**
+     * B 认领加固回归（契约 8.x：未知查询参数一律 400）：OpenAPI 未为本端点定义
+     * 任何 parameters，任何查询键都按未知参数拒绝，且校验发生在触达授权服务之前。
+     */
+    @Test
+    void rejectsUnknownQueryParamWithBadRequestBeforeTouchingService() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/auth/permissions")
+                        .param("userId", "501")
+                        .requestAttr(CurrentUserProvider.REQUEST_ATTRIBUTE,
+                                new CurrentUser(USER_ID, "reviewer", null)))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        JsonNode body = body(result);
+        assertThat(body.get("code").asInt()).isEqualTo(400);
+        // 参数校验前置：授权服务不得被触达（lastUserId 保持 null）
+        assertThat(stubAuthorizationQueryService.lastUserId).isNull();
     }
 
     private JsonNode body(MvcResult result) throws Exception {
