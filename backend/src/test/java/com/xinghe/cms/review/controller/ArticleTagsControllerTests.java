@@ -119,6 +119,33 @@ class ArticleTagsControllerTests {
     }
 
     @Test
+    void rejectsFractionalVersion() throws Exception {
+        MvcResult result = perform("{\"version\":-0.9,\"tagIds\":[]}");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(result).get("message").asString()).isEqualTo("请求参数错误");
+        assertThat(stubService.calls).isZero();
+    }
+
+    @Test
+    void rejectsStringVersion() throws Exception {
+        MvcResult result = perform("{\"version\":\"0\",\"tagIds\":[]}");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(result).get("message").asString()).isEqualTo("请求参数错误");
+        assertThat(stubService.calls).isZero();
+    }
+
+    @Test
+    void rejectsNumericTagId() throws Exception {
+        MvcResult result = perform("{\"version\":0,\"tagIds\":[1]}");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(result).get("message").asString()).isEqualTo("请求参数错误");
+        assertThat(stubService.calls).isZero();
+    }
+
+    @Test
     void declaresBindTagPermission() throws Exception {
         RequirePermission permission = ArticleTagsController.class
                 .getDeclaredMethod("update", String.class, ArticleTagsUpdateRequest.class, HttpServletRequest.class)
