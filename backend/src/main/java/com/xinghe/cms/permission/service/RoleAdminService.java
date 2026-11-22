@@ -6,8 +6,10 @@ import com.xinghe.cms.permission.request.RoleUpdateRequest;
 import com.xinghe.cms.permission.response.RoleView;
 
 /**
- * 角色管理写服务（管理端）。当前批次：创建、修改、启停；
- * 角色已分配权限查询与全量替换在后续迭代补充。
+ * 角色管理写服务（管理端）：创建、修改、启停（角色主表）。
+ *
+ * <p>角色权限关联的查询与全量替换由 {@link RolePermissionService} 承担，
+ * 与本接口按职责分离。</p>
  */
 public interface RoleAdminService {
 

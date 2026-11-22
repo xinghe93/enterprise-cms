@@ -5,8 +5,10 @@ import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.permission.response.RoleView;
 
 /**
- * 角色只读查询（管理端）。写操作（创建/修改/启停）在后续分支补充，
- * 届时与本接口合并为完整的角色服务。
+ * 角色只读查询（管理端）：分页、详情（角色主表）。
+ *
+ * <p>写操作由 {@link RoleAdminService} 承担，角色权限关联由
+ * {@link RolePermissionService} 承担，三者按职责分离。</p>
  */
 public interface RoleQueryService {
 

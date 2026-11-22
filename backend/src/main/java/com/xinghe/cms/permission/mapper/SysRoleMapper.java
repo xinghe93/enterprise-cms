@@ -66,4 +66,22 @@ public interface SysRoleMapper extends BaseMapper<SysRole> {
             </script>
             """)
     List<SysRole> selectByIdsForShare(@Param("roleIds") List<Long> roleIds);
+
+    /**
+     * 按主键<b>排他锁定</b>角色行（{@code SELECT ... FOR UPDATE}），供角色权限全量替换
+     * 串行化同一角色的并发写入（《跨模块服务接口 V1.0》第 2 节："B 的角色权限替换
+     * 在单个事务中锁定目标角色……状态更新通过数据库写锁与这些校验串行"）。
+     *
+     * <p>与 {@link #selectByIdsForShare} 的共享锁不同：这里要防的是两个并发替换请求
+     * 各自"读现有集合 → 删除 → 插入"相互覆盖（A 模块 {@code doReplaceRoles} 用同样的
+     * FOR UPDATE 主表行锁串行化）。角色不存在时返回 {@code null} → 服务层 404。
+     * 角色启停/删除的写锁也会与这把锁串行，避免校验窗口内角色被停用。</p>
+     */
+    @Select("""
+            SELECT id, role_code, role_name, status, created_at, updated_at
+            FROM sys_role
+            WHERE id = #{id}
+            FOR UPDATE
+            """)
+    SysRole selectByIdForUpdate(@Param("id") Long id);
 }
