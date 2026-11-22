@@ -102,3 +102,72 @@ test('同一会话的 401 仍清除会话', async () => {
   await assert.rejects(client.get('/admin/users'), { code: 401 })
   assert.equal(cleared, 1)
 })
+
+test('匿名请求发出后才登录：迟到的 401 保留新会话', async () => {
+  let token = ''
+  const events = []
+  const client = createApiClient({
+    getToken: () => token,
+    adapter: async (config) => {
+      // 权限/列表请求以匿名身份发出，返回前用户已完成登录。
+      token = 'session-b'
+      const result = await response(envelope(401, null, '请先登录'), 401)(config)
+      throw new axios.AxiosError('HTTP error', 'ERR_BAD_REQUEST', config, null, result)
+    },
+    onUnauthorized: () => events.push('clear'),
+    onError: () => events.push('error'),
+  })
+  await assert.rejects(client.get('/auth/permissions', { silent: true }), { code: 401 })
+  assert.deepEqual(events, [])
+  assert.equal(token, 'session-b')
+})
+
+for (const url of ['/admin/articles/1/approve', '/admin/articles/1/reject']) {
+  test(`账号 A 退出并登录 B 后，${url} 的迟到 401 保留 B 的会话`, async () => {
+    let token = 'session-a'
+    const events = []
+    const client = createApiClient({
+      getToken: () => token,
+      adapter: async (config) => {
+        token = ''
+        token = 'session-b'
+        const result = await response(envelope(401, null, '登录已过期'), 401)(config)
+        throw new axios.AxiosError('HTTP error', 'ERR_BAD_REQUEST', config, null, result)
+      },
+      onUnauthorized: () => events.push('clear'),
+      onError: () => events.push('error'),
+    })
+    await assert.rejects(client.post(url, { comment: '内容合规' }), { code: 401 })
+    assert.deepEqual(events, [])
+  })
+
+  test(`同一会话的 ${url} 401 仍清除会话`, async () => {
+    let cleared = 0
+    const client = createApiClient({
+      getToken: () => 'session-a',
+      adapter: response(envelope(401, null, '登录已过期'), 401),
+      onUnauthorized: () => cleared++,
+    })
+    await assert.rejects(client.post(url, { comment: '内容合规' }), { code: 401 })
+    assert.equal(cleared, 1)
+  })
+}
+
+for (const code of [403, 500]) {
+  test(`旧会话迟到的 ${code} 仍保留全局错误提示`, async () => {
+    let token = 'session-a'
+    const events = []
+    const client = createApiClient({
+      getToken: () => token,
+      adapter: async (config) => {
+        token = 'session-b'
+        const result = await response(envelope(code, null, '后端错误提示'), code)(config)
+        throw new axios.AxiosError('HTTP error', 'ERR_BAD_REQUEST', config, null, result)
+      },
+      onUnauthorized: () => events.push('clear'),
+      onError: () => events.push('error'),
+    })
+    await assert.rejects(client.get('/admin/reviews/pending'), { code })
+    assert.deepEqual(events, ['error'])
+  })
+}
