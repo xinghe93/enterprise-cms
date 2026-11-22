@@ -212,7 +212,26 @@ pm.test("时间毫秒精度", () => {
 - 结论：认证层已生效，D 模块仍缺权限层（403），因此在 B 交付 `@RequirePermission` 前本 PR 保持 open、不请求合并；L-01～L-25 查询用例本身不依赖登录状态，接入权限后需补"匿名 401 / 普通员工 403 / 管理员 200"三条验收。
 - 测试与构建：本模块 **48 项**全过（新增"认证上下文取 userId""伪造请求参数无效"两项），全量排除 A/B 的 7 个 Mockito 类后 **119 项**全过。
 
-## 9. 第八轮补充（2026-11-18，C15：权限守卫替换为统一注解）
+## 9. 真实登录态用例与执行记录（2026-11-19，C16）
+
+**登录方式**：`POST /api/auth/login`，body `{"username":"admin","password":"<环境变量注入>"}`，取 `data.accessToken`；后续请求 Header `Authorization: Bearer <token>`。
+
+| 组 | 用例 | 期望 |
+| --- | --- | --- |
+| 匿名 | `GET /api/admin/logs`、`GET /api/admin/logs/1` | 401「请先登录」 |
+| 无权限 | editor 列表/详情 | 403（dev 文案「无访问权限」；PR #52 合入后「缺少访问权限: log:list」） |
+| 有权限 | admin 列表/详情 | 200，`id` 为字符串、业务时间毫秒精度 |
+| 参数 | `size=101`、`result=OTHER`、起止时间相等、`foo=bar` | 400 对应提示语 |
+| 待审 | admin `GET /api/admin/reviews/pending` | 200，`authorId` 均不等于当前用户 |
+| 审计 | `POST /api/admin/tags` 成功 / 重名 | 200 且 `sys_operation_log` 新增 SUCCESS / 409 且新增 FAILURE |
+
+**执行记录（2026-11-19）**：脚本 `课程设计/项目指导/scripts/run_e2e_review_log.ps1` + 种子 `database/005_seed_review_log_demo.sql`；真实库 `enterprise_cms`、真实登录态；**26 PASS / 0 FAIL / 1 SKIP**（审核/发布/审核历史/标签命令依赖 PR #30 未合入 dev，自动记为 SKIP）；证据 `课程设计/项目指导/evidence/e2e_review_log_20261118_225431.txt`；脚本结束自动清理本次演示数据并复查无残留。
+
+**执行记录（2026-11-21，dev 已合入 PR #56 后重跑）**：审核历史接口 `GET /api/admin/articles/{id}/reviews` 已随 #56 合入 dev（`ed620c3`）；在标签绑定接口分支 `feature/D/tag-binding`（`0ac8cb0`）上构建 jar 执行本脚本，**35 PASS / 0 FAIL / 0 SKIP**（审核/发布命令组与标签绑定转 PASS）；证据 `课程设计/项目指导/evidence/e2e_review_log_20261121_001357.txt`。
+
+**执行记录（2026-11-20，dev 已合入 PR #30 后重跑）**：种子改名 `database/005_seed_review_log_demo.sql`（dev 的 004 为 `004_user_status_version.sql`）；**26 PASS / 0 FAIL / 1 SKIP**；此时审核/发布命令已在 dev，但审核历史查询接口 `GET /api/admin/articles/{id}/reviews` 尚未交付（脚本探测 404），因此该组仍 SKIP；待该接口 PR 合入后重跑可转 PASS。证据 `课程设计/项目指导/evidence/e2e_review_log_20261120_224450.txt`。
+
+## 10. 第八轮补充（2026-11-18，C15：权限守卫替换为统一注解）
 
 - 删除本地权限守卫类，`OperationLogController` 的 `page`/`detail` 分别标注
   `@RequirePermission("log:list")` / `@RequirePermission("log:read")`，由 B 的

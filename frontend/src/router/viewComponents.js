@@ -19,6 +19,8 @@ export const moduleViews = {
   // D 的 #36 操作日志页：dev 上原先由 router/index.js 的硬编码分支兜底，
   // 合并 dev 后迁入映射表；页面自取会话与权限，不依赖 entry props。
   logs: () => import('../views/LogListView.vue'),
+  // D 的 #34 审核工作台：同样迁入映射表，避免与 logs 的硬编码分支冲突。
+  reviews: () => import('../views/ReviewListView.vue'),
 }
 
 /**

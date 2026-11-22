@@ -2,11 +2,15 @@ package com.xinghe.cms.permission.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -16,10 +20,16 @@ import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
+import com.xinghe.cms.permission.request.RolePermissionsUpdateRequest;
+import com.xinghe.cms.permission.request.RoleStatusRequest;
+import com.xinghe.cms.permission.request.RoleUpdateRequest;
+import com.xinghe.cms.permission.response.PermissionView;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.permission.service.RoleAdminService;
+import com.xinghe.cms.permission.service.RolePermissionService;
 import com.xinghe.cms.permission.service.RoleQueryService;
 import com.xinghe.cms.security.CurrentUserProvider;
 import java.util.List;
@@ -56,10 +66,21 @@ class RoleControllerHttpTests {
     private RoleAdminService roleAdminService;
 
     @MockitoBean
+    private RolePermissionService rolePermissionService;
+
+    @MockitoBean
     private CurrentUserProvider currentUserProvider;
 
     @MockitoBean
     private AuthorizationQueryService authorizationQueryService;
+
+    /**
+     * 评审 P2：隔离审计写入——HTTP 层用 mock 的服务与身份，但真实上下文里
+     * 审计切面与持久化组件仍在；mock 掉 {@link AuditLogWriter}，确保任何
+     * 意外触发的切面路径都不会向配置的真实 MySQL 写入虚假的成功审计。
+     */
+    @MockitoBean
+    private AuditLogWriter auditLogWriter;
 
     private MockMvc mockMvc;
 
@@ -69,7 +90,8 @@ class RoleControllerHttpTests {
                 .thenReturn(new CurrentUser(37L, "admin01", null));
         when(authorizationQueryService.getForUser(37L))
                 .thenReturn(new AuthorizationSnapshot(Set.of("ADMIN"),
-                        Set.of("role:list", "role:read", "role:create")));
+                        Set.of("role:list", "role:read", "role:create", "role:update", "role:status",
+                                "role:read-permission", "role:assign-permission")));
 
         mockMvc = MockMvcBuilders.webAppContextSetup(context).build();
     }
@@ -447,5 +469,537 @@ class RoleControllerHttpTests {
                 .andExpect(jsonPath("$.code").value(403));
 
         verifyNoInteractions(roleAdminService);
+    }
+
+    // ---------- 修改角色（PUT /api/admin/roles/{id}） ----------
+
+    /** 修改成功：200 与完整 Role，服务收到路径 ID 解析出的数值与请求体字段。 */
+    @Test
+    void updateRoleReturnsFullView() throws Exception {
+        when(roleAdminService.update(37L, new RoleUpdateRequest("新名称")))
+                .thenReturn(new RoleView("37", "EDITOR", "新名称", 1,
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0),
+                        java.time.LocalDateTime.of(2026, 11, 18, 8, 50)));
+
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.id").value("37"))
+                .andExpect(jsonPath("$.data.roleCode").value("EDITOR"))
+                .andExpect(jsonPath("$.data.roleName").value("新名称"))
+                .andExpect(jsonPath("$.data.status").value(1));
+
+        verify(roleAdminService).update(37L, new RoleUpdateRequest("新名称"));
+    }
+
+    /** 修改：角色不存在 404。 */
+    @Test
+    void updateNonexistentRoleReturns404() throws Exception {
+        when(roleAdminService.update(org.mockito.ArgumentMatchers.eq(999L),
+                org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"));
+
+        mockMvc.perform(put("/api/admin/roles/999")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称"}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+    }
+
+    /** 修改：请求体只允许 roleName——带上 roleCode 视为未知字段，400。 */
+    @Test
+    void updateRejectsUnknownBodyField() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称","roleCode":"HACK"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 修改：缺失必填字段 400。 */
+    @Test
+    void updateMissingRoleNameReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 修改：字符串形式的数字 roleName（type: string）被严格反序列化拒绝 400。 */
+    @Test
+    void updateNonStringRoleNameReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":123}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 修改接口不接受任何查询参数。 */
+    @Test
+    void updateRejectsUnknownQueryParam() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .param("status", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"roleName":"新名称"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /**
+     * 评审 P2 复审回归：roleName 仅含 NBSP（JSON 转义 \u00A0）返回 400。
+     * NBSP 属于契约空白（ECMAScript \s），改由 {@code @ContractNotBlank} 在
+     * {@code @Valid} 阶段拦截，不再进入服务层（HTTP 层服务是 mock，业务校验
+     * 不真跑）。服务层自身的 NBSP 判空由
+     * {@code RoleAdminServiceImplTests.updateNbspOnlyRoleNameReturns400} 覆盖。
+     */
+    @Test
+    void updateNbspOnlyRoleNameReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleName\":\"\\u00A0\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // DTO 必填校验与服务层共用同一套契约空白规则：NBSP 在 @Valid 阶段即被拒
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /**
+     * 评审 P2 复审回归：HTTP 入口放行契约允许的名称——roleName 仅含 U+001C
+     * （信息分隔控制符，ECMAScript \s 不含它，按契约是非空白、合法）。
+     * 旧的 {@code @NotBlank} 用 Java {@code isBlank()} 会在 {@code @Valid}
+     * 阶段误拒 400；换用与服务层同源的 {@code @ContractNotBlank} 后应放行进入
+     * 服务层，且请求体中的 U+001C 原样透传（不被 MVC 绑定悄悄改动）。
+     */
+    @Test
+    void updateInformationSeparatorOnlyRoleNameReachesService() throws Exception {
+        when(roleAdminService.update(eq(37L), any(RoleUpdateRequest.class)))
+                .thenReturn(new RoleView("37", "EDITOR", "\u001C", 1,
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0),
+                        java.time.LocalDateTime.of(2026, 11, 18, 8, 50)));
+
+        mockMvc.perform(put("/api/admin/roles/37")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleName\":\"\\u001C\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ArgumentCaptor<RoleUpdateRequest> captor = ArgumentCaptor.forClass(RoleUpdateRequest.class);
+        verify(roleAdminService).update(eq(37L), captor.capture());
+        assertThat(captor.getValue().roleName()).isEqualTo("\u001C");
+    }
+
+    /**
+     * 评审 P2 复审回归：创建接口同样放行契约允许的名称——roleName 仅含
+     * U+001C 时 {@code @ContractNotBlank} 不误拒，请求进入服务层并原样透传
+     * （{@code RoleCreateRequest} 与 {@code RoleUpdateRequest} 共用同一契约
+     * 空白规则，避免「改一处又漏一处」）。
+     */
+    @Test
+    void createInformationSeparatorOnlyRoleNameReachesService() throws Exception {
+        when(roleAdminService.create(any(RoleCreateRequest.class)))
+                .thenReturn(new RoleView("77", "CUSTOM_EDITOR", "\u001C", 1,
+                        java.time.LocalDateTime.of(2026, 11, 17, 17, 40),
+                        java.time.LocalDateTime.of(2026, 11, 17, 17, 40)));
+
+        mockMvc.perform(post("/api/admin/roles")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleCode\":\"CUSTOM_EDITOR\",\"roleName\":\"\\u001C\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ArgumentCaptor<RoleCreateRequest> captor = ArgumentCaptor.forClass(RoleCreateRequest.class);
+        verify(roleAdminService).create(captor.capture());
+        assertThat(captor.getValue().roleName()).isEqualTo("\u001C");
+    }
+
+    // ---------- 启停角色（PUT /api/admin/roles/{id}/status） ----------
+
+    /** 启停成功：200 且 data=null（NullDataResponse）。 */
+    @Test
+    void setStatusReturnsNullDataResponse() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":0}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        verify(roleAdminService).setStatus(37L, new RoleStatusRequest(0));
+    }
+
+    /** 契约：重复设置同一状态幂等返回 200（幂等逻辑在服务层，HTTP 层验证透传）。 */
+    @Test
+    void settingSameStatusStillReturns200() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":1}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        verify(roleAdminService).setStatus(37L, new RoleStatusRequest(1));
+    }
+
+    /** 启停：角色不存在 404。 */
+    @Test
+    void setStatusNonexistentRoleReturns404() throws Exception {
+        doThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"))
+                .when(roleAdminService).setStatus(org.mockito.ArgumentMatchers.eq(999L),
+                        org.mockito.ArgumentMatchers.any());
+
+        mockMvc.perform(put("/api/admin/roles/999/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":1}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+    }
+
+    /** 启停：status 非 0/1 由服务层按契约拒绝为 400。 */
+    @Test
+    void setStatusBeyondEnumReturns400() throws Exception {
+        doThrow(new BusinessException(ResultCode.BAD_REQUEST, "状态取值仅支持 0（停用）或 1（启用）"))
+                .when(roleAdminService).setStatus(org.mockito.ArgumentMatchers.eq(37L),
+                        org.mockito.ArgumentMatchers.any());
+
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":2}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    /** 启停：字符串形式 "1"（type: integer）被严格反序列化拒绝 400。 */
+    @Test
+    void setStatusNonIntegerBodyReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":"1"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    /** 启停：缺 status 字段 400。 */
+    @Test
+    void setStatusMissingFieldReturns400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(roleAdminService);
+    }
+
+    // ---------- 已分配权限回显（GET /api/admin/roles/{id}/permissions） ----------
+
+    /** 回显成功：返回全部已分配权限（含停用项、真实 status），路径 ID 解析为 long。 */
+    @Test
+    void permissionsReturnsAllAssignedIncludingDisabled() throws Exception {
+        when(rolePermissionService.getPermissions(37L)).thenReturn(List.of(
+                new PermissionView("1", "article:read", "后台文章详情", "API",
+                        "/api/admin/articles/{id}", "GET", 1,
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0),
+                        java.time.LocalDateTime.of(2026, 11, 2, 16, 0)),
+                new PermissionView("2", "article:publish", "发布文章", "BUTTON",
+                        null, null, 0,
+                        java.time.LocalDateTime.of(2026, 11, 3, 9, 0),
+                        java.time.LocalDateTime.of(2026, 11, 3, 9, 0))));
+
+        mockMvc.perform(get("/api/admin/roles/37/permissions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].id").value("1"))
+                .andExpect(jsonPath("$.data[0].permissionCode").value("article:read"))
+                .andExpect(jsonPath("$.data[0].status").value(1))
+                .andExpect(jsonPath("$.data[0].createdAt").value("2026-11-02T16:00:00.000"))
+                .andExpect(jsonPath("$.data[1].status").value(0)) // 停用项保留回显
+                .andExpect(jsonPath("$.data[1].method").value(nullValue())); // nullable 原样透传
+
+        verify(rolePermissionService).getPermissions(37L);
+    }
+
+    /** 回显：未分配权限返回空数组 []。 */
+    @Test
+    void permissionsReturnsEmptyArrayWhenNoneAssigned() throws Exception {
+        when(rolePermissionService.getPermissions(41L)).thenReturn(List.of());
+
+        mockMvc.perform(get("/api/admin/roles/41/permissions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(0));
+    }
+
+    /** 回显：角色不存在 404。 */
+    @Test
+    void permissionsNonexistentRoleReturns404() throws Exception {
+        when(rolePermissionService.getPermissions(999L))
+                .thenThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"));
+
+        mockMvc.perform(get("/api/admin/roles/999/permissions"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+    }
+
+    /** 回显：非法路径 ID（前导零）400，不进入服务。 */
+    @Test
+    void permissionsInvalidIdReturns400() throws Exception {
+        mockMvc.perform(get("/api/admin/roles/037/permissions"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 回显接口不接受任何查询参数。 */
+    @Test
+    void permissionsRejectsUnknownQueryParam() throws Exception {
+        mockMvc.perform(get("/api/admin/roles/37/permissions").param("foo", "1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 缺 role:read-permission 权限的登录用户 403，不进入服务。 */
+    @Test
+    void permissionsWithoutPermissionReturns403() throws Exception {
+        when(authorizationQueryService.getForUser(37L))
+                .thenReturn(new AuthorizationSnapshot(Set.of("EMPLOYEE"), Set.of("role:list")));
+
+        mockMvc.perform(get("/api/admin/roles/37/permissions"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    // ---------- 全量替换角色权限（PUT /api/admin/roles/{id}/permissions） ----------
+
+    /** 替换成功：200 且 data=null，IdList 字符串解析为 List&lt;Long&gt; 透传给服务。 */
+    @Test
+    void setPermissionsReturnsNullDataAndPassesParsedIdList() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1","2","3"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        ArgumentCaptor<RolePermissionsUpdateRequest> captor =
+                ArgumentCaptor.forClass(RolePermissionsUpdateRequest.class);
+        verify(rolePermissionService).replacePermissions(eq(37L), captor.capture());
+        assertThat(captor.getValue().permissionIds()).containsExactly(1L, 2L, 3L);
+    }
+
+    /** 空数组清空：200 且服务收到空集合。 */
+    @Test
+    void setPermissionsEmptyArrayClears() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":[]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        ArgumentCaptor<RolePermissionsUpdateRequest> captor =
+                ArgumentCaptor.forClass(RolePermissionsUpdateRequest.class);
+        verify(rolePermissionService).replacePermissions(eq(37L), captor.capture());
+        assertThat(captor.getValue().permissionIds()).isEmpty();
+    }
+
+    /** 替换：角色不存在 404（服务抛 BusinessException，验证 HTTP 映射）。 */
+    @Test
+    void setPermissionsNonexistentRoleReturns404() throws Exception {
+        doThrow(new BusinessException(ResultCode.NOT_FOUND, "角色不存在"))
+                .when(rolePermissionService).replacePermissions(eq(999L),
+                        any(RolePermissionsUpdateRequest.class));
+
+        mockMvc.perform(put("/api/admin/roles/999/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+    }
+
+    /** 替换：待分配权限已停用 409。 */
+    @Test
+    void setPermissionsDisabledPermissionReturns409() throws Exception {
+        doThrow(new BusinessException(ResultCode.CONFLICT, "权限已停用，无法分配"))
+                .when(rolePermissionService).replacePermissions(eq(37L),
+                        any(RolePermissionsUpdateRequest.class));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(409));
+    }
+
+    /** IdList 严格校验：非数组、元素非字符串、前导零/0、null 元素一律 400，不进服务。 */
+    @Test
+    void setPermissionsRejectsMalformedIdListWith400() throws Exception {
+        String[] badBodies = {
+                "{\"permissionIds\":\"1\"}",            // 非数组
+                "{\"permissionIds\":[1,2]}",           // 元素非字符串
+                "{\"permissionIds\":[\"01\"]}",        // 前导零
+                "{\"permissionIds\":[\"0\"]}",         // 0 非法
+                "{\"permissionIds\":[null]}",          // null 元素
+                "{\"permissionIds\":[\"-1\"]}",        // 负数
+                "{\"permissionIds\":[\"1.0\"]}",       // 非整数
+                "{\"permissionIds\":[\"9999999999999999999\"]}", // Long 溢出
+        };
+        for (String body : badBodies) {
+            mockMvc.perform(put("/api/admin/roles/37/permissions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
+        }
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** IdList 严格校验：重复 ID（uniqueItems:false 违反）400。 */
+    @Test
+    void setPermissionsRejectsDuplicateIdsWith400() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1","2","1"]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** IdList 严格校验：超过 100 项 400（maxItems）。 */
+    @Test
+    void setPermissionsRejectsMoreThan100IdsWith400() throws Exception {
+        String ids = java.util.stream.IntStream.rangeClosed(1, 101)
+                .mapToObj(i -> "\"" + i + "\"")
+                .collect(java.util.stream.Collectors.joining(","));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"permissionIds\":[" + ids + "]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 100 项边界合法（maxItems 含等号），服务收到 100 个 ID。 */
+    @Test
+    void setPermissionsAcceptsExactly100Ids() throws Exception {
+        String ids = java.util.stream.IntStream.rangeClosed(1, 100)
+                .mapToObj(i -> "\"" + i + "\"")
+                .collect(java.util.stream.Collectors.joining(","));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"permissionIds\":[" + ids + "]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ArgumentCaptor<RolePermissionsUpdateRequest> captor =
+                ArgumentCaptor.forClass(RolePermissionsUpdateRequest.class);
+        verify(rolePermissionService).replacePermissions(eq(37L), captor.capture());
+        assertThat(captor.getValue().permissionIds()).hasSize(100);
+    }
+
+    /** 请求体缺 permissionIds / 未知字段 / 非对象一律 400（自定义反序列化器显式校验）。 */
+    @Test
+    void setPermissionsRejectsMissingUnknownOrNonObjectBodyWith400() throws Exception {
+        String[] badBodies = {
+                "{}",                                          // 缺字段
+                "{\"permissionIds\":[\"1\"],\"foo\":1}",      // 未知字段
+                "[]",                                          // 非对象
+                "{\"permissionIds\":null}",                    // 显式 null
+        };
+        for (String body : badBodies) {
+            mockMvc.perform(put("/api/admin/roles/37/permissions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
+        }
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 替换接口不接受任何查询参数。 */
+    @Test
+    void setPermissionsRejectsUnknownQueryParam() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .param("foo", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 缺 role:assign-permission 权限的登录用户 403，不进入服务。 */
+    @Test
+    void setPermissionsWithoutPermissionReturns403() throws Exception {
+        when(authorizationQueryService.getForUser(37L))
+                .thenReturn(new AuthorizationSnapshot(Set.of("EMPLOYEE"), Set.of("role:list")));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1"]}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        verifyNoInteractions(rolePermissionService);
     }
 }
