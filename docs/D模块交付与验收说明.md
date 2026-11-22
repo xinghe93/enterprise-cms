@@ -57,7 +57,7 @@
 | --- | --- | --- | --- |
 | 日志模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.log.**"` | JDK25、`SPRING_DATASOURCE_PASSWORD` | **63 项全过** |
 | 审核模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.review.**"` | 同上 + Docker MySQL（含 IT） | **153 项全过**（dev 已合入 #30、#56；标签绑定接口 PR 合并后为 170 项） |
-| 全量后端测试 | `mvn -B -o clean verify`（排除本机 Mockito 受限类） | 同上；JDK25 | **299 项全过**（dev `17ba15d` 实测，2026-11-22；标签绑定接口合并后为 316 项） |
+| 全量后端测试 | `mvn -B -o clean verify`（排除本机 Mockito 受限类） | 同上；JDK25 | **299 项全过**（dev `17ba15d` 实测，2026-11-22；标签绑定接口合并后为 319 项） |
 | 真实登录态 e2e | 本机验收脚本（不入库）| Docker mysql8/redis、001–005 种子、jar、`CMS_*_PASSWORD` | **35 PASS / 0 FAIL / 0 SKIP**（含审核历史、审核/发布命令、标签绑定；证据 `e2e_review_log_20261121_001357.txt`） |
 | 压测 | 本机压测脚本（不入库） | 同上 | PASS，见 §5 |
 
