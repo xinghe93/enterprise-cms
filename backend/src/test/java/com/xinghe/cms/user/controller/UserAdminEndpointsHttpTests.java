@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -174,6 +175,64 @@ class UserAdminEndpointsHttpTests {
                     .andExpect(jsonPath("$.code").value(400));
         }
         verifyNoInteractions(userAdminService);
+    }
+
+    /**
+     * 长度按 Unicode 代码点计数（与 DepartmentJson #40 同款修复）：String.length() 返回
+     * UTF-16 代码单元，增补平面汉字「𠮷」每字占 2 个 char——64 个扩展汉字
+     * raw.length()=128 却 codePointCount=64，恰好等于 username 上限必须放行；
+     * realName 100 个代码点放行、101 个拒绝。下限同理：密码 4 个代码点
+     * （raw.length()=8）不足 8 位，不能靠代理对凑满下限。
+     */
+    @Test
+    void createAndUpdateCountLengthByCodePointsForSupplementaryCharacters() throws Exception {
+        when(userAdminService.createUser(any(UserCreateRequest.class))).thenReturn(user());
+        when(userAdminService.updateUser(anyLong(), any(UserUpdateRequest.class))).thenReturn(user());
+        String supplementary = "\uD842\uDFB7";
+
+        // username 恰好 64 个代码点：旧实现按 UTF-16 length()=128 会误判超长。
+        perform(post(USERS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + supplementary.repeat(64) + "\",\"password\":\"12345678\","
+                                + "\"realName\":\"演示编辑\"}"), USERS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        verify(userAdminService).createUser(
+                new UserCreateRequest(supplementary.repeat(64), "12345678", "演示编辑", null));
+
+        // realName 恰好 100 个代码点放行。
+        perform(post(USERS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"editor_demo\",\"password\":\"12345678\","
+                                + "\"realName\":\"" + supplementary.repeat(100) + "\"}"), USERS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        verify(userAdminService).createUser(
+                new UserCreateRequest("editor_demo", "12345678", supplementary.repeat(100), null));
+
+        // realName 101 个代码点拒绝，且请求不进入 Service。
+        perform(post(USERS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"editor_demo\",\"password\":\"12345678\","
+                                + "\"realName\":\"" + supplementary.repeat(101) + "\"}"), USERS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 密码下限：4 个代码点（raw.length()=8）不足 8 位，必须拒绝。
+        perform(post(USERS).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"editor_demo\",\"password\":\"" + supplementary.repeat(4) + "\","
+                                + "\"realName\":\"n\"}"), USERS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 完整 PUT 同样按代码点计数：100 个代码点的姓名更新放行。
+        String path = USERS + "/7";
+        perform(put(path).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"realName\":\"" + supplementary.repeat(100) + "\",\"departmentId\":null}"), path)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value("7"));
+        verify(userAdminService).updateUser(7L,
+                new UserUpdateRequest(supplementary.repeat(100), null));
+
+        // 仅两次合法创建进入 Service：两个 400 请求都在反序列化阶段被拦截。
+        verify(userAdminService, times(2)).createUser(any(UserCreateRequest.class));
     }
 
     /**
