@@ -92,10 +92,12 @@ mvn -B -o clean verify "-Dtest=$ex" "-Dsurefire.failIfNoSpecifiedTests=false"
 前置条件：`database/005_seed_review_log_demo.sql`（PR #53）已导入目标库；种子在隔离库的导入命令与幂等复核见 `docs/操作日志说明.md` §9.2。种子使用固定 ID：文章 `990301`–`990305`、审核历史 `990601`/`990602`。
 
 ```powershell
-# 1) 启动后端（Docker mysql8/redis 已运行，001–005 已导入目标库）
+# 1) 启动后端（Docker mysql8/redis 已运行，001–005 已按 docs/操作日志说明.md §9.2 导入隔离库）
 cd D:\大三第一学期\JAVA框架技术（一）\课程设计\enterprise-cms\backend
 # 当前 pom 版本 0.0.1-SNAPSHOT、未覆盖 finalName，实际产物为 enterprise-cms-backend-0.0.1-SNAPSHOT.jar
 $jar = (Get-ChildItem target\enterprise-cms-backend-*.jar | Select-Object -First 1).Name
+# 必须显式连到种子所在的库（与 §9.2 的 $db 保持一致），否则会查询默认库 enterprise_cms
+$env:SPRING_DATASOURCE_URL = "jdbc:mysql://127.0.0.1:3306/enterprise_cms_seedtest"
 $env:JAVA_HOME="E:\Java\jdk-25.0.5.0.3"; $env:SPRING_DATASOURCE_PASSWORD="<root 密码>"; $env:TZ="Asia/Shanghai"
 java -jar "target\$jar"   # 默认端口 8080
 
@@ -104,9 +106,10 @@ $login = Invoke-RestMethod -Method Post http://127.0.0.1:8080/api/auth/login -Co
   -Body '{"username":"admin","password":"<admin 密码>"}'
 $h = @{ Authorization = "Bearer $($login.data.accessToken)"; 'Content-Type' = 'application/json' }
 
-# 3) 标签 ID 取自标签列表（分页结构在 data.records，ID 为字符串）
-$tagIds = @((Invoke-RestMethod -Method Get http://127.0.0.1:8080/api/admin/tags -Headers $h).data.records |
+# 3) 标签 ID 只取启用标签（status=1）；停用标签会被后端拒绝新增绑定并返回 409
+$tagIds = @((Invoke-RestMethod -Method Get "http://127.0.0.1:8080/api/admin/tags?status=1" -Headers $h).data.records |
   Select-Object -First 2 | ForEach-Object { $_.id })
+if ($tagIds.Count -lt 2) { throw "启用的演示标签不足 2 个：请先按 docs/操作日志说明.md §9.2 向同一隔离库导入种子" }
 ```
 
 | 步骤 | 请求 | 期望 |
@@ -126,7 +129,7 @@ $tagIds = @((Invoke-RestMethod -Method Get http://127.0.0.1:8080/api/admin/tags 
 
 > 版本约定：审核裁决、发布/下架、标签绑定都会自增 `version`，后续步骤必须使用**接口返回的新 `version`**；如果沿用种子里的旧版本会得到 409。
 
-**复验记录（2026-11-22）：** 在 Docker mysql8 的隔离库 `enterprise_cms_e2e` 上按本节顺序实测（真实 `ADMIN` 与 `EMPLOYEE` 账号、真实 HTTP 请求），16 项检查全部 PASS、0 FAIL；其中包括标签绑定落在 `REJECTED` 的 `990305` 上返回 `version=2`、`990303` 发布后再用新版本下架成功、审计日志记录 `article.approve`/`article.reject`/`article.bind-tag`/`article.publish`/`article.offline` 五类 SUCCESS。原始输出见仓库外 `项目指导/evidence/e2e_reviewer_isolated_20261122_150929.txt`。
+**复验记录（2026-11-22，按本节最终命令）：** 在 Docker mysql8 的隔离库 `enterprise_cms_seedtest` 上按本节顺序实测（启动时显式设置 `SPRING_DATASOURCE_URL`，标签列表带 `?status=1`；真实 `ADMIN` 与 `EMPLOYEE` 账号、真实 HTTP 请求），16 项检查全部 PASS、0 FAIL；其中包括标签绑定落在 `REJECTED` 的 `990305` 上返回 `version=2`、`990303` 发布后再用新版本下架成功、审计日志记录 `article.approve`/`article.reject`/`article.bind-tag`/`article.publish`/`article.offline` 五类 SUCCESS。另外插入一条 `status=0` 的停用标签后验证：`GET /api/admin/tags` 会把它排在最前，而 `GET /api/admin/tags?status=1` 只返回两个启用标签，因此按本节取标签不会把停用标签提交给文章。原始输出见仓库外 `项目指导/evidence/e2e_reviewer_seedtest_20261122_153124.txt`。
 
 ## 5. 压测结果（2026-11-19）
 
