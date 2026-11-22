@@ -57,11 +57,66 @@
 | --- | --- | --- | --- |
 | 日志模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.log.**"` | JDK25、`SPRING_DATASOURCE_PASSWORD` | **63 项全过** |
 | 审核模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.review.**"` | 同上 + Docker MySQL（含 IT） | **170 项全过**（#30、#56、#57 均已合入 dev） |
-| 全量后端测试 | `mvn -B -o clean verify`（排除本机 Mockito 受限类） | 同上；JDK25 | **321 项全过**（dev `c834385` 实测，2026-11-22，含 #57 标签绑定） |
-| 真实登录态 e2e | 本机验收脚本（不入库）| Docker mysql8/redis、001–005 种子、jar、`CMS_*_PASSWORD` | **35 PASS / 0 FAIL / 0 SKIP**（含审核历史、审核/发布命令、标签绑定；证据 `e2e_review_log_20261121_001357.txt`） |
-| 压测 | 本机压测脚本（不入库） | 同上 | PASS，见 §5 |
+| 全量后端测试 | 完整命令见 §4.1（自动生成 Mockito 排除项） | JDK25、Docker MySQL、`SPRING_DATASOURCE_PASSWORD` | **321 项全过**（dev `c834385` 实测，2026-11-22，含 #57 标签绑定） |
+| 真实登录态手工验收 | 可直接执行的步骤见 §4.2 | **前置条件：`database/005_seed_review_log_demo.sql`（#53）已导入目标库**；Docker mysql8/redis、jar、admin/editor/staff 账号 | 2026-11-22 用临时审核员账号走通登录→权限→待审→正文→通过/驳回→审核历史（证据 `项目指导/evidence/reviewer_flow_20261122_085611.txt`），随后在隔离库复核种子（`docs/操作日志说明.md` §9.2） |
+| 真实登录态 e2e 脚本 | 仓库外脚本 `课程设计/项目指导/scripts/run_e2e_review_log.ps1`（需本机 e2e 账号密码，按要求不入库） | Docker mysql8/redis、`005` 种子、jar、`SPRING_DATASOURCE_PASSWORD` 与账号密码 | **35 PASS / 0 FAIL / 0 SKIP**（2026-11-21，含审核历史、审核/发布命令、标签绑定；证据 `e2e_review_log_20261121_001357.txt`） |
+| 压测 | 仓库外脚本 `run_pressure_logs.ps1` | 同上 | PASS，见 §5 |
 
-> 本机完整 `mvn verify` 会因宿主机不允许外部进程 attach 而在 A/B/C 的 Mockito 测试类上报 `MockMaker` 失败（非 D 模块问题），排除这些类后可全量通过。
+> 本机完整 `mvn verify` 会因宿主机不允许外部进程 attach 而在 A/B/C 的 Mockito 测试类上报 `MockMaker` 失败（非 D 模块问题），§4.1 给出了可复现的排除方式。
+
+### 4.1 全量后端测试（团队可直接执行）
+
+本机（Windows + JDK25）不允许 Mockito 自 attach，需排除“引用了 Mockito 的测试类”。下面命令自动生成排除项，不需要手工维护类名清单：
+
+```powershell
+cd D:\大三第一学期\JAVA框架技术（一）\课程设计\enterprise-cms\backend
+$env:JAVA_HOME = "E:\Java\jdk-25.0.5.0.3"
+$env:SPRING_DATASOURCE_PASSWORD = "<本机 MySQL root 密码>"
+
+# 生成排除项：测试源码中出现 org.mockito / @MockitoBean 的类，转成 surefire 的 !全限定名
+$ex = (Get-ChildItem src/test/java -Recurse -Filter *.java |
+        Select-String -Pattern 'org\.mockito|@MockitoBean' |
+        ForEach-Object { $_.Path } | Sort-Object -Unique |
+        ForEach-Object {
+            $rel = $_ -replace [regex]::Escape((Resolve-Path 'src/test/java').Path + '\'), ''
+            '!' + ($rel -replace '\\', '.' -replace '\.java$', '')
+        }) -join ','
+
+mvn -B -o clean verify "-Dtest=$ex" "-Dsurefire.failIfNoSpecifiedTests=false"
+```
+
+结果应为 **Tests run: 321, Failures: 0, Errors: 0**。在允许 attach 的机器或 CI 上可去掉 `-Dtest` 直接 `mvn verify`，A/B/C 的 Mockito 测试类会一起执行。
+
+### 4.2 手工验收步骤（真实登录态）
+
+前置条件：`database/005_seed_review_log_demo.sql`（PR #53）已导入目标库；种子在隔离库的导入命令与幂等复核见 `docs/操作日志说明.md` §9.2。种子使用固定 ID：文章 `990301`–`990305`、审核历史 `990601`/`990602`。
+
+```powershell
+# 1) 启动后端（Docker mysql8/redis 已运行，001–005 已导入目标库）
+cd D:\大三第一学期\JAVA框架技术（一）\课程设计\enterprise-cms\backend
+$env:JAVA_HOME="E:\Java\jdk-25.0.5.0.3"; $env:SPRING_DATASOURCE_PASSWORD="<root 密码>"; $env:TZ="Asia/Shanghai"
+java -jar target\enterprise-cms-backend-0.1.0-SNAPSHOT.jar   # 端口 8080
+
+# 2) 登录拿 Token（账号密码由本机提供，不写入仓库）
+$login = Invoke-RestMethod -Method Post http://127.0.0.1:8080/api/auth/login -ContentType 'application/json' `
+  -Body '{"username":"admin","password":"<admin 密码>"}'
+$h = @{ Authorization = "Bearer $($login.data.token)"; 'Content-Type' = 'application/json' }
+```
+
+| 步骤 | 请求 | 期望 |
+| --- | --- | --- |
+| 匿名访问 | `GET /api/admin/logs` 不带 Token | 401「请先登录」 |
+| 当前用户权限 | `GET /api/auth/permissions`（带 Token） | 200，返回权限码数组 |
+| 待审列表 | `GET /api/admin/reviews/pending?current=1&size=10` | 200，含 `990301`/`990302` |
+| 查看正文 | `GET /api/admin/articles/990301` | 200，`content` 非空 |
+| 审核通过 | `POST /api/admin/articles/990301/approve`，body `{"version":0}` | 200，状态 `APPROVED`、`version=1` |
+| 审核历史 | `GET /api/admin/articles/990301/reviews` | 200，含当前审核人记录 |
+| 审核驳回 | `POST /api/admin/articles/990302/reject`，body `{"version":0,"comment":"演示驳回"}` | 200，状态 `REJECTED` |
+| 标签绑定 | `PUT /api/admin/articles/990303/tags`，body `{"version":1,"tagIds":["<tagIdA>","<tagIdB>"]}` | 200，返回升序 `tagIds`；tagId 从 `GET /api/admin/tags` 取 |
+| 发布/下架 | `POST /api/admin/articles/990303/publish`，body `{"version":1}`；再 `POST .../offline` body `{"version":2}` | 均 200 |
+| 日志查询 | `GET /api/admin/logs?current=1&size=10` | 200，能看到上述 `article.approve`/`article.reject` 等 SUCCESS 记录 |
+| 普通员工越权 | 用 `staff` 账号登录后 `GET /api/admin/logs` | 403「缺少访问权限: log:list」 |
+| 未知参数 | `GET /api/admin/logs?foo=1` | 400「请求参数错误」 |
 
 ## 5. 压测结果（2026-11-19）
 
@@ -87,7 +142,7 @@
 | 审核历史查询接口 | 已随 PR #56 合入 dev（`ed620c3`），`GET /api/admin/articles/{id}/reviews` 可用（e2e PASS） | 无待办；压测纳入 |
 | 标签绑定接口 | 已随 PR #57 合入 dev（`920c1d8`），`PUT /api/admin/articles/{id}/tags` 可用；严格 JSON 类型（`5a7ede6`）与重复标签 ID 前置校验（`c394feb`）已按复审补齐 | 无待办；e2e/压测纳入 |
 | 前端权限门控 | 前端日志页/审核页已从 `GET /api/auth/permissions` 取权限并做严格门控（#34 已合入 dev `17ba15d`），加载失败提供重试 | 无待办；该接口契约 owner=B，D 侧临时接线已获组长复审确认 |
-| 演示种子 | `005_seed_review_log_demo.sql` 在 PR #53（`feature/D/e2e-seed`）；2026-11-22 在临时库连续导入两次复核幂等：5 篇文章/2 条审核/2 条标签关联/0 条日志 | 合并后从仓库直接导入 |
+| 演示种子 | `005_seed_review_log_demo.sql` 在 PR #53（`feature/D/e2e-seed`）；已按复审改为不写 `USE`、固定 ID（文章 990301–990305），关联数据只引用身份匹配的演示文章；隔离库连续导入两次 0 行变化，同名/ID 冲突时跳过关联（复核见 `docs/操作日志说明.md` §9.2） | 合并后可直接导入；e2e/压测均以该种子为前置条件 |
 | 本机 Mockito | JDK25 + Windows 不允许外部 attach | 加 javaagent 或 CI 指定 JDK |
 | 日志数据范围 | 全局审计，首期按权限码全量可读 | 若要求部门级范围需另行评审 |
 
