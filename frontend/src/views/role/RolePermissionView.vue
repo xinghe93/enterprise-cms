@@ -2,9 +2,11 @@
 // 「角色与权限」管理页（B 模块前端，OpenAPI /api/admin/roles、/api/admin/permissions）。
 //
 // 权限：进入页面先按 OpenAPI GET /api/auth/permissions（x-owner B）加载当前账号
-// 有效权限写入会话，再按权限编码门控各操作（沿用 D 的 ReviewListView 先例：
-// 每次进入页面都重新拉取，不信任旧快照）；权限状态未知（接口不可用）时按
-// 「未下发即放行」的渐进策略保证可联调，与 LogListView 一致。
+// 有效权限写入会话，再按权限编码严格门控各操作（沿用 D 的 ReviewListView 先例：
+// 每次进入页面都重新拉取，不信任旧快照）。评审 P2：区分 idle / loading /
+// loaded / unavailable 四态——只有 loaded 才按本次结果门控，空数组（无任何权限）
+// 隐藏全部操作且不发列表请求；加载中与加载失败均隐藏操作，失败提供重试入口，
+// 不再"未下发即放行"发出会被拒绝的请求。首屏查询在本次权限加载完成后发起。
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   ElAlert,
@@ -37,6 +39,7 @@ import {
   buildPermissionUpdatePayload,
   buildRoleCreatePayload,
   buildRoleUpdatePayload,
+  findUnpreselectableAssigned,
   formatDateTime,
   normalizePermissionIds,
   validatePermissionCreateForm,
@@ -49,13 +52,16 @@ const session = useSessionStore()
 const permissionApi = createPermissionApi(api)
 
 // ── 权限编码：每次进入页面重新拉取，管理员增删权限后旧快照不能作为「已加载」依据 ──
+// idle / loading / loaded / unavailable：区分「加载中」「已加载但为空」「加载失败」。
+// 评审 P2：只有 loaded 才是「本次已确认」，此时严格按权限码门控（空数组=无任何
+// 权限，隐藏全部操作、不发列表请求）；其余三态一律隐藏操作，加载失败提供重试。
 const permissionStatus = ref('idle')
 let permissionRequestSeq = 0
 let permissionAbortController = null
 let disposed = false
 
-const permissionsKnown = computed(() => Array.isArray(session.permissionCodes) && session.permissionCodes.length > 0)
-const can = (code) => (!permissionsKnown.value || session.hasPermission(code))
+const permissionsKnown = computed(() => permissionStatus.value === 'loaded')
+const can = (code) => permissionsKnown.value && session.hasPermission(code)
 
 const canListRoles = computed(() => can('role:list'))
 const canCreateRole = computed(() => can('role:create'))
@@ -87,6 +93,15 @@ async function loadPermissions() {
   }
 }
 
+// 权限加载失败后重试：成功后立即按本次结果刷新两个列表（评审 P2）。
+async function retryPermissions() {
+  await loadPermissions()
+  if (permissionsKnown.value) {
+    fetchRoles()
+    fetchPermissions()
+  }
+}
+
 // ── 请求守卫：快速翻页/快速打开弹窗时，只允许最新一次请求写回页面状态 ──
 function createRequestGuard() {
   let seq = 0
@@ -110,6 +125,22 @@ const roleLoadedAt = ref('')
 
 async function fetchRoles() {
   const token = roleListGuard.next()
+  // 评审 P2：权限未加载完成（idle/loading）或加载失败（unavailable）时不发
+  // 列表请求——避免用旧权限跳过查询、或发出会被拒绝的请求。
+  if (permissionStatus.value === 'idle' || permissionStatus.value === 'loading') {
+    roleRows.value = []
+    roleTotal.value = 0
+    roleError.value = ''
+    roleLoading.value = false
+    return
+  }
+  if (!permissionsKnown.value) {
+    roleRows.value = []
+    roleTotal.value = 0
+    roleError.value = '权限状态加载失败，无法确认查询权限；请点上方「重试加载权限」。'
+    roleLoading.value = false
+    return
+  }
   if (!canListRoles.value) {
     roleRows.value = []
     roleTotal.value = 0
@@ -254,17 +285,29 @@ async function toggleRoleStatus(row) {
 }
 
 // ── 分配权限 ──
+// 评审 P2：已分配权限（assigned）与编辑目录（catalog）分离——只读账号（有
+// role:read-permission、无 permission:list）也能独立查看已分配，目录 403 不
+// 再连累它；目录只在具备所需权限时才加载，用于编辑勾选。
 const assignDialog = reactive({
   visible: false,
   loading: false,
-  loadError: '',
   saving: false,
   role: null,
-  catalog: [],
+  assigned: [],            // 已分配权限（独立加载、独立展示，只读账号也可见）
+  assignedError: '',       // 已分配加载失败的独立提示
+  catalog: [],             // 编辑用目录（仅可编辑账号加载）
+  catalogLoaded: false,    // 目录是否成功加载完成（可保存的前提）
+  loadError: '',           // 目录加载失败提示
+  readOnly: false,         // 只读模式：只展示已分配，不请求/不勾选目录
+  consistencyError: '',    // 评审 P1：状态不一致时阻止保存并提示重新加载
 })
 const assignTableRef = ref(null)
 const assignSelectedIds = ref([])
 const assignRemovedDisabled = ref([])
+
+// 评审 P2：只读账号、或目录未就绪（加载失败/一致性冲突）时展示只读的
+// 「已分配权限」列表；只有目录成功加载完成才显示可勾选的编辑目录。
+const assignReadOnlyView = computed(() => assignDialog.readOnly || !assignDialog.catalogLoaded)
 
 function typeTagOf(type) {
   return type === 'API' ? 'primary' : type === 'MENU' ? 'warning' : 'info'
@@ -276,35 +319,84 @@ async function openAssignDialog(row) {
     return
   }
   assignDialog.role = row
+  assignDialog.assigned = []
+  assignDialog.assignedError = ''
   assignDialog.catalog = []
+  assignDialog.catalogLoaded = false
   assignDialog.loadError = ''
+  assignDialog.consistencyError = ''
+  assignRemovedDisabled.value = []
+  assignSelectedIds.value = []
+  // 只读账号：有查看权、但缺 permission:list（目录接口会 403）或缺
+  // role:assign-permission（不能保存）——只展示已分配，绝不请求编辑目录。
+  // 评审 P2：把「查看已分配」与「加载编辑目录」解耦，目录 403 不再连累前者。
+  const canEdit = canListPermissions.value && canAssignRolePermissions.value
+  assignDialog.readOnly = !canEdit
   assignDialog.visible = true
   assignDialog.loading = true
   const token = assignGuard.next()
+
+  // ① 已分配权限：独立加载、独立展示。只读账号也能拿到并看到它。
+  let assigned = []
   try {
-    // 目录必须与已分配列表同时就绪：候选不完整会让全量替换误删权限。
-    const [assigned, catalogResult] = await Promise.all([
-      permissionApi.getRolePermissions(row.id),
-      permissionApi.listAllPermissions(),
-    ])
+    const result = await permissionApi.getRolePermissions(row.id)
     if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
-    assignDialog.catalog = catalogResult.records
-    const assignedIds = new Set((Array.isArray(assigned) ? assigned : []).map((item) => String(item.id)))
-    // 契约：停用权限不能保留在替换请求中——只回显启用项；已分配的停用项在列表中
-    // 单独标记，保存后将从角色移除。
-    const disabledAssigned = (Array.isArray(assigned) ? assigned : [])
-      .filter((item) => item.status !== 1)
-    assignRemovedDisabled.value = disabledAssigned
-    assignDialog.loading = false
-    await nextTick()
-    assignDialog.catalog
-      .filter((item) => item.status === 1 && assignedIds.has(String(item.id)))
-      .forEach((item) => assignTableRef.value?.toggleRowSelection(item, true))
+    assigned = Array.isArray(result) ? result : []
+    assignDialog.assigned = assigned
   } catch (error) {
     if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
-    assignDialog.loadError = error?.message ? `权限目录加载失败：${error.message}` : '权限目录加载失败，请稍后重试。'
+    assignDialog.assignedError = error?.message
+      ? `已分配权限加载失败：${error.message}`
+      : '已分配权限加载失败，请稍后重试。'
     assignDialog.loading = false
+    return
   }
+
+  // 只读模式到此为止：已分配结果已独立展示，不发目录请求。
+  if (!canEdit) {
+    assignDialog.loading = false
+    return
+  }
+
+  // ② 编辑目录：仅在具备 permission:list 且可保存时加载，用于勾选。
+  let catalog = []
+  try {
+    const catalogResult = await permissionApi.listAllPermissions()
+    if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
+    catalog = catalogResult.records
+  } catch (error) {
+    if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
+    assignDialog.loadError = error?.message
+      ? `权限目录加载失败：${error.message}`
+      : '权限目录加载失败，请稍后重试。'
+    assignDialog.loading = false
+    return
+  }
+
+  // ③ 评审 P1 一致性校验：所有「已分配且启用」的权限都必须能在目录中预选。
+  // 目录与已分配是两次独立请求，期间可能有其他管理员启停某项：若目录把它
+  // 读成停用/缺失，弹窗既不预选也不提示，全量保存会静默解除授权。发现不一致
+  // 立即阻止保存并提示重新加载（不进入可勾选状态）。
+  const unpreselectable = findUnpreselectableAssigned(assigned, catalog)
+  if (unpreselectable.length > 0) {
+    assignDialog.consistencyError =
+      `检测到 ${unpreselectable.length} 个已分配且启用的权限在权限目录中无法预选（可能有其他管理员刚变更了权限状态），已阻止保存；请重新加载后再分配。`
+    assignDialog.loading = false
+    return
+  }
+
+  // ④ 正常可编辑：装配目录 + 预选启用且已分配的项。
+  assignDialog.catalog = catalog
+  assignDialog.catalogLoaded = true
+  const assignedIds = new Set(assigned.map((item) => String(item.id)))
+  // 契约：停用权限不能保留在替换请求中——只回显启用项；已分配的停用项在列表中
+  // 单独标记，保存后将从角色移除。
+  assignRemovedDisabled.value = assigned.filter((item) => item.status !== 1)
+  assignDialog.loading = false
+  await nextTick()
+  catalog
+    .filter((item) => item.status === 1 && assignedIds.has(String(item.id)))
+    .forEach((item) => assignTableRef.value?.toggleRowSelection(item, true))
 }
 
 function onAssignSelectionChange(selection) {
@@ -313,6 +405,22 @@ function onAssignSelectionChange(selection) {
 
 async function submitAssignDialog() {
   if (assignDialog.saving) return
+  // 评审 P1/P2 保存守卫：只读、目录未就绪、加载失败或检测到状态不一致时，
+  // 绝不发全量替换（否则会误删角色授权）。这些情况下保存按钮也已禁用。
+  if (assignDialog.readOnly || !assignDialog.catalogLoaded
+      || !!assignDialog.loadError || !!assignDialog.assignedError
+      || !!assignDialog.consistencyError) {
+    ElMessage.warning('当前不可保存：权限目录未就绪或状态不一致，请重新加载后再分配。')
+    return
+  }
+  // 二次一致性校验：打开弹窗后到点击保存之间，目录/已分配数据若被改动，
+  // 再次确认所有「已分配且启用」的项仍在可预选目录内，否则阻止保存。
+  const lateConflict = findUnpreselectableAssigned(assignDialog.assigned, assignDialog.catalog)
+  if (lateConflict.length > 0) {
+    assignDialog.consistencyError =
+      `检测到 ${lateConflict.length} 个已分配且启用的权限在权限目录中无法预选，已阻止保存；请重新加载后再分配。`
+    return
+  }
   let permissionIds
   try {
     permissionIds = normalizePermissionIds(assignSelectedIds.value)
@@ -344,6 +452,21 @@ const permLoadedAt = ref('')
 
 async function fetchPermissions() {
   const token = permListGuard.next()
+  // 评审 P2：与角色列表一致，权限未加载完成或加载失败时不发列表请求。
+  if (permissionStatus.value === 'idle' || permissionStatus.value === 'loading') {
+    permRows.value = []
+    permTotal.value = 0
+    permError.value = ''
+    permLoading.value = false
+    return
+  }
+  if (!permissionsKnown.value) {
+    permRows.value = []
+    permTotal.value = 0
+    permError.value = '权限状态加载失败，无法确认查询权限；请点上方「重试加载权限」。'
+    permLoading.value = false
+    return
+  }
   if (!canListPermissions.value) {
     permRows.value = []
     permTotal.value = 0
@@ -432,7 +555,9 @@ function openPermEdit(row) {
   }
   permDialog.mode = 'edit'
   permDialog.row = row
-  // 编码与类型不可改，回显只读；MENU/BUTTON 的 path/method 为 null，表单不提供输入。
+  // 编码与类型不可改，回显只读。评审 P1：MENU/BUTTON 的 path 是「菜单路由」，
+  // 必须回显已有值并随完整 PUT 原样提交（不能像旧实现那样提交 null 清空）——
+  // 表单里这些类型不显示路径输入框，form.path 承载 row.path 供 payload 保留。
   permDialog.form = {
     permissionCode: row.permissionCode,
     permissionName: row.permissionName,
@@ -445,7 +570,9 @@ function openPermEdit(row) {
 }
 
 function onPermTypeChange() {
-  // MENU/BUTTON 没有 path/method（仅 API 元数据），切换类型时清空避免旧值误提交。
+  // MENU/BUTTON 的 path 是菜单路由：编辑时类型选择框禁用，本函数只在创建时触发；
+  // 创建不采集菜单路由（提交 null 是合法终态），清空只是防 API 旧值串到 MENU/BUTTON。
+  // 编辑场景绝不能清空——form.path 承载 row.path 供 payload 原样保留。
   if (!isApiType(permDialog.form.permissionType)) {
     permDialog.form.path = ''
     permDialog.form.method = ''
@@ -511,8 +638,11 @@ async function togglePermStatus(row) {
   }
 }
 
-onMounted(() => {
-  loadPermissions()
+// 评审 P2：先完成本次权限加载，再按本次结果发起首屏查询——不用会话里的旧
+// 权限跳过查询（刚获授权的用户无需手动刷新），空权限也不会发出被拒绝的请求。
+onMounted(async () => {
+  await loadPermissions()
+  if (disposed) return
   fetchRoles()
   fetchPermissions()
 })
@@ -532,13 +662,24 @@ onUnmounted(() => {
     </div>
 
     <ElAlert
-      v-if="permissionStatus === 'unavailable'"
+      v-if="permissionStatus === 'loading' || permissionStatus === 'idle'"
+      type="info"
+      :closable="false"
+      show-icon
+      title="正在加载当前账号权限…"
+      description="权限加载完成后将按本次结果发起列表查询；加载期间不显示操作、不发出请求。"
+    />
+    <ElAlert
+      v-else-if="permissionStatus === 'unavailable'"
       type="warning"
       :closable="false"
       show-icon
-      title="权限状态未知"
-      description="暂时无法获取当前账号的有效权限编码（GET /api/auth/permissions 失败），页面按未下发处理放行显示；实际操作以后端鉴权结果为准。"
-    />
+      title="权限列表加载失败，操作入口已隐藏；请重试加载权限。"
+    >
+      <template #default>
+        <ElButton size="small" @click="retryPermissions">重试加载权限</ElButton>
+      </template>
+    </ElAlert>
 
     <ElTabs v-model="activeTab" class="role-perm-tabs">
       <ElTabPane label="角色管理" name="roles">
@@ -763,19 +904,68 @@ onUnmounted(() => {
         description="契约要求停用权限不能保留在替换请求中：它们不可勾选，保存后将从角色中移除。"
       />
       <ElAlert
-        v-if="assignDialog.loadError"
+        v-if="assignDialog.consistencyError"
         type="error"
         :closable="false"
         show-icon
         class="assign-alert"
-        :title="assignDialog.loadError"
+        :title="assignDialog.consistencyError"
       >
         <template #default>
           <ElButton link type="primary" :disabled="assignDialog.loading" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
         </template>
       </ElAlert>
+      <ElAlert
+        v-if="assignDialog.loadError || assignDialog.assignedError"
+        type="error"
+        :closable="false"
+        show-icon
+        class="assign-alert"
+        :title="assignDialog.assignedError || assignDialog.loadError"
+      >
+        <template #default>
+          <ElButton link type="primary" :disabled="assignDialog.loading" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
+        </template>
+      </ElAlert>
+      <ElAlert
+        v-if="assignDialog.readOnly && !assignDialog.assignedError && !assignDialog.consistencyError"
+        type="info"
+        :closable="false"
+        show-icon
+        class="assign-alert"
+        title="只读查看"
+        description="当前账号缺少权限项目录（permission:list）或角色分配（role:assign-permission）权限，仅展示该角色已分配的权限，不加载编辑目录、不可保存。"
+      />
       <div v-loading="assignDialog.loading" class="assign-wrap">
+        <!-- 只读视图：独立展示已分配权限（评审 P2），不依赖目录请求结果。 -->
         <ElTable
+          v-if="assignReadOnlyView"
+          :data="assignDialog.assigned"
+          row-key="id"
+          max-height="360"
+          border
+        >
+          <ElTableColumn label="权限编码" min-width="180">
+            <template #default="{ row }"><span class="mono">{{ row.permissionCode }}</span></template>
+          </ElTableColumn>
+          <ElTableColumn prop="permissionName" label="权限名称" min-width="140" />
+          <ElTableColumn label="类型" width="90">
+            <template #default="{ row }">
+              <ElTag :type="typeTagOf(row.permissionType)" effect="plain">{{ row.permissionType }}</ElTag>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="状态" width="92">
+            <template #default="{ row }">
+              <ElTag :type="row.status === 1 ? 'success' : 'danger'" effect="plain">
+                {{ row.status === 1 ? '启用' : '停用' }}
+              </ElTag>
+            </template>
+          </ElTableColumn>
+          <template #empty><ElEmpty description="该角色暂未分配任何权限" /></template>
+        </ElTable>
+        <!-- 编辑视图：可勾选目录（仅在目录加载完成后出现）。 -->
+        <ElTable
+          v-else
           ref="assignTableRef"
           :data="assignDialog.catalog"
           row-key="id"
@@ -805,13 +995,16 @@ onUnmounted(() => {
           <template #empty><ElEmpty description="暂无权限项目录" /></template>
         </ElTable>
       </div>
-      <p class="dialog-note">已选 {{ assignSelectedIds.length }} 项；全量替换以本次勾选为准，空选表示清空该角色全部权限。</p>
+      <p v-if="assignReadOnlyView" class="dialog-note">只读视图：以上为该角色当前已分配的权限，不加载编辑目录、不可修改。</p>
+      <p v-else class="dialog-note">已选 {{ assignSelectedIds.length }} 项；全量替换以本次勾选为准，空选表示清空该角色全部权限。</p>
       <template #footer>
         <ElButton @click="assignDialog.visible = false">取消</ElButton>
         <ElButton
           type="primary"
           :loading="assignDialog.saving"
-          :disabled="assignDialog.loading || !!assignDialog.loadError || !canAssignRolePermissions"
+          :disabled="assignDialog.loading || assignDialog.readOnly || !assignDialog.catalogLoaded
+            || !!assignDialog.loadError || !!assignDialog.assignedError || !!assignDialog.consistencyError
+            || !canAssignRolePermissions"
           @click="submitAssignDialog"
         >保存分配</ElButton>
       </template>
@@ -855,7 +1048,9 @@ onUnmounted(() => {
             </ElSelect>
           </ElFormItem>
         </template>
-        <p v-else class="dialog-note">MENU / BUTTON 类型没有 API 路径与方法（仅 API 类型是接口元数据）。</p>
+        <p v-else class="dialog-note">
+          {{ permDialog.mode === 'edit' ? 'MENU / BUTTON 的 path 为菜单路由，保存时按已有值原样保留，不会被清空。' : 'MENU / BUTTON 类型不采集菜单路由与接口方法（创建时提交 null）。' }}
+        </p>
         <p v-if="permDialog.mode === 'create'" class="dialog-note">新权限项默认启用；创建后编码与类型不可修改。</p>
       </ElForm>
       <template #footer>

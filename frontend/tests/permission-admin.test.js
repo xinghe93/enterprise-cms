@@ -7,6 +7,7 @@ import {
   buildPermissionUpdatePayload,
   buildRoleCreatePayload,
   buildRoleUpdatePayload,
+  findUnpreselectableAssigned,
   formatDateTime,
   normalizePermissionIds,
   validatePermissionCreateForm,
@@ -217,11 +218,88 @@ test('权限修改 payload：完整 PUT 且按数据库类型校验，编码/类
   assert.throws(() => buildPermissionUpdatePayload(apiRow, { permissionName: 'x', path: '/api/admin/x', method: '' }), TypeError)
 
   const menuRow = { permissionType: 'MENU' }
+  // 创建时未采集菜单路由的行（path 为 null）：编辑仍提交 null，null 是合法终态
   assert.deepEqual(
     buildPermissionUpdatePayload(menuRow, { permissionName: '菜单' }),
     { permissionName: '菜单', path: null, method: null },
   )
   assert.throws(() => buildPermissionUpdatePayload(menuRow, { permissionName: '   ' }), TypeError)
+})
+
+test('权限修改 payload（评审 P1）：MENU/BUTTON 编辑保留菜单路由，绝不提交 null 清空', () => {
+  // 场景一：仅改名称，路由按表单回显值原样保留（评审复现路径：旧实现会清空 /content/reviews）
+  const menuRow = { permissionType: 'MENU', path: '/content/reviews' }
+  assert.deepEqual(
+    buildPermissionUpdatePayload(menuRow, { permissionName: '审核菜单改', path: '/content/reviews' }),
+    { permissionName: '审核菜单改', path: '/content/reviews', method: null },
+  )
+  // 场景二：表单带回显空白，trim 后保留
+  assert.deepEqual(
+    buildPermissionUpdatePayload(menuRow, { permissionName: 'x', path: ' /content/reviews ' }),
+    { permissionName: 'x', path: '/content/reviews', method: null },
+  )
+  // 场景三：调用方未带 form.path（纯逻辑复用），回退 row.path 兜底
+  assert.deepEqual(
+    buildPermissionUpdatePayload(menuRow, { permissionName: 'x' }),
+    { permissionName: 'x', path: '/content/reviews', method: null },
+  )
+  // 场景四：调用方显式传 null，也回退 row.path——绝不以 null 覆盖数据库已有值
+  assert.deepEqual(
+    buildPermissionUpdatePayload(menuRow, { permissionName: 'x', path: null }),
+    { permissionName: 'x', path: '/content/reviews', method: null },
+  )
+  // BUTTON 同规则
+  assert.deepEqual(
+    buildPermissionUpdatePayload({ permissionType: 'BUTTON', path: '/content/publish' }, { permissionName: 'b' }),
+    { permissionName: 'b', path: '/content/publish', method: null },
+  )
+  // 超长菜单路由（后端 validateOptionalPath 限 255 码点）拒绝
+  assert.throws(
+    () => buildPermissionUpdatePayload(menuRow, { permissionName: 'x', path: '/' + 'a'.repeat(255) }),
+    /菜单路由不能超过 255 个字符/,
+  )
+  // API 分支不受影响：仍按 API_PATH_PATTERN 校验
+  assert.deepEqual(
+    buildPermissionUpdatePayload({ permissionType: 'API' }, { permissionName: 'x', path: '/api/admin/a', method: 'GET' }),
+    { permissionName: 'x', path: '/api/admin/a', method: 'GET' },
+  )
+})
+
+test('分配权限一致性校验（评审 P1）：已分配且启用但目录无法预选时必须报告，阻止保存防误删', () => {
+  const assignedRow = (id, status = 1) => ({ id, status })
+  const catalogRow = (id, status = 1) => ({ id, status })
+
+  // 场景一：目录把已分配且启用的权限读成「缺失」→ 必须报告
+  const missing = findUnpreselectableAssigned(
+    [assignedRow('3'), assignedRow('9')],
+    [catalogRow('9')],
+  )
+  assert.deepEqual(missing, ['3'])
+
+  // 场景二：目录把已分配且启用的权限读成「停用」→ 同样必须报告（status≠1 不可勾选）
+  const disabledInCatalog = findUnpreselectableAssigned(
+    [assignedRow('3'), assignedRow('9')],
+    [catalogRow('3'), catalogRow('9', 0)],
+  )
+  assert.deepEqual(disabledInCatalog, ['9'])
+
+  // 场景三：两边一致 → 空数组，允许保存
+  const consistent = findUnpreselectableAssigned(
+    [assignedRow('3'), assignedRow('9')],
+    [catalogRow('3'), catalogRow('9'), catalogRow('12')],
+  )
+  assert.deepEqual(consistent, [])
+
+  // 场景四：已分配但停用的项不在目录中 → 不误报（契约本就允许保存时移除停用项）
+  const disabledAssigned = findUnpreselectableAssigned(
+    [assignedRow('3', 0), assignedRow('9')],
+    [catalogRow('9')],
+  )
+  assert.deepEqual(disabledAssigned, [])
+
+  // 防御性输入：catalog/assigned 非数组时按空处理，不抛错
+  assert.deepEqual(findUnpreselectableAssigned([assignedRow('3')], null), ['3'])
+  assert.deepEqual(findUnpreselectableAssigned(null, [catalogRow('3')]), [])
 })
 
 test('permissionIds 规范化：trim 去重、上限 100、非法项拒绝、空数组合法', () => {

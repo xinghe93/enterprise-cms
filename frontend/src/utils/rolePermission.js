@@ -7,9 +7,12 @@
  *    （OpenAPI pattern \S：必须含非空白字符）；
  *  - 权限项 API 类型必须提供有效 path（^/api/(auth|admin|portal)(/[^\s?#]*)?$）
  *    与大写 method；MENU/BUTTON 的 method 必须为 null；
- *  - 权限完整 PUT：permissionName/path/method 都必填（MENU/BUTTON 的 path/method
- *    提交 null），permissionCode 与 permissionType 不可改；
- *  - 权限全量替换 permissionIds：唯一、最多 100 项、空数组表示清空。
+ *  - path 对 MENU/BUTTON 是「菜单路由」（后端契约不限格式、仅限长 255）；
+ *    权限完整 PUT 的 set("path", ...) 会无条件写库，故修改 MENU/BUTTON 时
+ *    必须按已有值保留 path，不能提交 null 清空（评审 P1 数据丢失）；
+ *    permissionName/path/method 三个键都必填，permissionCode / permissionType 不可改；
+ *  - 权限全量替换 permissionIds：唯一、最多 100 项、空数组表示清空；
+ *  - 保存前校验「已分配且启用」的权限都能在目录中预选（评审 P1 防误删授权）。
  *
  * 不依赖 Vue / DOM，便于 Node 原生测试直接覆盖这些规则。
  */
@@ -96,7 +99,8 @@ export function buildRoleUpdatePayload(form) {
  * 权限项创建表单校验：返回 { permissionCode?, permissionName?, permissionType?, path?, method? }。
  * 规则（契约 PermissionCreate 的 oneOf）：
  *  - API：path 必填且匹配 API_PATH_PATTERN、method 必须在枚举内；
- *  - MENU/BUTTON：method 必须为空（界面不提供输入），path 不接受（仅 API 元数据）。
+ *  - MENU/BUTTON：method 必须为空（界面不提供输入）；创建时不采集菜单路由，
+ *    path 提交 null 是合法终态（编辑时则必须按已有值保留，见 buildPermissionUpdatePayload）。
  */
 export function validatePermissionCreateForm(form) {
   const errors = {}
@@ -147,10 +151,26 @@ export function buildPermissionCreatePayload(form) {
 }
 
 /**
- * 权限项修改 payload（完整 PUT）：permissionName/path/method 都必填，
- * 基于数据库中的 permissionType 校验（编码与类型不可改）：
- *  - API：path/method 非空有效；
- *  - MENU/BUTTON：path/method 提交 null（表单不提供输入）。
+ * 菜单路由归一化（MENU/BUTTON 的 path）：后端契约不限格式、仅限长 255，
+ * 且完整 PUT 会无条件 {@code set("path", path)} 写库。去首尾空白，空串归一
+ * 为 null；超长抛错（与后端 validateOptionalPath 的码点上限一致）。
+ */
+function normalizeMenuRoute(value) {
+  if (value === null || value === undefined) return null
+  const trimmed = String(value).trim()
+  if (trimmed.length > PATH_MAX) {
+    throw new TypeError(`菜单路由不能超过 ${PATH_MAX} 个字符`)
+  }
+  return trimmed.length === 0 ? null : trimmed
+}
+
+/**
+ * 权限项修改 payload（完整 PUT）：permissionName/path/method 三个键都必填，
+ * 基于 row 中的数据库 permissionType 校验（编码与类型不可改）：
+ *  - API：path 必须是三个 API 前缀下的有效路径、method 为大写方法；
+ *  - MENU/BUTTON：method 必须 null；path 是「菜单路由」，必须按<b>已有值保留</b>，
+ *    不能提交 null 清空——否则仅改名称也会清空原路由（评审 P1 数据丢失）。
+ *    取 form.path（编辑表单以 row.path 回显）为准，未带则回退 row.path 兜底。
  */
 export function buildPermissionUpdatePayload(row, form) {
   // 名称校验与角色一致，复用同一 normalizeText 规则：
@@ -170,7 +190,36 @@ export function buildPermissionUpdatePayload(row, form) {
     }
     return { permissionName: form.permissionName.trim(), path: form.path.trim(), method: form.method }
   }
-  return { permissionName: form.permissionName.trim(), path: null, method: null }
+  // MENU/BUTTON：保留已有菜单路由（评审 P1）。form.path 由编辑表单以 row.path
+  // 回显；调用方未带 form.path 或显式传 null（纯逻辑测试/未来复用）时回退
+  // row.path 兜底，绝不以 null 覆盖数据库已有值。method 恒 null（契约 oneOf）。
+  const rawPath = form.path !== undefined && form.path !== null ? form.path : row?.path
+  const menuRoute = normalizeMenuRoute(rawPath)
+  return { permissionName: form.permissionName.trim(), path: menuRoute, method: null }
+}
+
+/**
+ * 分配权限弹窗「保存前一致性校验」（评审 P1，防误删授权）：返回「已分配且
+ * 启用、但在权限目录中无法预选」的权限 ID 列表。
+ *
+ * <p>目录（{@code listAllPermissions}）与已分配（{@code getRolePermissions}）
+ * 是两个独立请求，之间可能穿插其他管理员的启停操作：若目录把某个已分配且
+ * 启用的权限读成停用/缺失，弹窗既不会预选它（目录 status≠1 不可勾选），
+ * 也不会把它列入「停用·保存后移除」提示，全量替换就会静默解除该角色的这项
+ * 授权。返回非空即表示状态漂移，调用方必须<b>阻止保存并重新加载</b>。</p>
+ *
+ * <p>只校验「已分配且启用」的项：已分配但停用的项本就应按契约在保存时移除
+ * （弹窗有停用提示），不属于误删。</p>
+ */
+export function findUnpreselectableAssigned(assigned, catalog) {
+  const selectable = new Set(
+    (Array.isArray(catalog) ? catalog : [])
+      .filter((item) => item && item.status === 1)
+      .map((item) => String(item.id)),
+  )
+  return (Array.isArray(assigned) ? assigned : [])
+    .filter((item) => item && item.status === 1 && !selectable.has(String(item.id)))
+    .map((item) => String(item.id))
 }
 
 /**

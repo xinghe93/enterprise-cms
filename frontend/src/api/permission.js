@@ -27,7 +27,9 @@ export function createPermissionApi(client) {
     // 完整 PUT：仅 roleName 可改，roleCode 创建后不可改（契约 3.1）
     updateRole: (id, payload) => client.put(`/admin/roles/${pathId(id)}`, payload),
     setRoleStatus: (id, status) => client.put(`/admin/roles/${pathId(id)}/status`, { status }),
-    // 已分配权限回显：返回全部已分配权限（含停用项），按关联 ID 升序，仅用于界面
+    // 已分配权限回显：返回全部已分配权限（含停用项），按关联 ID 升序。
+    // 评审 P2：只读账号（有 role:read-permission 但无 permission:list）也能独立
+    // 查看它——目录请求 403 不得阻断这个结果的展示，故视图需单独请求、单独保存。
     getRolePermissions: (id) => client.get(`/admin/roles/${pathId(id)}/permissions`),
     // 全量替换：permissionIds 已由视图经 normalizePermissionIds 规范化（去重、≤100、合法 ID）；
     // 契约：不存在/停用权限分别 404/409，既有停用权限不能保留在本次请求中
@@ -37,8 +39,10 @@ export function createPermissionApi(client) {
     // ── 权限项：permissionType 精确筛选（MENU/BUTTON/API），其余同上 ──
     listPermissions: (params = {}) => client.get('/admin/permissions', { params: compactParams(params) }),
     createPermission: (payload) => client.post('/admin/permissions', payload),
-    // 完整 PUT：permissionName/path/method 都必填（MENU/BUTTON 的 path/method 提交 null），
-    // permissionCode 与 permissionType 不可改
+    // 完整 PUT：permissionName/path/method 三个键都必填、permissionCode 与
+    // permissionType 不可改。MENU/BUTTON 的 path 是菜单路由，必须按已有值保留
+    // （不能提交 null 清空，见 rolePermission.js 的 buildPermissionUpdatePayload），
+    // method 必须 null；API 的 path/method 需符合契约前缀与枚举。
     updatePermission: (id, payload) => client.put(`/admin/permissions/${pathId(id)}`, payload),
     setPermissionStatus: (id, status) => client.put(`/admin/permissions/${pathId(id)}/status`, { status }),
 
