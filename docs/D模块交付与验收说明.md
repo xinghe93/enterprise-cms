@@ -1,7 +1,7 @@
 # D 模块交付与验收说明（审核 / 发布 / 操作日志）
 
 > 适用对象：组长验收、组员联调。
-> 维护人：D 同学（杨朋骏）。最后更新：2026-11-19。
+> 维护人：D 同学（杨朋骏）。最后更新：2026-11-22。
 
 ## 1. 模块范围
 
@@ -25,7 +25,7 @@
 | 8 | POST | `/api/admin/articles/batch/publish` | `article:publish-batch` | #30 |
 | 9 | POST | `/api/admin/articles/batch/offline` | `article:offline-batch` | #30 |
 | 10 | GET | `/api/admin/reviews/pending` | `article:review-list` | #44 |
-| 11 | PUT | `/api/admin/articles/{id}/tags` | `article:bind-tag` | 新 PR（标签绑定接口，`feature/D/tag-binding`） |
+| 11 | PUT | `/api/admin/articles/{id}/tags` | `article:bind-tag` | #57（已合入 dev `920c1d8`） |
 
 > 标签查询（`GET /api/admin/tags` 等）属 C 的标签字典模块，D 的审核/日志页按契约复用，不重复实现。
 
@@ -56,8 +56,8 @@
 | 入口 | 命令/文件 | 前置条件 | 最近结果 |
 | --- | --- | --- | --- |
 | 日志模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.log.**"` | JDK25、`SPRING_DATASOURCE_PASSWORD` | **63 项全过** |
-| 审核模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.review.**"` | 同上 + Docker MySQL（含 IT） | **153 项全过**（dev 已合入 #30、#56；标签绑定接口 PR 合并后为 170 项） |
-| 全量后端测试 | `mvn -B -o clean verify`（排除本机 Mockito 受限类） | 同上；JDK25 | **299 项全过**（dev `17ba15d` 实测，2026-11-22；标签绑定接口合并后为 321 项） |
+| 审核模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.review.**"` | 同上 + Docker MySQL（含 IT） | **170 项全过**（#30、#56、#57 均已合入 dev） |
+| 全量后端测试 | `mvn -B -o clean verify`（排除本机 Mockito 受限类） | 同上；JDK25 | **321 项全过**（dev `c834385` 实测，2026-11-22，含 #57 标签绑定） |
 | 真实登录态 e2e | 本机验收脚本（不入库）| Docker mysql8/redis、001–005 种子、jar、`CMS_*_PASSWORD` | **35 PASS / 0 FAIL / 0 SKIP**（含审核历史、审核/发布命令、标签绑定；证据 `e2e_review_log_20261121_001357.txt`） |
 | 压测 | 本机压测脚本（不入库） | 同上 | PASS，见 §5 |
 
@@ -76,7 +76,7 @@
 
 判定：**PASS**（错误数 0；并发=1 时各接口 p95 均 < 300ms）。
 
-说明：数据量很小，结果只证明接口自身开销（鉴权 + 参数校验 + 分页 SQL）稳定；#30、#56 已合入 dev，标签绑定接口 API 在新 PR 中交付，正式压测待其合并、演示数据充足后重跑，并把审核/发布写接口、审核历史与标签绑定纳入。
+说明：数据量很小，结果只证明接口自身开销（鉴权 + 参数校验 + 分页 SQL）稳定；#30、#56、#57 均已合入 dev，标签绑定接口已在 dev 上具备，正式压测待演示数据充足后统一重跑，并把审核/发布写接口、审核历史与标签绑定纳入。
 
 ## 6. 已知限制与待办
 
@@ -85,12 +85,12 @@
 | 日志接口权限实现 | `@RequirePermission("log:list")`/`@RequirePermission("log:read")`（PR #52 已合入 dev，旧 `LogPermissionGuard` 已删除），403 文案「缺少访问权限: …」 | 无待办 |
 | 审核/发布命令 | 已随 PR #30 合入 dev（`78b7174`），含 `@RequirePermission` 与事务内审计 bean；e2e 已 PASS | 重跑压测纳入 |
 | 审核历史查询接口 | 已随 PR #56 合入 dev（`ed620c3`），`GET /api/admin/articles/{id}/reviews` 可用（e2e PASS） | 无待办；压测纳入 |
-| 标签绑定接口 | `PUT /api/admin/articles/{id}/tags` 此前只有 `ArticleTagService`、无 Controller；已在新分支 `feature/D/tag-binding`（提交 `0ac8cb0`）补齐 Controller/Service/审计接入与 17 项测试 | 建 PR → 合并后 e2e/压测纳入 |
-| 前端权限门控 | 前端日志页/审核页已做软门控（`permissionCodes` 为空时放行），`permissionCodes` 依赖 A 的 `/auth/me` 下发 | 请 A 在 `/auth/me` 返回权限码后收紧 |
-| 演示种子 | `005_seed_review_log_demo.sql`（原 004 编号与 dev 的 `004_user_status_version.sql` 冲突，已改名）在 PR #53（`feature/D/e2e-seed`） | 合并后从仓库直接导入 |
+| 标签绑定接口 | 已随 PR #57 合入 dev（`920c1d8`），`PUT /api/admin/articles/{id}/tags` 可用；严格 JSON 类型（`5a7ede6`）与重复标签 ID 前置校验（`c394feb`）已按复审补齐 | 无待办；e2e/压测纳入 |
+| 前端权限门控 | 前端日志页/审核页已从 `GET /api/auth/permissions` 取权限并做严格门控（#34 已合入 dev `17ba15d`），加载失败提供重试 | 无待办；该接口契约 owner=B，D 侧临时接线已获组长复审确认 |
+| 演示种子 | `005_seed_review_log_demo.sql` 在 PR #53（`feature/D/e2e-seed`）；2026-11-22 在临时库连续导入两次复核幂等：5 篇文章/2 条审核/2 条标签关联/0 条日志 | 合并后从仓库直接导入 |
 | 本机 Mockito | JDK25 + Windows 不允许外部 attach | 加 javaagent 或 CI 指定 JDK |
 | 日志数据范围 | 全局审计，首期按权限码全量可读 | 若要求部门级范围需另行评审 |
 
 ## 7. 相关提交（关键节点）
 
-`5bbf940`（日志实体/Mapper）→ `f1aa97c`（查询 DTO/XML/Service）→ `18612f5`（日志接口）→ `bbaef92`（审计切面）→ `724d600`（日志文档/Apifox）→ `bb5ad44`（审计事务语义与参数契约）→ `20dfab6`（复审修正）→ `b1c73f3`（操作人接入）→ `2a98125`（ArticleTagService）→ `7db8f24`/`cbd9ddb`/`24a1954`/`a6cf468`（标签服务复审修正）→ `b5be056`（审核历史）→ `9c6ec67`（审核与发布命令）→ `3edbcf2`/`e15abc9`（审核复审修正）→ `5392416`/`b32a0ab`（发布/下架）→ `3475cf8`（审核历史外连接与写入校验）→ `567e45c`（日志权限改走注解）→ `0a9a9f9`（演示种子与登录态验收）→ `1030b50`/`e1af3a1`/`3fddf29`（审核历史接口，已合入 `ed620c3`）→ `0ac8cb0`（标签绑定接口，新 PR）。
+`5bbf940`（日志实体/Mapper）→ `f1aa97c`（查询 DTO/XML/Service）→ `18612f5`（日志接口）→ `bbaef92`（审计切面）→ `724d600`（日志文档/Apifox）→ `bb5ad44`（审计事务语义与参数契约）→ `20dfab6`（复审修正）→ `b1c73f3`（操作人接入）→ `2a98125`（ArticleTagService）→ `7db8f24`/`cbd9ddb`/`24a1954`/`a6cf468`（标签服务复审修正）→ `b5be056`（审核历史）→ `9c6ec67`（审核与发布命令）→ `3edbcf2`/`e15abc9`（审核复审修正）→ `5392416`/`b32a0ab`（发布/下架）→ `3475cf8`（审核历史外连接与写入校验）→ `567e45c`（日志权限改走注解）→ `0a9a9f9`（演示种子与登录态验收）→ `1030b50`/`e1af3a1`/`3fddf29`（审核历史接口，已合入 `ed620c3`）→ `0ac8cb0`（标签绑定接口）→ `5a7ede6`/`c394feb`（严格 JSON 类型与重复标签 ID 前置校验）→ PR #57 合入 dev `920c1d8`。
