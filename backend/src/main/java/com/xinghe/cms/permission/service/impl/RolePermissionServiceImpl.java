@@ -47,9 +47,11 @@ import org.springframework.transaction.annotation.Transactional;
  * 单事务内：① 共享锁操作人用户行；② {@code FOR UPDATE} 锁定目标角色行（404
  * 判定 + 串行化同一角色的并发替换，也保证后续差集基于同一最新快照）；③ 请求
  * 集合去重并按 ID 升序，非空时 {@code FOR SHARE} 按升序共享锁定待分配权限行、
- * 校验存在（404）与启用（409）；④ 读当前关联并计算差集；⑤ 差集均为空则幂等
- * 早返；⑥ 把差集删除 / 插入包进受审计代理执行。空集合不发出 IN 查询（契约
- * 明文）。</p>
+ * 校验存在（404）与启用（409）；④ 读当前关联；④.5（评审 P1 复审）若请求带
+ * {@code expectedPermissionIds}，在同一角色行锁内按集合比对它与当前关联，
+ * 不一致抛 CONFLICT（409）——校验与写入同锁原子完成，防止陈旧快照覆盖其他
+ * 管理员刚做的增删；⑤ 计算差集，均为空则幂等早返；⑥ 把差集删除 / 插入包进
+ * 受审计代理执行。空集合不发出 IN 查询（契约明文）。</p>
  *
  * <p><b>差集替换（评审 P2）</b>：不再"先删后插整表清空"。关联表为空时两个
  * 不同角色的事务各自执行一次无匹配的 {@code DELETE WHERE role_id = ?} 会锁住
@@ -185,6 +187,23 @@ public class RolePermissionServiceImpl implements RolePermissionService {
         //    均为空即幂等（协作约定 8.1：全量替换相同有效集合返回 200，不重复插关联）。
         List<Long> current = sysRolePermissionMapper.selectPermissionIdsByRoleId(roleId);
         List<Long> currentIds = current == null ? List.of() : current;
+
+        // 4.5) 评审 P1 并发覆盖：在角色 FOR UPDATE 行锁内校验客户端编辑开始时看到的
+        //      原权限集合（expectedPermissionIds）与当前集合是否一致。角色行锁已让
+        //      同一角色的所有替换串行，current 又是锁内读取，故"校验 + 写入"原子完成：
+        //      甲撤销 X 提交后，乙基于陈旧基线提交时 current 已不含 X，集合不等→409，
+        //      不会用 (X,Y) 重新授予已撤销的 X，也不会覆盖他人新增的授权。
+        //      比较按集合进行（顺序无关），stop 项也在集合内（current 含停用关联）。
+        //      字段缺省（老客户端）时跳过校验，行为与旧版完全一致。
+        if (request.expectedPermissionIds() != null) {
+            Set<Long> expectedSet = new HashSet<>(request.expectedPermissionIds());
+            Set<Long> actualSet = new HashSet<>(currentIds);
+            if (!expectedSet.equals(actualSet)) {
+                throw new BusinessException(ResultCode.CONFLICT,
+                        "角色权限已被其他管理员修改，请重新加载后再分配");
+            }
+        }
+
         Set<Long> targetSet = new HashSet<>(target);
         Set<Long> currentSet = new HashSet<>(currentIds);
         List<Long> toRemove = currentIds.stream()
