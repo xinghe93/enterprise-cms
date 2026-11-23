@@ -47,8 +47,8 @@
 | 有权限 200 | 管理员走通角色/权限项 CRUD、启停、分配 | `RoleControllerHttpTests`（56 项）、`PermissionControllerHttpTests`（18 项） |
 | 参数 400 | ID 非十进制/前导零/0/超 Long；未知字段；DTO 空白（含 NBSP U+3000）；`PermissionUpdate` 严格反序列化器；`expectedPermissionIds` 非数组/非法元素 | `RoleControllerHttpTests`、`PermissionControllerHttpTests`、`AuthorizationSnapshotTests`；`ContractWhitespace` 单测 |
 | 不存在 404 | 角色不存在、权限项不存在 | Controller / Service 单测 |
-| 状态冲突 409 | 请求含停用权限；编码/名称重复；**并发基线 `expectedPermissionIds` 与当前集合不一致** | `RolePermissionServiceImplTests`（基线不一致 409）、`RoleControllerHttpTests`（409 映射） |
-| 审计成功 / 失败 | 写操作 SUCCESS 随事务提交；写失败回滚后 `afterCompletion` 独立事务补 FAILURE；幂等路径不记审计 | `RoleAdminAuditTransactionTests`、`PermissionAdminAuditTransactionTests`、`RolePermissionAuditTransactionTests` |
+| 状态冲突 409 | 请求含停用权限；**角色/权限编码重复**（`001_init.sql` 只对 `role_code`、`permission_code` 设唯一约束，服务层也按编码判冲突；用不同编码创建同名角色/权限项是允许操作，不得当作 409 验收）；**并发基线 `expectedPermissionIds` 与当前集合不一致** | `RolePermissionServiceImplTests`（基线不一致 409）、`RoleControllerHttpTests`（409 映射） |
+| 审计成功 / 失败 | 写操作 SUCCESS 随事务提交；写失败回滚后 `afterCompletion` 独立事务补 FAILURE。**免审计仅限两类明确跳过的路径**：启停「重复设置同一状态（含条件更新影响 0 行）」与角色权限「相同集合幂等」；`RoleAdminServiceImpl.update` / `PermissionAdminServiceImpl.update` 直接标 `@AuditLog`，提交相同字段仍执行更新并记录 SUCCESS | `RoleAdminAuditTransactionTests`、`PermissionAdminAuditTransactionTests`、`RolePermissionAuditTransactionTests` |
 | 授权快照一致性 | 停用角色/权限不计入；启用用户无角色时双集合为空；用户不存在/停用抛 UNAUTHORIZED | `AuthorizationQueryServiceImplTests`、`AuthorizationSnapshotTests` |
 | 并发安全（服务端） | 差集替换不死锁；锁序「用户 → 角色 → 权限」；基线 409 阻止陈旧覆盖 | `RolePermissionServiceImplTests`、`RolePermissionAuditTransactionTests`；评审多轮双会话逻辑验证 |
 | 并发安全（前端） | 三类弹窗会话绑定；保存中取消/重开同一或不同记录；连续保存入口可用 | `permission-admin.test.js` 纯函数 + 静态源码断言（前端 20 项） |
@@ -57,7 +57,7 @@
 
 1. **授权快照**：`AuthorizationQueryService#getForUser` 每请求重算，`enabledRoleCodes` 仅含启用用户关联的启用角色；`permissionCodes` 在此基础上再过滤停用权限。用户不存在或已停用抛 UNAUTHORIZED，绝不返回可被误认为已认证的空快照。
 2. **AOP 鉴权**：先经 A 的认证入口确认身份（无 Token/会话失效/用户停用均为 401），再由快照按编码匹配；`@RequirePermission` 任一编码命中即放行，全部未命中 403。
-3. **审计接入**：`@AuditLog` 只能标在事务边界内、经 Spring 代理调用的方法。角色/权限项写操作与「更新」类无状态变更路径用 `RoleWriteAuditMarker` / `PermissionWriteAuditMarker`：把真实写入以 `Runnable` 传入被 `@AuditLog` 环绕的代理方法，校验通过与差集非空才进入；写失败由切面 `afterCompletion` 用独立事务补记 FAILURE，不再漏记。
+3. **审计接入**：`@AuditLog` 只能标在事务边界内、经 Spring 代理调用的方法。有幂等跳过路径的写操作才用 `RoleWriteAuditMarker` / `PermissionWriteAuditMarker`：把真实写入以 `Runnable` 传入被 `@AuditLog` 环绕的代理方法，**只在确实发生变更时**进入——即启停「目标状态与当前不同且条件更新影响 1 行」、角色权限「差集非空」；写失败由切面 `afterCompletion` 用独立事务补记 FAILURE。免审计的仅限上述两类幂等跳过路径；`RoleAdminServiceImpl.update` / `PermissionAdminServiceImpl.update` 创建/修改类无跳过路径，直接标 `@AuditLog`，即使提交相同字段也执行更新并记录 SUCCESS。
 4. **ID 契约**：响应中业务 ID 一律字符串；路径/请求体 ID 只接受 `[1-9][0-9]{0,18}`、无前导零、≤ `Long.MAX_VALUE`；反序列化器对越界、null、非字符串元素一律 400，不落到 500。
 5. **参数严格性**：未知 JSON 字段 400（`RolePermissionsUpdate` / `PermissionUpdate` 用自定义反序列化器显式拒绝）；名称/编码先按原始长度校验再去首尾空白并验证非空；`ContractWhitespace.strip` 识别 NBSP，`String.strip` 不认 NBSP 故禁用。MENU/BUTTON 的 `path` 是菜单路由：编辑必须原样提交数据库值（不 trim、不按 JS `.length` 复检），长度由后端按 Unicode 码点（≤255）裁决。
 6. **分页**：统一由 `MybatisPlusConfig` 的 `PaginationInnerInterceptor`（`maxLimit = PageQuery.MAX_SIZE = 100`、`overflow = false`）追加；`keyword` 一律 `keyword == null ? null : ContractWhitespace.strip(keyword)`。
@@ -68,7 +68,9 @@
 8. **并发安全 —— 前端**：角色、权限项、分配权限三类弹窗各自维护会话序号（打开/关闭均换号，`flush: 'sync'`）；保存请求开始时冻结会话与记录 ID 快照，每个 await 后与成功点校验，旧响应只作用于原会话，不关闭刚打开的另一条记录弹窗；`shouldReleaseAssignSaving` 区分「本次成功关闭」与「被新会话接管」以正确清理 submitting/saving；保存期间 UI 禁用关闭/重开入口。
 9. **权限状态门控**：前端进页面先拉 `/auth/permissions`，按 `idle/loading/loaded/unavailable` 四态门控；只有 `loaded` 才按本次权限编码判断，空权限不发起会被拒绝的列表请求；写操作成功后重载权限并刷新列表。
 
-## 4. 本 PR 改动范围（相对 origin/dev 共 12 个文件）
+## 4. 历史实现清单（B 模块此前各 PR 合入 dev 的 12 个文件）
+
+> **本 PR（`docs/permission-delivery`）仅新增本文档 `docs/B模块交付与验收说明.md` 一个文件**，对运行时无任何影响。下表是 B 模块历史实现的文件清单（分属 PR #46 / #58 / #59 / #60 及 `feature/B/permission-frontend`，均已合入 dev），供定位代码与验收使用，**不是本 PR 的改动范围**；请勿按本 PR 的 GitHub 差异去查找下表文件。
 
 | 层 | 文件 | 说明 |
 | --- | --- | --- |
@@ -89,9 +91,9 @@
 
 | 入口 | 命令 | 前置条件 | 最近结果 |
 | --- | --- | --- | --- |
-| 前端全量 | `cd frontend && node --test tests/*.test.js` | Node 22+ | **109 / 109 通过**（2026-11-23） |
-| 后端全量 | `cd backend && $env:JAVA_HOME="D:\Java\jdk25"; & .\mvnw.cmd clean verify` | JDK 25、Docker MySQL/Redis、`SPRING_DATASOURCE_PASSWORD` | **751 / 751 通过，BUILD SUCCESS**（2026-11-23） |
-| 角色权限定位测试 | `& .\mvnw.cmd "-Dtest=RolePermissionServiceImplTests,RoleControllerHttpTests,RolePermissionAuditTransactionTests" test` | 同上 | 85 项通过 |
+| 前端全量 | `cd frontend && node --test tests/*.test.js` | Node 22+ | **116 / 116 通过**（2026-11-23 在 `docs/permission-delivery` 分支独立复跑；较功能 PR 时的 109 多出的 7 项来自 dev 上其他模块同期合入的 `text.test.js` 与 `organization.test.js`） |
+| 后端全量 | `cd backend && $env:JAVA_HOME="D:\Java\jdk25"; & .\mvnw.cmd clean verify` | JDK 25、Docker MySQL/Redis、`SPRING_DATASOURCE_PASSWORD` | **754 / 754 通过，BUILD SUCCESS**（2026-11-23 在 `docs/permission-delivery` 分支独立复跑；较功能 PR 时的 751 多出的 3 项来自 dev 上其他模块同期合入） |
+| 角色权限定位测试 | `& .\mvnw.cmd "-Dtest=RolePermissionServiceImplTests,RoleControllerHttpTests,RolePermissionAuditTransactionTests" test` | 同上 | 85 项通过（56 + 22 + 7） |
 
 > Windows 上 `JAVA_HOME` 必须在 PowerShell 内用 `$env:JAVA_HOME = "D:\Java\jdk25"` 设置；bash 里 `JAVA_HOME=D:\Java\jdk25 ./mvnw.cmd` 会报未定义正确。
 
@@ -103,10 +105,11 @@
 | --- | --- | --- | --- |
 | 1 | 基础 CRUD | 管理员新建角色→编辑名称→启停→分页查询；新建权限项→编辑→启停 | 全部 200；审计日志有对应 SUCCESS 记录 |
 | 2 | 分配与回显 | 给角色勾选若干权限保存，重开弹窗 | 回显勾选与保存一致；停用项显示「保存后移除」 |
-| 3 | 并发撤销（P1） | 会话甲、乙打开同一角色权限弹窗；甲撤销权限 X 保存；乙在弹窗内新增 Y 保存 | 乙收到 409 与「已被其他管理员修改，请重新加载」；X 不被恢复 |
-| 4 | 会话重开（P2） | 弹窗保存请求挂起期间取消，打开另一条记录并填写；旧响应返回 | 新弹窗不被关闭、草稿不丢失；无成功提示误弹 |
+| 3a | 并发撤销（P1）· **浏览器** | 会话甲、乙打开同一角色权限弹窗；甲撤销权限 X 保存；乙在弹窗内新增 Y 后点保存 | **前端保存前重读拦截**（`RolePermissionView.vue` 的 `getRolePermissions` + 基线比对）：乙看到「已被其他管理员修改，请重新加载」，**不发 PUT**；X 不被恢复。浏览器只能验到这一层拦截 |
+| 3b | 并发撤销（P1）· **服务端 409**（Apifox） | 用 Apifox 直接 `PUT /api/admin/roles/{id}/permissions`，请求体带**过期的** `expectedPermissionIds`（甲撤销 X 前读到的旧集合）与任意 `permissionIds` | 服务端在角色行锁内比对当前集合与过期基线，返回 **409**「角色权限已被其他管理员修改，请重新加载后再分配」，且不写库、不记审计。此步单独验证服务端，浏览器因前端拦截看不到 409 |
+| 4 | 会话重开（P2）· 控件禁用检查 | 打开任一编辑/分配弹窗并开始保存，观察保存期间的交互控件 | `RolePermissionView.vue` 在保存期间禁用「取消」「X 关闭」「ESC」「重新加载」及列表内其他记录的「编辑/新建/分配权限」入口（见 §3.8），**手工无法完成「取消并重开」**。验收时检查这些控件确实禁用；旧响应不误关新弹窗的行为由 `permission-admin.test.js` 的程序化会话状态机测试覆盖（非手工） |
 | 5 | 连续保存 | 同一角色连续保存两次，再换另一角色保存 | 每次成功后按钮恢复可用，列表与当前权限刷新 |
-| 6 | 只读账号 | 用只有 `role:read-permission`、无 `permission:list` 的账号打开分配弹窗 | 只展示已分配表格、不发目录请求、保存按钮禁用 |
+| 6 | 只读账号 | 验收账号需**同时具备 `role:list` 与 `role:read-permission`，且不具备 `permission:list` 及角色/权限编辑类权限**（`role:list` 必给：缺它时角色列表被清空、分配弹窗入口位于角色行内，根本打不开；`role:read-permission` 用于读已分配） | 角色列表可见；打开分配弹窗只展示已分配表格、不发目录请求、保存按钮禁用；编辑相关权限仍不可用 |
 | 7 | 401 / 403 | 匿名访问管理接口；普通员工访问角色分页 | 分别 401 / 403 |
 
 ## 7. 已知边界与注意
