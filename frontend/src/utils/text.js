@@ -12,6 +12,21 @@ export function countCodePoints(value) {
   return Array.from(String(value ?? '')).length
 }
 
+/**
+ * 原生 input 的 @input 处理器：截断后把结果同步写回 DOM。
+ *
+ * 仅更新 model 不够——超限时 clampCodePoints 返回与当前 model 相同的值，Vue
+ * 不会重渲染，输入框仍显示刚敲进去的第 129 字，但提交的是原 128 字，形成
+ * 「显示值与提交值不同」（老师复审 #2）。裁剪（含 trim）结果一律写回 DOM，
+ * 保证输入框与 model 始终一致。
+ */
+export function syncClampedInput(event, max, { trim = false } = {}) {
+  const clamped = clampCodePoints(event.target.value, max)
+  const result = trim ? clamped.trim() : clamped
+  if (event.target.value !== result) event.target.value = result
+  return result
+}
+
 /** 按 Unicode 代码点截断到 max 个字符，超出部分丢弃；null/undefined 视为空串。 */
 export function clampCodePoints(value, max) {
   const chars = Array.from(String(value ?? ''))

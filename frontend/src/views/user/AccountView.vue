@@ -22,7 +22,7 @@ import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree, treeFailureFilterPatch, validateAccountForm } from '../../utils/organization.js'
-import { clampCodePoints } from '../../utils/text.js'
+import { syncClampedInput } from '../../utils/text.js'
 
 const router = useRouter()
 const userApi = createUserApi(api)
@@ -251,8 +251,8 @@ onMounted(() => {
       <label class="org-inline-field">
         <span>关键字</span>
         <!-- 原生 input 的 maxlength 按 UTF-16 代码单元截断，与后端代码点口径不一致；
-             改用 clampCodePoints 逐代码点截断（老师复审 P2：搜索须接受完整合法姓名）。 -->
-        <input :value="filters.keyword" @input="filters.keyword = clampCodePoints($event.target.value, 100)" placeholder="登录账号 / 姓名" @keyup.enter="search" />
+             syncClampedInput 逐代码点截断并把结果同步回 DOM，显示值与提交值始终一致。 -->
+        <input :value="filters.keyword" @input="filters.keyword = syncClampedInput($event, 100)" placeholder="登录账号 / 姓名" @keyup.enter="search" />
       </label>
       <label class="org-inline-field">
         <span>部门</span>
@@ -344,17 +344,17 @@ onMounted(() => {
     >
       <label v-if="dialog.mode === 'create'" class="org-field">
         <span>登录账号 <em>*</em></span>
-        <input :value="dialog.form.username" @input="dialog.form.username = clampCodePoints($event.target.value, 64).trim()" placeholder="如 zhangsan" />
+        <input :value="dialog.form.username" @input="dialog.form.username = syncClampedInput($event, 64, { trim: true })" placeholder="如 zhangsan" />
         <small>1～64 字，登录唯一标识。</small>
       </label>
       <label v-if="dialog.mode === 'create'" class="org-field">
         <span>初始密码 <em>*</em></span>
-        <input :value="dialog.form.password" type="password" @input="dialog.form.password = clampCodePoints($event.target.value, 128)" placeholder="至少 8 位" />
+        <input :value="dialog.form.password" type="password" @input="dialog.form.password = syncClampedInput($event, 128)" placeholder="至少 8 位" />
         <small>8～128 字。</small>
       </label>
       <label class="org-field">
         <span>姓名 <em>*</em></span>
-        <input :value="dialog.form.realName" @input="dialog.form.realName = clampCodePoints($event.target.value, 100).trim()" placeholder="如 张三" />
+        <input :value="dialog.form.realName" @input="dialog.form.realName = syncClampedInput($event, 100, { trim: true })" placeholder="如 张三" />
       </label>
       <label class="org-field">
         <span>所属部门</span>

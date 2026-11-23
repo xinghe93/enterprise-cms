@@ -16,7 +16,7 @@ import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { findDepartment, flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
-import { clampCodePoints } from '../../utils/text.js'
+import { countCodePoints, syncClampedInput } from '../../utils/text.js'
 
 const userApi = createUserApi(api)
 const tree = ref([])
@@ -107,9 +107,11 @@ function closeEditor() {
 
 function validateForm() {
   const { form, mode, node } = editor.value
-  if (mode === 'create' && (!form.deptCode || form.deptCode.length > 64)) return '部门编码必填且不超过 64 字'
-  // 名称先做与后端一致的纯空白拒绝（trim 含 U+3000 等全角空白），再查长度。
-  if (!form.deptName.trim() || form.deptName.length > 100) return '部门名称必填且不超过 100 字'
+  // 长度按 Unicode 代码点计数，与 DepartmentJson.text() 同口径（老师复审 P2）：
+  // 100 个「𠮷」名称的 String.length()=200，按 UTF-16 判定会被误拒。
+  if (mode === 'create' && (!form.deptCode || countCodePoints(form.deptCode) > 64)) return '部门编码必填且不超过 64 字'
+  // 名称先做与后端一致的纯空白拒绝（trim 含 U+3000 等全角空白），再按代码点查长度。
+  if (!form.deptName.trim() || countCodePoints(form.deptName) > 100) return '部门名称必填且不超过 100 字'
   const order = Number(form.sortOrder)
   if (!Number.isInteger(order) || order < 0 || order > 2147483647) return '排序值需为 0～2147483647 的整数'
   // parentId 统一按字符串校验：select 候选与服务端返回均为字符串，防数字类型绕判。
@@ -281,14 +283,14 @@ onMounted(loadTree)
     >
       <label class="org-field">
         <span>部门编码 <em>*</em></span>
-        <!-- clampCodePoints 逐代码点截断：与 DepartmentJson.text() 的字符语义一致，
-             maxlength 按 UTF-16 截断会把含增补平面字符的合法名称截半。 -->
-        <input :value="editor.form.deptCode" @input="editor.form.deptCode = clampCodePoints($event.target.value, 64).trim()" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
+        <!-- syncClampedInput 按代码点截断并同步回 DOM：与 DepartmentJson.text()
+             的字符语义一致，且显示值与提交值始终一致（老师复审 #1/#2）。 -->
+        <input :value="editor.form.deptCode" @input="editor.form.deptCode = syncClampedInput($event, 64, { trim: true })" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
         <small v-if="editor.mode === 'edit'">编码创建后不可修改；更新请求不提交该字段。</small>
       </label>
       <label class="org-field">
         <span>部门名称 <em>*</em></span>
-        <input :value="editor.form.deptName" @input="editor.form.deptName = clampCodePoints($event.target.value, 100).trim()" placeholder="如 销售部" />
+        <input :value="editor.form.deptName" @input="editor.form.deptName = syncClampedInput($event, 100, { trim: true })" placeholder="如 销售部" />
       </label>
       <label class="org-field">
         <span>上级部门</span>

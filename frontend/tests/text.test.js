@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { clampCodePoints, countCodePoints } from '../src/utils/text.js'
+import { clampCodePoints, countCodePoints, syncClampedInput } from '../src/utils/text.js'
 
 test('countCodePoints 按 Unicode 代码点计数，与后端 codePointCount 同口径', () => {
   // 「𠮷」是增补平面字符，raw.length()=2 但代码点数是 1。
@@ -28,4 +28,25 @@ test('clampCodePoints 按代码点截断：增补平面字符不被按 UTF-16 �
   assert.equal(countCodePoints(clamped), 64)
   // 半个代理对（孤立代理项）按 1 个代码点参与计数，截断结果总是合法字符串。
   assert.equal(clampCodePoints('\uD842', 10), '\uD842')
+})
+
+test('syncClampedInput 把截断结果同步写回 DOM，显示值与提交值一致', () => {
+  // 老师复审 #2：model 已是 128 个代码点时再敲第 129 字，clamp 返回相同值
+  // → Vue 不重渲染 → 输入框显示 129 字但提交 128 字。处理器必须写回 DOM。
+  const input = { value: '𠮷'.repeat(128) + 'x' }
+  const result = syncClampedInput({ target: input }, 128)
+  assert.equal(result, '𠮷'.repeat(128))
+  assert.equal(input.value, result, 'DOM 输入框必须同步为实际提交值')
+  assert.equal(countCodePoints(input.value), 128)
+
+  // 未超限时不改动 DOM（交给 Vue 的正常渲染流程）。
+  const normal = { value: '𠮷'.repeat(10) }
+  assert.equal(syncClampedInput({ target: normal }, 64), '𠮷'.repeat(10))
+  assert.equal(normal.value, '𠮷'.repeat(10))
+
+  // trim 场景（账号/姓名）：写回的同样是裁剪后的最终提交值。
+  const padded = { value: '  𠮷  ' }
+  const trimmed = syncClampedInput({ target: padded }, 64, { trim: true })
+  assert.equal(trimmed, '𠮷')
+  assert.equal(padded.value, '𠮷')
 })
