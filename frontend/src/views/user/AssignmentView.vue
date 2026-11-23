@@ -20,6 +20,7 @@ import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { createRoleApi } from '../../api/role.js'
 import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree } from '../../utils/organization.js'
+import { clampCodePoints } from '../../utils/text.js'
 
 const route = useRoute()
 
@@ -418,7 +419,8 @@ onMounted(() => {
     <div class="org-toolbar org-toolbar-wrap">
       <label class="org-inline-field">
         <span>关键字</span>
-        <input v-model.trim="filters.keyword" maxlength="100" placeholder="账号或姓名" @keyup.enter="search" />
+        <!-- clampCodePoints 逐代码点截断：后端 keyword 同口径，完整姓名可搜索。 -->
+        <input :value="filters.keyword" @input="filters.keyword = clampCodePoints($event.target.value, 100).trim()" placeholder="账号或姓名" @keyup.enter="search" />
       </label>
       <label class="org-inline-field">
         <span>部门（含后代）</span>

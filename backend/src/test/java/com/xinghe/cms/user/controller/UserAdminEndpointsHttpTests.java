@@ -365,6 +365,36 @@ class UserAdminEndpointsHttpTests {
         assertEquals(new UserListQuery(2L, 10L, "editor", 3L, 1), query.getValue());
     }
 
+    /**
+     * 搜索关键字按 Unicode 代码点计数（老师复审 P2）：创建接口允许保存 100 个
+     * 「𠮷」组成的姓名（raw.length()=200），keyword.length() 会把它误判为超长
+     * 400；按完整姓名搜索必须放行并原样传给 Service。101 个代码点仍拒绝。
+     */
+    @Test
+    void keywordCountsLengthByCodePointsForSupplementaryCharacters() throws Exception {
+        when(userAdminService.listUsers(any(UserListQuery.class)))
+                .thenReturn(new UserPageVO(List.of(user()), 1L, 1L, 10L));
+        String keyword = "\uD842\uDFB7".repeat(100);
+
+        perform(get(USERS).param("keyword", keyword), USERS)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1));
+
+        ArgumentCaptor<UserListQuery> query = ArgumentCaptor.forClass(UserListQuery.class);
+        verify(userAdminService).listUsers(query.capture());
+        assertEquals(new UserListQuery(1L, 10L, keyword, null, null), query.getValue());
+
+        // 101 个代码点的增补平面字符超出上限；raw.length()=101 的 BMP 字符串同样拒绝，
+        // 证明收紧的不是「更宽松的 UTF-16」而是同一字符语义下的两条边界。
+        perform(get(USERS).param("keyword", "\uD842\uDFB7".repeat(101)), USERS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(get(USERS).param("keyword", "x".repeat(101)), USERS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        verify(userAdminService, times(1)).listUsers(any(UserListQuery.class));
+    }
+
     @Test
     void missingTokenReturns401BeforeEnteringService() throws Exception {
         mockMvc.perform(get(USERS).servletPath(USERS))

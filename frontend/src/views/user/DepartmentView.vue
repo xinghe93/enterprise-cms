@@ -16,6 +16,7 @@ import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { findDepartment, flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
+import { clampCodePoints } from '../../utils/text.js'
 
 const userApi = createUserApi(api)
 const tree = ref([])
@@ -280,12 +281,14 @@ onMounted(loadTree)
     >
       <label class="org-field">
         <span>部门编码 <em>*</em></span>
-        <input v-model.trim="editor.form.deptCode" maxlength="64" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
+        <!-- clampCodePoints 逐代码点截断：与 DepartmentJson.text() 的字符语义一致，
+             maxlength 按 UTF-16 截断会把含增补平面字符的合法名称截半。 -->
+        <input :value="editor.form.deptCode" @input="editor.form.deptCode = clampCodePoints($event.target.value, 64).trim()" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
         <small v-if="editor.mode === 'edit'">编码创建后不可修改；更新请求不提交该字段。</small>
       </label>
       <label class="org-field">
         <span>部门名称 <em>*</em></span>
-        <input v-model.trim="editor.form.deptName" maxlength="100" placeholder="如 销售部" />
+        <input :value="editor.form.deptName" @input="editor.form.deptName = clampCodePoints($event.target.value, 100).trim()" placeholder="如 销售部" />
       </label>
       <label class="org-field">
         <span>上级部门</span>
