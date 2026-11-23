@@ -42,22 +42,23 @@
 
 | 场景 | 覆盖用例 | 证据 |
 | --- | --- | --- |
-| 匿名 401 | 12 个接口未带 Token / Token 失效 / 用户停用 | `RoleControllerHttpTests`、`PermissionControllerHttpTests`、`RequirePermissionAspectTests` |
-| 无权限 403 | 缺对应权限码访问各管理接口；`@RequirePermission` 任一命中即放行、全未命中 403 | `RequirePermissionAspectTests`（含缺码/停用权限场景） |
-| 有权限 200 | 管理员走通角色/权限项 CRUD、启停、分配 | `RoleControllerHttpTests`（56 项）、`PermissionControllerHttpTests`（18 项） |
-| 参数 400 | ID 非十进制/前导零/0/超 Long；未知字段；DTO 空白（含 NBSP U+3000）；`PermissionUpdate` 严格反序列化器；`expectedPermissionIds` 非数组/非法元素 | `RoleControllerHttpTests`、`PermissionControllerHttpTests`、`AuthorizationSnapshotTests`；`ContractWhitespace` 单测 |
-| 不存在 404 | 角色不存在、权限项不存在 | Controller / Service 单测 |
-| 状态冲突 409 | 请求含停用权限；**角色/权限编码重复**（`001_init.sql` 只对 `role_code`、`permission_code` 设唯一约束，服务层也按编码判冲突；用不同编码创建同名角色/权限项是允许操作，不得当作 409 验收）；**并发基线 `expectedPermissionIds` 与当前集合不一致** | `RolePermissionServiceImplTests`（基线不一致 409）、`RoleControllerHttpTests`（409 映射） |
-| 审计成功 / 失败 | 写操作 SUCCESS 随事务提交；写失败回滚后 `afterCompletion` 独立事务补 FAILURE。**免审计仅限两类明确跳过的路径**：启停「重复设置同一状态（含条件更新影响 0 行）」与角色权限「相同集合幂等」；`RoleAdminServiceImpl.update` / `PermissionAdminServiceImpl.update` 直接标 `@AuditLog`，提交相同字段仍执行更新并记录 SUCCESS | `RoleAdminAuditTransactionTests`、`PermissionAdminAuditTransactionTests`、`RolePermissionAuditTransactionTests` |
+| 匿名 401 | 按实际自动化层次列明：缺 Bearer / 失效或撤销 Token / 停用用户 → 401 由过滤器测试覆盖；`/api/auth/permissions` 匿名 → 401 由查询控制器测试覆盖。**其余 11 个管理接口的逐接口 401 未做自动化覆盖**（两个 Controller HTTP 测试的 `setUp` 固定模拟已登录管理员），属待手工验收项（见 §6 场景 7） | `BearerTokenAuthenticationFilterTests`（`missingBearerTokenReturnsUnauthorizedEnvelope`、`revokedTokenIsUnauthorized`、`disabledUserIsRejectedWithConditionalRevokeUsingObservedEpoch`）；`PermissionQueryControllerTests.rejectsAnonymousRequestWithUnauthorized` |
+| 无权限 403 | `@RequirePermission` 命中任一编码放行、全未命中 403、快照为空 fail-closed | `RequirePermissionAspectTests`（切面层单测：`permitsWhenSnapshotContainsRequiredCode`、`permitsAnyOfMultipleRequiredCodes`、`deniesWithForbiddenWhenCodeMissing`、`failsClosedOnEmptyCodes`）；**逐接口 403 未做自动化**，见 §6 场景 7 |
+| 有权限 200（HTTP 层） | 各端点请求/响应封装与 200 + `data` 语义；Service 被替换为 Mockito 桩，不连库 | `RoleControllerHttpTests`（56 项）、`PermissionControllerHttpTests`（18 项）；**真实 CRUD/启停/分配的端到端行为**由 Service 单测（Mockito）+ 手工验收（§6 场景 1–2）共同覆盖 |
+| 参数 400 | ID 非十进制/前导零/0/超 Long；未知字段；DTO 空白（含 NBSP U+3000）；`PermissionUpdate` 严格反序列化器；`expectedPermissionIds` 非数组/非法元素 | 均在两个 Controller HTTP 测试内：`RoleControllerHttpTests`（`unknownBodyFieldReturns400`、`updateRejectsUnknownBodyField`、`updateNbspOnlyRoleNameReturns400`、`currentBeyondInt64RangeReturns400`、`setPermissionsRejectsMalformedIdListWith400`、`setPermissionsRejectsMalformedExpectedBaselineWith400` 等）、`PermissionControllerHttpTests`（`createUnknownFieldReturns400`、`createWrongFieldTypeReturns400`、`updateUnknownFieldOrWrongTypeReturns400`、`setStatusInvalidBodyReturns400` 等）；`ContractWhitespace` 单测。`AuthorizationSnapshotTests` 验的是快照集合契约，不属于 HTTP 参数校验，已从本行移除 |
+| 不存在 404 | 角色不存在、权限项不存在 | HTTP 层：Controller 测试（Service 桩抛 404 验状态码映射）；业务层：`RoleAdminServiceImplTests`、`PermissionAdminServiceImplTests`、`RolePermissionServiceImplTests` |
+| 状态冲突 409 | 请求含停用权限；**角色/权限编码重复**（`001_init.sql` 只对 `role_code`、`permission_code` 设唯一约束，服务层也按编码判冲突；用不同编码创建同名角色/权限项是允许操作，不得当作 409 验收）；**并发基线 `expectedPermissionIds` 与当前集合不一致** | 编码重复：`RoleAdminServiceImplTests.duplicateRoleCodeBecomes409`、`PermissionAdminServiceImplTests.duplicateCodeBecomes409`、`RoleControllerHttpTests.duplicateRoleCodeReturns409` / `whitespacePaddedDuplicateRoleCodeReturns409`；停用权限：`RolePermissionServiceImplTests.replacePermissionsThrows409WhenPermissionDisabledEvenIfSetUnchanged`、`RoleControllerHttpTests.setPermissionsDisabledPermissionReturns409`；基线冲突：`RolePermissionServiceImplTests.replacePermissionsThrows409WhenExpectedDiffersFromCurrent` / `replacePermissionsThrows409WhenNewGrantAppearedAfterBaseline`、`RoleControllerHttpTests.setPermissionsBaselineConflictReturns409` |
+| 审计成功 / 失败 | 写操作 SUCCESS 随事务提交；业务异常回滚后 `afterCompletion` 独立事务补 FAILURE。**例外（勿期待）**：`role.status` 先执行条件 `UPDATE` 成功后才调用空审计锚点 `roleStatusChanged()`，若 `UPDATE` 本身抛 SQL 异常，切面尚未进入、不补记 `role.status`/FAILURE；`permission.status` 与 `role.assign-permission` 把实际写入以 `Runnable` 传入审计代理内部，写失败会补 FAILURE。**免审计仅限两类明确跳过的路径**：启停「重复设置同一状态（含条件更新影响 0 行）」与角色权限「相同集合幂等」；`RoleAdminServiceImpl.update` / `PermissionAdminServiceImpl.update` 直接标 `@AuditLog`，提交相同字段仍执行更新并记录 SUCCESS | `RoleAdminAuditTransactionTests`（含幂等跳过、审计写失败回滚、404 补 FAILURE）、`PermissionAdminAuditTransactionTests`、`RolePermissionAuditTransactionTests` |
 | 授权快照一致性 | 停用角色/权限不计入；启用用户无角色时双集合为空；用户不存在/停用抛 UNAUTHORIZED | `AuthorizationQueryServiceImplTests`、`AuthorizationSnapshotTests` |
 | 并发安全（服务端） | 差集替换不死锁；锁序「用户 → 角色 → 权限」；基线 409 阻止陈旧覆盖 | `RolePermissionServiceImplTests`、`RolePermissionAuditTransactionTests`；评审多轮双会话逻辑验证 |
-| 并发安全（前端） | 三类弹窗会话绑定；保存中取消/重开同一或不同记录；连续保存入口可用 | `permission-admin.test.js` 纯函数 + 静态源码断言（前端 20 项） |
+| 并发安全（前端） | 程序化会话状态机：保存期间关闭/重开（同一或不同记录）的旧响应作废、基线不混用、连续保存后入口可用。**注意这是纯函数 + 源码断言（node 不渲染 Vue），不是浏览器端到端**；浏览器侧只验保存期控件禁用（§6 场景 4） | `permission-admin.test.js`（`isAssignSessionCurrent` / `isDialogSessionCurrent` / `shouldReleaseAssignSaving` / `permissionBaseline*` 等纯函数用例，前端全量 116 项中的 B 部分） |
 
 ## 3. 关键设计说明
 
 1. **授权快照**：`AuthorizationQueryService#getForUser` 每请求重算，`enabledRoleCodes` 仅含启用用户关联的启用角色；`permissionCodes` 在此基础上再过滤停用权限。用户不存在或已停用抛 UNAUTHORIZED，绝不返回可被误认为已认证的空快照。
 2. **AOP 鉴权**：先经 A 的认证入口确认身份（无 Token/会话失效/用户停用均为 401），再由快照按编码匹配；`@RequirePermission` 任一编码命中即放行，全部未命中 403。
-3. **审计接入**：`@AuditLog` 只能标在事务边界内、经 Spring 代理调用的方法。有幂等跳过路径的写操作才用 `RoleWriteAuditMarker` / `PermissionWriteAuditMarker`：把真实写入以 `Runnable` 传入被 `@AuditLog` 环绕的代理方法，**只在确实发生变更时**进入——即启停「目标状态与当前不同且条件更新影响 1 行」、角色权限「差集非空」；写失败由切面 `afterCompletion` 用独立事务补记 FAILURE。免审计的仅限上述两类幂等跳过路径；`RoleAdminServiceImpl.update` / `PermissionAdminServiceImpl.update` 创建/修改类无跳过路径，直接标 `@AuditLog`，即使提交相同字段也执行更新并记录 SUCCESS。
+3. **审计接入**：`@AuditLog` 只能标在事务边界内、经 Spring 代理调用的方法。有幂等跳过路径的写操作才用 `RoleWriteAuditMarker` / `PermissionWriteAuditMarker`，**只在确实发生变更时**进入——启停「目标状态与当前不同且条件更新影响 1 行」、角色权限「差集非空」。免审计的仅限上述两类幂等跳过路径；`RoleAdminServiceImpl.update` / `PermissionAdminServiceImpl.update` 创建/修改类无跳过路径，直接标 `@AuditLog`，即使提交相同字段也执行更新并记录 SUCCESS。
+   **失败审计的差异（文档口径与实现一致，勿混用）**：`permission.status` 与 `role.assign-permission` 把真实写入以 `Runnable` 传入受 `@AuditLog` 环绕的代理方法内部执行，切面先注册同步器再写库——**写库抛异常也能在 `afterCompletion` 用独立事务补记 FAILURE**。而 `role.status` 是先在服务方法内执行条件 `UPDATE`，成功后才调用空锚点 `roleStatusChanged()`：若该 `UPDATE` 本身抛 SQL 异常，切面从未进入、不会补记 `role.status`/FAILURE（业务未生效，属可接受省略）；`UPDATE` 成功但后续审计写入失败时，事务回滚并补记 FAILURE（由 `RoleAdminAuditTransactionTests` 覆盖）。
 4. **ID 契约**：响应中业务 ID 一律字符串；路径/请求体 ID 只接受 `[1-9][0-9]{0,18}`、无前导零、≤ `Long.MAX_VALUE`；反序列化器对越界、null、非字符串元素一律 400，不落到 500。
 5. **参数严格性**：未知 JSON 字段 400（`RolePermissionsUpdate` / `PermissionUpdate` 用自定义反序列化器显式拒绝）；名称/编码先按原始长度校验再去首尾空白并验证非空；`ContractWhitespace.strip` 识别 NBSP，`String.strip` 不认 NBSP 故禁用。MENU/BUTTON 的 `path` 是菜单路由：编辑必须原样提交数据库值（不 trim、不按 JS `.length` 复检），长度由后端按 Unicode 码点（≤255）裁决。
 6. **分页**：统一由 `MybatisPlusConfig` 的 `PaginationInnerInterceptor`（`maxLimit = PageQuery.MAX_SIZE = 100`、`overflow = false`）追加；`keyword` 一律 `keyword == null ? null : ContractWhitespace.strip(keyword)`。
@@ -92,7 +93,7 @@
 | 入口 | 命令 | 前置条件 | 最近结果 |
 | --- | --- | --- | --- |
 | 前端全量 | `cd frontend && node --test tests/*.test.js` | Node 22+ | **116 / 116 通过**（2026-11-23 在 `docs/permission-delivery` 分支独立复跑；较功能 PR 时的 109 多出的 7 项来自 dev 上其他模块同期合入的 `text.test.js` 与 `organization.test.js`） |
-| 后端全量 | `cd backend && $env:JAVA_HOME="D:\Java\jdk25"; & .\mvnw.cmd clean verify` | JDK 25、Docker MySQL/Redis、`SPRING_DATASOURCE_PASSWORD` | **754 / 754 通过，BUILD SUCCESS**（2026-11-23 在 `docs/permission-delivery` 分支独立复跑；较功能 PR 时的 751 多出的 3 项来自 dev 上其他模块同期合入） |
+| 后端全量 | `cd backend && $env:JAVA_HOME="D:\Java\jdk25"; & .\mvnw.cmd clean verify` | JDK 25、Docker MySQL/Redis、`SPRING_DATASOURCE_PASSWORD` | **754 / 754 通过，BUILD SUCCESS**（2026-11-23 在 `docs/permission-delivery` 分支本机复跑，日志留存于本机 `%TEMP%\ecms-verify-doc.log`；较功能 PR 时的 751 多出的 3 项来自 dev 上其他模块同期合入。**该校验不由文档 PR 自动执行，验收时请在本机重新跑一次**） |
 | 角色权限定位测试 | `& .\mvnw.cmd "-Dtest=RolePermissionServiceImplTests,RoleControllerHttpTests,RolePermissionAuditTransactionTests" test` | 同上 | 85 项通过（56 + 22 + 7） |
 
 > Windows 上 `JAVA_HOME` 必须在 PowerShell 内用 `$env:JAVA_HOME = "D:\Java\jdk25"` 设置；bash 里 `JAVA_HOME=D:\Java\jdk25 ./mvnw.cmd` 会报未定义正确。
@@ -106,11 +107,11 @@
 | 1 | 基础 CRUD | 管理员新建角色→编辑名称→启停→分页查询；新建权限项→编辑→启停 | 全部 200；审计日志有对应 SUCCESS 记录 |
 | 2 | 分配与回显 | 给角色勾选若干权限保存，重开弹窗 | 回显勾选与保存一致；停用项显示「保存后移除」 |
 | 3a | 并发撤销（P1）· **浏览器** | 会话甲、乙打开同一角色权限弹窗；甲撤销权限 X 保存；乙在弹窗内新增 Y 后点保存 | **前端保存前重读拦截**（`RolePermissionView.vue` 的 `getRolePermissions` + 基线比对）：乙看到「已被其他管理员修改，请重新加载」，**不发 PUT**；X 不被恢复。浏览器只能验到这一层拦截 |
-| 3b | 并发撤销（P1）· **服务端 409**（Apifox） | 用 Apifox 直接 `PUT /api/admin/roles/{id}/permissions`，请求体带**过期的** `expectedPermissionIds`（甲撤销 X 前读到的旧集合）与任意 `permissionIds` | 服务端在角色行锁内比对当前集合与过期基线，返回 **409**「角色权限已被其他管理员修改，请重新加载后再分配」，且不写库、不记审计。此步单独验证服务端，浏览器因前端拦截看不到 409 |
+| 3b | 并发撤销（P1）· **服务端 409**（Apifox） | 用 Apifox 直接 `PUT /api/admin/roles/{id}/permissions`。**必须先固定目标集合**：服务端在校验目标权限（存在 404 / 启用 409）**之后**才比对基线（`RolePermissionServiceImpl` 第 3 步 → 4.5 步），所以 `permissionIds` 要设为 **`[]`**（空集合不发 IN 查询，直接进入基线比对）或**明确存在且启用的权限 ID**，绝不能填任意/不存在的 ID。`expectedPermissionIds` 保留甲撤销 X 前读到的**过期旧集合**（如 `[X]`，而当前已为空） | 返回 **409**，message 为「角色权限已被其他管理员修改，请重新加载后再分配」（注意与「权限已停用，无法分配」的 409 区分，后者说明目标集合含停用项、本用例失败），且不写库、不记审计。此步单独验证服务端，浏览器因前端拦截看不到 409 |
 | 4 | 会话重开（P2）· 控件禁用检查 | 打开任一编辑/分配弹窗并开始保存，观察保存期间的交互控件 | `RolePermissionView.vue` 在保存期间禁用「取消」「X 关闭」「ESC」「重新加载」及列表内其他记录的「编辑/新建/分配权限」入口（见 §3.8），**手工无法完成「取消并重开」**。验收时检查这些控件确实禁用；旧响应不误关新弹窗的行为由 `permission-admin.test.js` 的程序化会话状态机测试覆盖（非手工） |
 | 5 | 连续保存 | 同一角色连续保存两次，再换另一角色保存 | 每次成功后按钮恢复可用，列表与当前权限刷新 |
 | 6 | 只读账号 | 验收账号需**同时具备 `role:list` 与 `role:read-permission`，且不具备 `permission:list` 及角色/权限编辑类权限**（`role:list` 必给：缺它时角色列表被清空、分配弹窗入口位于角色行内，根本打不开；`role:read-permission` 用于读已分配） | 角色列表可见；打开分配弹窗只展示已分配表格、不发目录请求、保存按钮禁用；编辑相关权限仍不可用 |
-| 7 | 401 / 403 | 匿名访问管理接口；普通员工访问角色分页 | 分别 401 / 403 |
+| 7 | 401 / 403（**自动化未逐接口覆盖，必须手工**） | 依次不带 Token 请求 12 个接口中的管理端点（如 `GET /api/admin/roles`、`GET /api/admin/permissions`、`PUT /api/admin/roles/{id}/permissions`）；再用缺 `role:list` 的普通账号请求角色分页 | 分别 401（「请先登录」）与 403。自动化仅覆盖过滤器层的通用认证与 `/api/auth/permissions` 匿名用例，12 个接口的逐接口 401 需手工确认 |
 
 ## 7. 已知边界与注意
 
