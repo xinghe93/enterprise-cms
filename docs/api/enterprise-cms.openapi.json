@@ -6475,8 +6475,12 @@
       },
       "RolePermissionsUpdate": {
         "type": "object",
+        "description": "角色权限全量替换。expectedPermissionIds 为客户端打开编辑弹窗时看到的原权限集合；服务端在角色行锁内与当前集合比对，不一致返回 409，防止陈旧快照覆盖其他管理员的增删。缺省则跳过并发校验。",
         "properties": {
           "permissionIds": {
+            "$ref": "#/components/schemas/IdList"
+          },
+          "expectedPermissionIds": {
             "$ref": "#/components/schemas/IdList"
           }
         },

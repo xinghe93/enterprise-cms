@@ -44,6 +44,7 @@ import {
   formatDateTime,
   normalizePermissionIds,
   permissionBaseline,
+  permissionBaselineIds,
   validatePermissionCreateForm,
   validateRoleForm,
 } from '../../utils/rolePermission.js'
@@ -314,8 +315,9 @@ const assignDialog = reactive({
   loadError: '',           // 目录加载失败提示
   readOnly: false,         // 只读模式：只展示已分配，不请求/不勾选目录
   consistencyError: '',    // 评审 P1：状态不一致时阻止保存并提示重新加载
-  baseline: '',            // 评审 P1 并发覆盖：打开弹窗时已分配集合的基线签名
-  concurrencyError: '',    // 评审 P1 并发覆盖：基线不一致/保存前重读失败时阻止保存
+  baseline: '',            // 评审 P1 并发覆盖：打开弹窗时已分配集合的基线签名（本地快速比对）
+  baselineIds: [],         // 评审 P1 并发覆盖：打开弹窗时的基线 ID 数组，提交给后端原子校验
+  concurrencyError: '',    // 评审 P1 并发覆盖：基线不一致/保存前重读失败/后端 409 时阻止保存
 })
 const assignTableRef = ref(null)
 const assignSelectedIds = ref([])
@@ -342,6 +344,7 @@ async function openAssignDialog(row) {
   assignDialog.loadError = ''
   assignDialog.consistencyError = ''
   assignDialog.baseline = ''
+  assignDialog.baselineIds = []
   assignDialog.concurrencyError = ''
   assignRemovedDisabled.value = []
   assignSelectedIds.value = []
@@ -361,8 +364,10 @@ async function openAssignDialog(row) {
     if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
     assigned = Array.isArray(result) ? result : []
     assignDialog.assigned = assigned
-    // 评审 P1 并发覆盖：记录打开弹窗时的已分配集合基线，保存前与重读结果比对。
+    // 评审 P1 并发覆盖：记录打开弹窗时的已分配集合基线——签名用于本地快速比对，
+    // ID 数组提交给后端在角色行锁内原子校验（前端重读无法消除竞争窗口）。
     assignDialog.baseline = permissionBaseline(assigned)
+    assignDialog.baselineIds = permissionBaselineIds(assigned)
   } catch (error) {
     if (!assignGuard.isLatest(token) || assignDialog.role?.id !== row.id) return
     assignDialog.assignedError = error?.message
@@ -496,14 +501,23 @@ async function submitAssignDialog() {
         '检测到权限状态在弹窗打开期间被其他管理员变更，已阻止保存；请重新加载后再分配。'
       return
     }
-    await permissionApi.setRolePermissions(roleId, permissionIds)
+    // 评审 P1 并发覆盖（复审要求）：把打开弹窗时的基线 ID 数组交给后端，在角色行锁
+    // 内与数据库当前集合原子比对。前端上面的重读只能缩小窗口，重读到 PUT 之间仍
+    // 可能被其他管理员插入变更——只有服务端的锁内校验能保证不覆盖他人修改。
+    await permissionApi.setRolePermissions(roleId, permissionIds, assignDialog.baselineIds)
     ElMessage.success('角色权限已更新')
     assignDialog.visible = false
     // 评审 P2：分配会立即改变当前账号的有效权限（含撤销自身权限的可能），
     // 成功后重载会话权限并刷新列表。
     await afterWrite()
-  } catch {
-    // 全局提示已弹出（409：请求中含停用权限；404：权限不存在）。
+  } catch (error) {
+    // 409 有两种：请求中含停用权限（校验类）和并发基线冲突（写前校验）。两者都
+    // 阻止保存；并发冲突特化提示要求重新加载，并在弹窗展示重新加载按钮。
+    if (error?.status === 409 || error?.code === 409) {
+      assignDialog.concurrencyError =
+        '保存失败：该角色的权限已被其他管理员修改（并发冲突），已阻止覆盖；请重新加载后再分配。'
+    }
+    // 其余错误全局提示已弹出（404：权限/角色不存在；400：参数非法）。
   } finally {
     assignDialog.saving = false
   }

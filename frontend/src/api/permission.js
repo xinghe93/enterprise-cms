@@ -36,10 +36,15 @@ export function createPermissionApi(client) {
     getRolePermissions: (id) => client.get(`/admin/roles/${pathId(id)}/permissions`),
     // 全量替换：permissionIds 已由视图经 normalizePermissionIds 规范化（去重、≤100、合法 ID）；
     // 契约：不存在/停用权限分别 404/409，既有停用权限不能保留在本次请求中。
-    // 语义是「最终集合 = 本次提交集合」——并发覆盖防护由视图的保存前基线比对
-    // 负责（后端契约 RolePermissionsUpdate 暂无版本/期望集合字段）。
-    setRolePermissions: (id, permissionIds) =>
-      client.put(`/admin/roles/${pathId(id)}/permissions`, { permissionIds }),
+    // 语义是「最终集合 = 本次提交集合」。评审 P1 并发覆盖：expectedPermissionIds
+    // 是视图打开弹窗时看到的原权限 ID 数组（permissionBaselineIds），后端在角色
+    // 行锁内与当前集合原子比对，不一致返回 409。字段可选，缺省则不校验。
+    setRolePermissions: (id, permissionIds, expectedPermissionIds) =>
+      client.put(`/admin/roles/${pathId(id)}/permissions`, {
+        permissionIds,
+        ...(expectedPermissionIds !== undefined && expectedPermissionIds !== null
+          ? { expectedPermissionIds } : {}),
+      }),
 
     // ── 权限项：permissionType 精确筛选（MENU/BUTTON/API），其余同上 ──
     listPermissions: (params = {}) => client.get('/admin/permissions', { params: compactParams(params) }),

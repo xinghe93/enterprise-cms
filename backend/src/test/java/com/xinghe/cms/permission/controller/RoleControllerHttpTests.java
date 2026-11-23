@@ -831,6 +831,40 @@ class RoleControllerHttpTests {
         assertThat(captor.getValue().permissionIds()).containsExactly(1L, 2L, 3L);
     }
 
+    /** 评审 P1：expectedPermissionIds 作为可选并发基线透传给服务（字符串 ID 解析为 Long）。 */
+    @Test
+    void setPermissionsPassesExpectedBaselineToService() throws Exception {
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["1","2"],"expectedPermissionIds":["2","1"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        ArgumentCaptor<RolePermissionsUpdateRequest> captor =
+                ArgumentCaptor.forClass(RolePermissionsUpdateRequest.class);
+        verify(rolePermissionService).replacePermissions(eq(37L), captor.capture());
+        assertThat(captor.getValue().permissionIds()).containsExactly(1L, 2L);
+        assertThat(captor.getValue().expectedPermissionIds()).containsExactly(2L, 1L);
+    }
+
+    /** 评审 P1：并发基线冲突由服务抛 409，HTTP 正确映射（前端据此提示重新加载）。 */
+    @Test
+    void setPermissionsBaselineConflictReturns409() throws Exception {
+        doThrow(new BusinessException(ResultCode.CONFLICT, "角色权限已被其他管理员修改，请重新加载后再分配"))
+                .when(rolePermissionService).replacePermissions(eq(37L),
+                        any(RolePermissionsUpdateRequest.class));
+
+        mockMvc.perform(put("/api/admin/roles/37/permissions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"permissionIds":["3","9"],"expectedPermissionIds":["3"]}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value(409));
+    }
+
     /** 空数组清空：200 且服务收到空集合。 */
     @Test
     void setPermissionsEmptyArrayClears() throws Exception {
@@ -914,6 +948,26 @@ class RoleControllerHttpTests {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
 
+        verifyNoInteractions(rolePermissionService);
+    }
+
+    /** 评审 P1：expectedPermissionIds 复用 IdList 严格校验——非数组/非字符串/重复/溢出均 400。 */
+    @Test
+    void setPermissionsRejectsMalformedExpectedBaselineWith400() throws Exception {
+        String[] badBodies = {
+                "{\"permissionIds\":[\"1\"],\"expectedPermissionIds\":\"1\"}",   // 非数组
+                "{\"permissionIds\":[\"1\"],\"expectedPermissionIds\":[1]}",     // 元素非字符串
+                "{\"permissionIds\":[\"1\"],\"expectedPermissionIds\":[\"01\"]}", // 前导零
+                "{\"permissionIds\":[\"1\"],\"expectedPermissionIds\":[\"1\",\"1\"]}", // 重复
+                "{\"permissionIds\":[\"1\"],\"expectedPermissionIds\":[\"9999999999999999999\"]}", // 溢出
+        };
+        for (String body : badBodies) {
+            mockMvc.perform(put("/api/admin/roles/37/permissions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
+        }
         verifyNoInteractions(rolePermissionService);
     }
 

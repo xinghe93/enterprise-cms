@@ -225,6 +225,67 @@ class RolePermissionServiceImplTests {
         verify(roleWriteAuditMarker, never()).rolePermissionsChanged(any(Runnable.class));
     }
 
+    // ---------- 评审 P1：服务端锁内并发基线校验 ----------
+
+    /** 基线与当前集合一致（顺序不同也算一致）：正常替换、写审计。 */
+    @Test
+    void replacePermissionsPassesWhenExpectedMatchesCurrentIgnoringOrder() {
+        when(sysRoleMapper.selectByIdForUpdate(37L)).thenReturn(role(37L));
+        when(sysPermissionMapper.selectByIdsForShare(List.of(1L, 2L)))
+                .thenReturn(List.of(permission(1L, 1), permission(2L, 1)));
+        // 当前集合顺序 [2,1]，客户端基线顺序 [1,2]——集合相等即放行
+        when(sysRolePermissionMapper.selectPermissionIdsByRoleId(37L)).thenReturn(List.of(2L, 1L));
+
+        service.replacePermissions(37L,
+                new RolePermissionsUpdateRequest(List.of(1L, 2L), List.of(1L, 2L)));
+
+        // 基线与当前一致（[2,1] == [1,2] 集合相等），且 target 与 current 也相等→幂等早返
+        verify(sysRolePermissionMapper, never()).deletePermissions(any(), anyList());
+        verify(sysRolePermissionMapper, never()).insertPermissions(any(), anyList());
+        verify(roleWriteAuditMarker, never()).rolePermissionsChanged(any(Runnable.class));
+    }
+
+    /**
+     * 基线冲突（评审复现：打开时 [3]，他人撤销 3 后当前为空，客户端仍提交 [3,9]）：
+     * 抛 409，且绝不写入、不记审计——不能用陈旧快照重新授予已撤销的授权。
+     */
+    @Test
+    void replacePermissionsThrows409WhenExpectedDiffersFromCurrent() {
+        when(sysRoleMapper.selectByIdForUpdate(37L)).thenReturn(role(37L));
+        when(sysPermissionMapper.selectByIdsForShare(List.of(3L, 9L)))
+                .thenReturn(List.of(permission(3L, 1), permission(9L, 1)));
+        // 打开弹窗时 [3,9]，但期间他人撤销后当前为空
+        when(sysRolePermissionMapper.selectPermissionIdsByRoleId(37L)).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.replacePermissions(37L,
+                new RolePermissionsUpdateRequest(List.of(3L, 9L), List.of(3L, 9L))))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.CONFLICT);
+
+        verify(sysRolePermissionMapper, never()).deletePermissions(any(), anyList());
+        verify(sysRolePermissionMapper, never()).insertPermissions(any(), anyList());
+        verify(roleWriteAuditMarker, never()).rolePermissionsChanged(any(Runnable.class));
+    }
+
+    /** 新增覆盖场景：打开时为空，期间他人新增 3，客户端基于空基线提交 → 409。 */
+    @Test
+    void replacePermissionsThrows409WhenNewGrantAppearedAfterBaseline() {
+        when(sysRoleMapper.selectByIdForUpdate(37L)).thenReturn(role(37L));
+        when(sysPermissionMapper.selectByIdsForShare(List.of(9L)))
+                .thenReturn(List.of(permission(9L, 1)));
+        when(sysRolePermissionMapper.selectPermissionIdsByRoleId(37L)).thenReturn(List.of(3L));
+
+        assertThatThrownBy(() -> service.replacePermissions(37L,
+                new RolePermissionsUpdateRequest(List.of(9L), List.of())))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getResultCode())
+                .isEqualTo(ResultCode.CONFLICT);
+
+        verify(sysRolePermissionMapper, never()).deletePermissions(any(), anyList());
+        verify(sysRolePermissionMapper, never()).insertPermissions(any(), anyList());
+    }
+
     /** 角色不存在 404，且不做任何后续校验/写入/审计。 */
     @Test
     void replacePermissionsThrows404WhenRoleMissing() {

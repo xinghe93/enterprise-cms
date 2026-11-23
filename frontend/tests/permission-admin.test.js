@@ -13,6 +13,7 @@ import {
   formatDateTime,
   normalizePermissionIds,
   permissionBaseline,
+  permissionBaselineIds,
   validatePermissionCreateForm,
   validateRoleForm,
 } from '../src/utils/rolePermission.js'
@@ -62,6 +63,12 @@ test('角色 6 个接口的 URL、方法与请求体符合契约', async () => {
   await api.setRolePermissions('12', ['3', '9'])
   assert.deepEqual([ctx.last().method, ctx.last().url], ['put', '/admin/roles/12/permissions'])
   assert.deepEqual(body(ctx.last()), { permissionIds: ['3', '9'] })
+
+  // 评审 P1：带并发基线时透传 expectedPermissionIds；不传时字段不出现（向后兼容）
+  await api.setRolePermissions('12', ['3', '9'], ['9', '3'])
+  assert.deepEqual(body(ctx.last()), { permissionIds: ['3', '9'], expectedPermissionIds: ['9', '3'] })
+  await api.setRolePermissions('12', [], [])
+  assert.deepEqual(body(ctx.last()), { permissionIds: [], expectedPermissionIds: [] })
 })
 
 test('权限项 4 个接口的 URL、方法与请求体符合契约', async () => {
@@ -337,6 +344,17 @@ test('并发基线签名（评审 P1 并发覆盖）：顺序无关、去重、�
   const before = permissionBaseline([{ id: '3' }, { id: '9' }])
   assert.notEqual(before, permissionBaseline([{ id: '9' }]), '甲撤销权限 3 后基线必须不同')
   assert.notEqual(before, permissionBaseline([{ id: '3' }, { id: '9' }, { id: '12' }]), '乙新增权限 12 后基线必须不同')
+
+  // 评审 P1 复审：提交给后端的基线 ID 数组——去重、升序、字符串 ID（契约 IdList）
+  assert.deepEqual(
+    permissionBaselineIds([{ id: '9' }, { id: 3 }, { id: '3' }, { id: '12' }]),
+    ['12', '3', '9'],
+  )
+  assert.deepEqual(permissionBaselineIds([]), [])
+  assert.deepEqual(permissionBaselineIds(null), [])
+  // 签名函数复用 ID 数组，两者语义一致
+  assert.equal(permissionBaseline([{ id: '9' }, { id: '3' }]),
+    permissionBaselineIds([{ id: '9' }, { id: '3' }]).join(','))
 })
 
 test('状态漂移检测（评审 P2）：两份读取的 status 不一致必须报告，避免「提示移除+预选保留」矛盾', () => {
@@ -376,6 +394,15 @@ test('角色与权限页并发/一致性接线（评审四条修复的静态源�
   assert.match(source, /assignDialog\.concurrencyError/)
   assert.match(source, /!!assignDialog\.concurrencyError/)
   assert.match(utilsSource, /export function permissionBaseline/)
+  // 评审 P1 复审（服务端原子校验）：打开弹窗记录基线 ID 数组并提交给后端、
+  // API 层透传 expectedPermissionIds、收到 409 设置 concurrencyError 要求重新加载
+  assert.match(source, /assignDialog\.baselineIds = permissionBaselineIds\(assigned\)/)
+  assert.match(source, /setRolePermissions\(roleId, permissionIds, assignDialog\.baselineIds\)/)
+  assert.match(source, /error\?\.status === 409 \|\| error\?\.code === 409/)
+  assert.match(utilsSource, /export function permissionBaselineIds/)
+  const apiSource = readFileSync(new URL('../src/api/permission.js', import.meta.url), 'utf8')
+  assert.match(apiSource, /setRolePermissions: \(id, permissionIds, expectedPermissionIds\)/)
+  assert.match(apiSource, /\? \{ expectedPermissionIds \} : \{\}\)/)
   // P2 路径原样：payload 以 row.path 为准，不再有 trim 路由的 normalizeMenuRoute
   assert.doesNotMatch(utilsSource, /normalizeMenuRoute/)
   assert.match(utilsSource, /hasOwnProperty\.call\(row, 'path'\)/)

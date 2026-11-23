@@ -14,8 +14,10 @@
  *    （UTF-16 码元）复检长度而误拒后端按码点接受的路径（评审 P2）；
  *    permissionName/path/method 三个键都必填，permissionCode / permissionType 不可改；
  *  - 权限全量替换 permissionIds：唯一、最多 100 项、空数组表示清空；
- *  - 分配弹窗保存前用「原权限集合」基线（permissionBaseline）与最新读取比对，
- *    防止陈旧快照的全量替换覆盖其他管理员的增删（评审 P1 并发覆盖）；
+ *  - 分配弹窗用「原权限集合」基线（permissionBaselineIds / permissionBaseline）
+ *    做并发校验：本地用签名快速拦截，提交时把基线 ID 数组作为契约字段
+ *    expectedPermissionIds 交给后端在角色行锁内原子比对，返回 409 表示冲突
+ *    （评审 P1 并发覆盖——前端重读只能缩小窗口，原子性必须由服务端保证）；
  *  - 保存前校验「已分配且启用」都能在目录中预选（评审 P1 防误删），且两份
  *    读取的 status 一致（评审 P2：避免「提示移除」与「预选保留」自相矛盾）。
  *
@@ -235,17 +237,26 @@ export function findUnpreselectableAssigned(assigned, catalog) {
 }
 
 /**
- * 权限分配弹窗的并发基线签名（评审 P1 并发覆盖）：把「打开弹窗时读到的已分配
- * 权限 ID 集合」归一化为可比较的字符串（排序去重后逗号连接）。保存前重读最新
- * 分配并重新计算基线，两个签名不同即说明弹窗打开期间其他管理员增删过该角色的
- * 权限——陈旧快照的全量替换会覆盖对方变更，调用方必须阻止保存并要求重新加载。
+ * 权限分配弹窗的并发基线 ID 数组（评审 P1 并发覆盖）：把「打开弹窗时读到的已分配
+ * 权限 ID 集合」归一化为去重、升序的 ID 字符串数组。它有两个用途：
+ *  1. 本地快速拦截——与保存前重读结果的基线签名（permissionBaseline）比对；
+ *  2. 提交给后端契约字段 expectedPermissionIds，由服务端在角色行锁内与数据库
+ *     当前集合原子比对，不一致返回 409（前端重读到 PUT 之间仍有竞争窗口，
+ *     真正的并发安全必须由服务端保证——这是评审复审后明确的要求）。
  */
-export function permissionBaseline(assigned) {
+export function permissionBaselineIds(assigned) {
   return [...new Set((Array.isArray(assigned) ? assigned : [])
     .filter((item) => item && item.id !== undefined && item.id !== null)
     .map((item) => String(item.id)))]
     .sort()
-    .join(',')
+}
+
+/**
+ * 并发基线签名（本地快速比对用）：归一化 ID 数组后逗号连接。
+ * 真正的并发裁决在服务端（见 permissionBaselineIds）。
+ */
+export function permissionBaseline(assigned) {
+  return permissionBaselineIds(assigned).join(',')
 }
 
 /**
