@@ -289,6 +289,30 @@ export function isAssignSessionCurrent(saved, current) {
 }
 
 /**
+ * 保存请求 finally 阶段是否应清除 saving 标志（评审 P2 正常保存后 saving 残留）。
+ *
+ * <p>背景：保存成功后视图设 {@code visible=false}，sync watch 随即递增会话序号，
+ * 若 finally 只用「会话是否仍有效」判断，就会因为会话已变而<b>不</b>清 saving，
+ * 使所有角色的「分配权限」入口被 {@code :disabled="saving"} 永久禁用。</p>
+ *
+ * <p>saving 由发起保存的那个会话置位，清理规则：</p>
+ * <ol>
+ *   <li>会话序号未变（仍是原会话，含校验失败后弹窗仍开）→ 清；</li>
+ *   <li>会话已变但弹窗已关闭（本次请求自己成功关闭）→ 清，这是关键修复；</li>
+ *   <li>会话已变且弹窗仍可见（被重开的新会话接管）→ 不清，否则会误清新会话的
+ *       saving；新会话在 openAssignDialog 里已自行重置 saving。</li>
+ * </ol>
+ *
+ * @param sessionChanged 会话序号是否与保存开始时不同
+ * @param visible        finally 执行时弹窗是否仍可见
+ */
+export function shouldReleaseAssignSaving(sessionChanged, visible) {
+  if (!sessionChanged) return true
+  if (!visible) return true
+  return false
+}
+
+/**
  * 两份读取的 status 漂移检测（评审 P2：避免「提示移除」与「预选保留」矛盾）：
  * 返回「在已分配与权限目录两份数据中 status 不一致」的权限 ID 列表。
  *

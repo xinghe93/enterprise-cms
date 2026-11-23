@@ -44,6 +44,7 @@ import {
   formatDateTime,
   isAssignSessionCurrent,
   normalizePermissionIds,
+  shouldReleaseAssignSaving,
   permissionBaseline,
   permissionBaselineIds,
   validatePermissionCreateForm,
@@ -570,9 +571,17 @@ async function submitAssignDialog() {
     }
     // 其余错误全局提示已弹出（404：权限/角色不存在；400：参数非法）。
   } finally {
-    // 只清理由本次会话置位的 saving：若期间弹窗被重开，旧请求的 finally 不得
-    // 把新会话的 saving 标志清掉（新会话的 open 已自行重置，二者不互相干扰）。
-    if (stillCurrent()) assignDialog.saving = false
+    // 评审 P2（成功路径 saving 残留）：成功时 visible=false 会让 sync watch 递增
+    // 会话序号，stillCurrent() 变 false，若据此不清 saving 就会把所有角色的
+    // 「分配权限」入口永久禁用。改用 shouldReleaseAssignSaving 区分三种情形：
+    // 会话未变 / 本次自己成功关闭（visible=false）→ 清；被新会话接管（会话变且
+    // 弹窗仍可见）→ 不清（新会话 open 已自行重置 saving）。
+    if (shouldReleaseAssignSaving(
+      assignSessionSeq !== savedSession.session,
+      assignDialog.visible,
+    )) {
+      assignDialog.saving = false
+    }
   }
 }
 

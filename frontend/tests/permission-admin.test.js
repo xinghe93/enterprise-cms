@@ -13,6 +13,7 @@ import {
   formatDateTime,
   isAssignSessionCurrent,
   normalizePermissionIds,
+  shouldReleaseAssignSaving,
   permissionBaseline,
   permissionBaselineIds,
   validatePermissionCreateForm,
@@ -406,6 +407,35 @@ test('弹窗会话守卫（评审 P2 会话竞态）：关闭/重开同一角色
   assert.equal(isAssignSessionCurrent(saved, {}), false)
 })
 
+test('保存后 clearing saving（评审 P2）：成功关闭必须清，避免分配权限入口被永久禁用', () => {
+  // 场景一（评审复现）：成功路径可见=false 让 watch 递增会话序号 → 会话已变 +
+  // 弹窗已关闭（本次自己关的）→ 必须清 saving，否则 disabled 永远为 true
+  assert.equal(shouldReleaseAssignSaving(true, false), true)
+  // 场景二：正常错误路径，会话未变、弹窗仍开 → 清 saving
+  assert.equal(shouldReleaseAssignSaving(false, true), true)
+  // 场景三：会话未变且已关闭 → 清
+  assert.equal(shouldReleaseAssignSaving(false, false), true)
+  // 场景四：保存期间被重开的新会话接管（会话变 + 弹窗仍可见）→ 不清，
+  // 避免旧请求 finally 误清新会话的 saving（新会话 open 已自行重置）
+  assert.equal(shouldReleaseAssignSaving(true, true), false)
+
+  // 评审回归要求：连续为同一角色、不同角色保存后，入口仍可用（saving=false）。
+  // 用最小状态机模拟 open（递增会话 + 重置 saving）与成功关闭（watch 递增会话
+  // + finally 清理）的真实时序。
+  let saving = false
+  let session = 0
+  const open = () => { session += 1; saving = false }
+  const saveSuccess = () => {
+    saving = true
+    const atStart = session
+    session += 1                       // 成功设 visible=false → sync watch 递增会话号
+    if (shouldReleaseAssignSaving(session !== atStart, false)) saving = false
+  }
+  open(); saveSuccess(); assert.equal(saving, false, '第一次保存后入口应可用')
+  open(); saveSuccess(); assert.equal(saving, false, '连续同一角色保存后入口应可用')
+  open(); saveSuccess(); assert.equal(saving, false, '换角色再保存后入口应可用')
+})
+
 test('状态漂移检测（评审 P2）：两份读取的 status 不一致必须报告，避免「提示移除+预选保留」矛盾', () => {
   const assignedRow = (id, status = 1) => ({ id, status })
   const catalogRow = (id, status = 1) => ({ id, status })
@@ -464,6 +494,15 @@ test('角色与权限页并发/一致性接线（评审四条修复的静态源�
   assert.match(source, /setRolePermissions\(roleId, permissionIds, savedSession\.baselineIds\)/)
   assert.match(source, /:show-close="!assignDialog\.saving"/)
   assert.match(source, /:close-on-press-escape="!assignDialog\.saving"/)
+  // 评审 P2 成功路径 saving 残留：finally 用 shouldReleaseAssignSaving 而非单纯
+  // stillCurrent 判断（成功关闭后 stillCurrent 因 watch 递增序号必然为 false）
+  assert.match(source, /shouldReleaseAssignSaving\(/)
+  assert.match(source, /assignSessionSeq !== savedSession\.session/)
+  assert.match(utilsSource, /export function shouldReleaseAssignSaving/)
+  // open 时重置 saving（配合连续保存入口可用）+ 成功路径设 visible=false
+  assert.match(source, /assignDialog\.visible = false[\s\S]{0,240}?await afterWrite\(\)/)
+  const openSavingReset = source.match(/assignSessionSeq \+= 1[\s\S]{0,160}?assignDialog\.saving = false/)
+  assert.ok(openSavingReset, 'openAssignDialog 打开新会话时应重置 saving')
   // P2 路径原样：payload 以 row.path 为准，不再有 trim 路由的 normalizeMenuRoute
   assert.doesNotMatch(utilsSource, /normalizeMenuRoute/)
   assert.match(utilsSource, /hasOwnProperty\.call\(row, 'path'\)/)
