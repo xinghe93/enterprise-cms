@@ -5,25 +5,27 @@ import { moduleViews, contentViewProps } from '../src/router/viewComponents.js'
 
 const aEntries = moduleEntries.filter((entry) => entry.owner === 'A')
 
-test('导航中 A 的两个入口保持原路径与名称，只替换渲染组件', () => {
+test('导航中 A 的三个入口保持原路径与名称，只替换渲染组件', () => {
   assert.deepEqual(aEntries.map((entry) => [entry.path, entry.name]), [
     ['/admin/users', 'users'],
+    ['/admin/assignments', 'assignments'],
     ['/admin/departments', 'departments'],
   ])
-  assert.equal(navigation.find((group) => group.title === '组织管理').items.length, 4)
+  assert.equal(navigation.find((group) => group.title === '组织管理').items.length, 5)
 })
 
 test('已落地映射表的 A/B/C/D 页面映射到真实页面，其余模块仍走占位页', () => {
   // categories 是 C 的 #31、articles/portal 是 C 的 #42、logs 是 D 的 #36、reviews 是 D 的 #34，
-  // roles 是 B 的角色与权限管理页（单页双 Tab）；均属真实页面，映射表仍是唯一注册入口。
+  // roles 是 B 的角色与权限管理页（单页双 Tab）；assignments 是 A 的 #47 在 users 之外
+  // 保留的分配页入口。均属真实页面，映射表仍是唯一注册入口（router/index.js 不逐页硬编码）。
   assert.deepEqual(
-    Object.keys(moduleViews).sort(),
-    ['articles', 'categories', 'departments', 'logs', 'portal', 'reviews', 'roles', 'users'],
+      Object.keys(moduleViews).sort(),
+      ['articles', 'assignments', 'categories', 'departments', 'logs', 'portal', 'reviews', 'roles', 'users'],
   )
   for (const view of Object.values(moduleViews)) assert.equal(typeof view, 'function')
   for (const entry of moduleEntries) {
     const expected = entry.owner === 'A'
-      || ['categories', 'articles', 'portal', 'logs', 'reviews', 'roles'].includes(entry.name)
+        || ['categories', 'articles', 'portal', 'logs', 'reviews', 'roles'].includes(entry.name)
     assert.equal(Boolean(moduleViews[entry.name]), expected)
   }
 })

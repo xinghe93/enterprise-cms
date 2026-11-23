@@ -174,10 +174,18 @@ test('角色目录异常一律抛错而非静默返回空/残缺候选（避免�
   const roleApi = createRoleApi(mock({ records: [], total: 0 }))
   // 真的零角色是合法结果，返回空但不能抛错。
   assert.deepEqual((await roleApi.listAssignableRoles()).records, [])
+  // 契约 total 是 int64，字符串数字必须兼容；空字符串仍属非法。
+  assert.deepEqual((await createRoleApi(mock({ records: [], total: '0' })).listAssignableRoles()).records, [])
+  assert.equal((await createRoleApi(mock({ records: [{ id: '1', status: 1 }], total: '1' })).listAssignableRoles()).records.length, 1)
+  await assert.rejects(createRoleApi(mock({ records: [], total: '' })).listAssignableRoles(), /分页数据异常/)
+
+  // 重复/缺 ID 的记录不能靠条数凑满 total 冒充完整目录。
+  await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }, { id: '1' }], total: 2 })).listAssignableRoles(), /重复角色 ID/)
+  await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }, {}], total: 2 })).listAssignableRoles(), /缺少 ID/)
 
   // total 缺失 / 非法：抛错，交由上层禁用保存。
   await assert.rejects(createRoleApi(mock({ records: [{ id: '1' }] })).listAssignableRoles(), /分页数据异常/)
-  await assert.rejects(createRoleApi(mock({ records: [], total: '5' })).listAssignableRoles(), /分页数据异常/)
+  await assert.rejects(createRoleApi(mock({ records: [], total: 'five' })).listAssignableRoles(), /分页数据异常/)
 
   // 首页空页但 total>0：提前截断，抛错。
   await assert.rejects(createRoleApi(mock({ records: [], total: 5 })).listAssignableRoles(), /提前返回空页/)
@@ -194,6 +202,22 @@ test('角色目录异常一律抛错而非静默返回空/残缺候选（避免�
     },
   })
   await assert.rejects(createRoleApi(changing).listAssignableRoles(), /总数不一致/)
+})
+
+test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', async () => {
+  // 映射与回退都通过可导入的纯函数断言行为，不再对 router/index.js 做源码正则匹配；
+  // 等价重构（改写法、调键顺序）不会误报（DeepSeek 审查 #13/#11）。
+  const { hasModuleView, moduleViews, resolveModuleView } = await import('../src/router/viewComponents.js')
+  for (const entry of ['departments', 'users', 'assignments', 'categories']) {
+    assert.equal(typeof moduleViews[entry], 'function', `moduleViews.${entry} 应映射到真实页面`)
+    assert.equal(hasModuleView(entry), true)
+    assert.equal(typeof resolveModuleView(entry), 'function')
+  }
+  assert.equal(hasModuleView('not-a-real-module'), false)
+  assert.equal(typeof resolveModuleView('not-a-real-module'), 'function')
+  // main.js 在 Node 环境有浏览器副作用，样式入口以完整 import 语句断言（专用用例覆盖）。
+  const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
+  assert.match(mainSource, /import '\.\/styles\/organization\.css'/)
 })
 
 test('角色目录返回记录数超过声明 total 时抛错（服务端翻页异常不可信）', async () => {
@@ -256,26 +280,19 @@ test('角色目录每页不足量时继续翻页；病态服务端由安全上�
   assert.equal(pathological, 100)
 })
 
-test('公共入口把 A 的两个模块映射到真实页面，其余仍走占位页', () => {
-  const routerSource = readFileSync(new URL('../src/router/index.js', import.meta.url), 'utf8')
-  const viewsSource = readFileSync(new URL('../src/router/viewComponents.js', import.meta.url), 'utf8')
-  const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
-  assert.match(routerSource, /moduleViews\[entry\.name\] \?\?/)
-  assert.match(routerSource, /props: \{ entry \}/)
-  assert.match(viewsSource, /departments: \(\) => import\('\.\.\/views\/user\/DepartmentView\.vue'\)/)
-  assert.match(viewsSource, /users: \(\) => import\('\.\.\/views\/user\/AssignmentView\.vue'\)/)
-  assert.match(viewsSource, /categories: \(\) => import\('\.\.\/views\/content\/TaxonomyView\.vue'\)/)
-  assert.match(mainSource, /import '\.\/styles\/organization\.css'/)
-  // PR #41 审查 P2：按需引入 ElDialog 必须同时带 dialog + overlay 样式。
-  assert.match(mainSource, /el-dialog\.css/)
-  assert.match(mainSource, /el-overlay\.css/)
+test('角色分配页保存门禁收敛到纯函数，部门保存重读详情有代码路径', () => {
+  const source = readFileSync(new URL('../src/views/user/AssignmentView.vue', import.meta.url), 'utf8')
+  // 门禁逻辑的行为断言在 organization.test.js 的 roleSaveBlocked 用例；
+  // 这里只验证页面确实接线到该纯函数，且保存前重读详情用最新姓名。
+  assert.match(source, /roleSaveBlocked\(/)
+  assert.match(source, /latest\.realName/)
 })
 
-test('角色分配页保存门禁同时覆盖目录、详情与启用角色缺失', () => {
-  const source = readFileSync(new URL('../src/views/user/AssignmentView.vue', import.meta.url), 'utf8')
-  assert.match(source, /roleDetailLoaded/)
-  assert.match(source, /!roleDetailLoaded/)
-  assert.match(source, /missingEnabledRoles/)
-  // 部门保存前必须重读详情并使用最新 realName，避免覆盖他人改名。
-  assert.match(source, /latest\.realName/)
+test('main.js 样式入口按完整 import 语句断言，注释提及不算命中', () => {
+  const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
+  assert.match(mainSource, /import 'element-plus\/theme-chalk\/el-dialog\.css'/)
+  assert.match(mainSource, /import 'element-plus\/theme-chalk\/el-overlay\.css'/)
+  // 去掉真实 import 后仅靠注释不应通过（防假阳性回归）。
+  const stripped = mainSource.replace(/^import 'element-plus\/theme-chalk\/el-(dialog|overlay)\.css'$/gm, '')
+  assert.doesNotMatch(stripped, /import 'element-plus\/theme-chalk\/el-dialog\.css'/)
 })

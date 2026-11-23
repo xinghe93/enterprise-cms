@@ -11,6 +11,8 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElButton, ElDialog, ElTag } from 'element-plus'
+// 弹窗样式不能依赖其他页面的懒加载组件顺带加载（老师审查 #4）。
+import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { findDepartment, flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
@@ -50,26 +52,30 @@ async function loadTree() {
   loading.value = true
   loadFailed.value = false
   try {
-    // 筛选后的树用于表格，完整树用于上级候选，两者都要拒绝过期响应。
-    const [filtered, full] = await Promise.all([
+    // 筛选后的树用于表格，完整树用于上级候选。两个请求相互独立：
+    // 用 allSettled 分开兜底，一侧失败不清空另一侧已成功的数据（DeepSeek 审查 #8）。
+    const [filteredResult, fullResult] = await Promise.allSettled([
       userApi.getDepartmentTree({ status: statusFilter.value === '' ? '' : Number(statusFilter.value) }),
       userApi.getDepartmentTree(),
     ])
     if (requestId !== treeRequestId) return
-    tree.value = filtered
-    fullTree.value = full
-  } catch {
-    if (requestId !== treeRequestId) return
-    // api/client.js 已统一弹出后端错误；内联只给出可重试的中性状态，不重复弹窗。
-    loadFailed.value = true
-    tree.value = []
-    fullTree.value = []
+    const filtered = filteredResult.status === 'fulfilled' ? filteredResult.value : null
+    const full = fullResult.status === 'fulfilled' ? fullResult.value : null
+    tree.value = filtered ?? []
+    fullTree.value = full ?? []
+    if (filtered === null || full === null) {
+      // api/client.js 已统一弹出后端错误；内联只给出可重试的中性状态，不重复弹窗。
+      loadFailed.value = true
+    }
   } finally {
+    // 无论成功、失败还是响应过期，只有最新一次请求负责复位 loading，
+    // 避免并发切换筛选时旧请求提前 return 导致状态残留（DeepSeek 审查 #6）。
     if (requestId === treeRequestId) loading.value = false
   }
 }
 
 function openCreate(parentId = '') {
+  if (submitting.value) return
   formError.value = ''
   editor.value = {
     mode: 'create',
@@ -78,6 +84,7 @@ function openCreate(parentId = '') {
 }
 
 function openEdit(node) {
+  if (submitting.value) return
   formError.value = ''
   editor.value = {
     mode: 'edit',
@@ -98,15 +105,21 @@ function closeEditor() {
 }
 
 function validateForm() {
-  const { form, mode } = editor.value
+  const { form, mode, node } = editor.value
   if (mode === 'create' && (!form.deptCode || form.deptCode.length > 64)) return '部门编码必填且不超过 64 字'
-  if (!form.deptName || form.deptName.length > 100) return '部门名称必填且不超过 100 字'
+  // 名称先做与后端一致的纯空白拒绝（trim 含 U+3000 等全角空白），再查长度。
+  if (!form.deptName.trim() || form.deptName.length > 100) return '部门名称必填且不超过 100 字'
   const order = Number(form.sortOrder)
   if (!Number.isInteger(order) || order < 0 || order > 2147483647) return '排序值需为 0～2147483647 的整数'
-  if (form.parentId && !isValidId(form.parentId)) return '上级部门 ID 非法'
+  // parentId 统一按字符串校验：select 候选与服务端返回均为字符串，防数字类型绕判。
+  const parentId = form.parentId ? String(form.parentId) : ''
+  if (parentId && !isValidId(parentId)) return '上级部门 ID 非法'
   // 完整 PUT 切换父节点时目标与全部祖先必须启用；原父不变可保留停用引用（keepParentId）。
   // 候选来自完整树，不受表格 statusFilter 影响；ID 统一按字符串比较，避免类型不一致误拒。
-  if (form.parentId && !candidates.value.some((option) => String(option.id) === String(form.parentId))) {
+  // 保持原父引用不变时跳过候选校验：完整树偶发加载失败不应拦下合法的
+  // 「只改名称/排序」编辑（DeepSeek 审查 #7）；只有切换父节点才必须校验候选。
+  const keepParentId = mode === 'edit' ? String(node?.parentId ?? '') : ''
+  if (parentId && parentId !== keepParentId && !candidates.value.some((option) => String(option.id) === parentId)) {
     return '上级部门不可为自身、后代或停用分支'
   }
   return ''
@@ -150,10 +163,15 @@ async function save() {
 
 async function toggleStatus(node) {
   if (submitting.value) return
-  if (node.status !== 0 && node.status !== 1) return
+  // 列表行可能来自筛选前的快照；提交前按 ID 从最新完整树回读真实状态，
+  // 避免基于过期 status 反向切换（DeepSeek 审查 #7）。
+  const current = findDepartment(fullTree.value, node.id) ?? findDepartment(tree.value, node.id) ?? node
+  // 服务端 status 恒为数字 0/1；防御性归一化，字符串类型不静默失效。
+  const status = Number(current.status)
+  if (status !== 0 && status !== 1) return
   submitting.value = true
   try {
-    await userApi.setDepartmentStatus(node.id, node.status === 1 ? 0 : 1)
+    await userApi.setDepartmentStatus(current.id, status === 1 ? 0 : 1)
     await loadTree()
   } catch {
     // 公共层已提示 404 / 409 / 500，此处不吞异常也不重复弹窗。
@@ -205,7 +223,7 @@ onMounted(loadTree)
       <ElButton :disabled="loading" @click="loadTree">刷新</ElButton>
     </div>
 
-    <p v-if="loadFailed" class="org-alert" role="alert">部门树未加载，请确认服务与登录态后重试。</p>
+    <p v-if="loadFailed" class="org-alert" role="alert">部门树未加载完成，请确认服务与登录态后重试。</p>
 
     <div class="org-card">
       <table class="org-table">

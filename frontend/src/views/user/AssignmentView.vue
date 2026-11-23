@@ -12,11 +12,16 @@
  * 权限由后端 AOP 校验，界面不做权限隐藏。
  */
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElButton, ElDialog, ElTag } from 'element-plus'
+// 弹窗样式不能依赖其他页面的懒加载组件顺带加载（老师审查 #4）。
+import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { createRoleApi } from '../../api/role.js'
-import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, sortDepartmentTree } from '../../utils/organization.js'
+import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree } from '../../utils/organization.js'
+
+const route = useRoute()
 
 const userApi = createUserApi(api)
 const roleApi = createRoleApi(api)
@@ -36,9 +41,14 @@ const submitting = ref(false)
 const dialog = ref(null)
 const selectedRoleIds = ref([])
 const removedRoles = ref([])
-// 角色弹窗的两个就绪条件必须同时成立才允许保存：目录完整 + 员工详情成功。
-// 只看 rolesLoadFailed 会在「目录重试成功、详情随后失败」时留下空选择并误清空角色。
-const roleDetailLoaded = ref(false)
+// 只有「员工详情 + 启用角色目录」两项请求都成功、勾选状态有效时才允许保存；
+// 否则全量替换会以空勾选提交 roleIds: []，静默清空员工已有角色（老师审查 #2）。
+const rolesReady = ref(false)
+// 目录与详情分别记录失败：任一失败都要保留弹窗内的重试入口（老师审查 #2）。
+// 只看 rolesLoadFailed 时，目录重试成功但详情失败会同时丢掉重试按钮，只能关弹窗重开。
+const roleDetailFailed = ref(false)
+// 详情标记为启用、却不在完整启用目录中的角色：说明目录不可信，必须阻止保存，
+// 否则全量替换会把「漏取」误当「停用」清掉（老师审查 #2）。
 const missingEnabledRoles = ref([])
 const formError = ref('')
 
@@ -139,9 +149,10 @@ function changeSize() {
 function closeDialog() {
   if (submitting.value) return
   dialog.value = null
-  roleDetailLoaded.value = false
-  missingEnabledRoles.value = []
   formError.value = ''
+  rolesReady.value = false
+  roleDetailFailed.value = false
+  missingEnabledRoles.value = []
 }
 
 async function openDepartmentDialog(user) {
@@ -149,10 +160,12 @@ async function openDepartmentDialog(user) {
   submitting.value = true
   formError.value = ''
   try {
-    // 列表可能是他人修改前的快照，详情才是当前权威值；详情失败时保持弹窗关闭，
-    // 不用列表旧值兜底，避免把「已被他人清空的部门」重新绑回旧部门。
+    // 列表可能是他人修改姓名之前加载的快照；完整 PUT 会回写 realName，
+    // 因此打开弹窗时重新读取详情，避免把他人已提交的姓名覆盖成旧值。
     const detail = await userApi.getUser(user.id)
     const departmentId = detail?.departmentId ?? null
+    // 详情是权威来源：departmentId 为 null 表示该员工当前已无部门，
+    // 不能回退到列表旧值，否则保存会把已清除的部门重新挂回（老师审查 #3）。
     // 老师复审 P2：树加载失败或候选缺失时，仍保留详情中的原部门作为可选项，
     // 避免「打开弹窗→原部门无对应选项→保存被候选校验拒绝」且刷新才能恢复。
     const knownDepartment = departmentId != null
@@ -168,6 +181,7 @@ async function openDepartmentDialog(user) {
         realName: detail?.realName ?? user.realName,
         departmentId,
       },
+      // select 以空串表示「无部门」，保存时统一转 null 提交。
       form: { departmentId: departmentId ?? '' },
     }
   } catch {
@@ -177,8 +191,52 @@ async function openDepartmentDialog(user) {
   }
 }
 
-/** 用详情 + 当前目录计算回显；missingEnabledRoles 非空表示目录不可信，必须阻止保存。 */
-function applyRoleDetail(detail) {
+async function openRoleDialog(user) {
+  if (submitting.value) return
+  submitting.value = true
+  formError.value = ''
+  roleDetailFailed.value = false
+  rolesReady.value = false
+  selectedRoleIds.value = []
+  removedRoles.value = []
+  missingEnabledRoles.value = []
+  // 先打开弹窗再发请求：任一请求失败时都要能在弹窗内重试，
+  // 不能在详情失败时直接关闭，让用户只能重新点行（DeepSeek 待核实 #5）。
+  dialog.value = { type: 'role', user }
+  try {
+    // 详情与目录相互独立，并行请求缩短开窗等待（DeepSeek 审查）；
+    // ensureRoles 内部自行兜错，Promise.all 只会因详情失败而 reject。
+    const [detail, ok] = await Promise.all([userApi.getUser(user.id), ensureRoles()])
+    // DeepSeek 审查：弹窗标题/后续保存基于详情的最新值，不用列表快照对象。
+    dialog.value = {
+      ...dialog.value,
+      user: {
+        ...dialog.value.user,
+        id: detail?.id ?? dialog.value.user.id,
+        realName: detail?.realName ?? dialog.value.user.realName,
+      },
+    }
+    if (!ok) {
+      // 目录失败时勾选无效：清空待移除提示（目录没拿到，无法判断哪些会被移除），
+      // 保持禁止保存并引导重试，而不是带着空勾选放行保存。
+      selectedRoleIds.value = []
+      removedRoles.value = []
+      rolesReady.value = false
+      formError.value = '启用角色目录加载失败，为避免误删现有角色已禁止保存，请重试'
+      return
+    }
+    applyRoleSelection(detail)
+  } catch {
+    // 公共层已提示 404 / 500；这里保留弹窗与重试入口，不让用户带着空勾选保存。
+    roleDetailFailed.value = true
+    formError.value = '员工详情加载失败，请重试'
+  } finally {
+    submitting.value = false
+  }
+}
+
+/** 两项请求都成功后按完整目录重建勾选；只有走到这里才解锁保存。 */
+function applyRoleSelection(detail) {
   const {
     selectedRoleIds: selected,
     removedRoles: removed,
@@ -187,68 +245,43 @@ function applyRoleDetail(detail) {
   selectedRoleIds.value = selected
   removedRoles.value = removed
   missingEnabledRoles.value = missing
-}
-
-async function openRoleDialog(user) {
-  if (submitting.value) return
-  submitting.value = true
-  formError.value = ''
-  roleDetailLoaded.value = false
-  missingEnabledRoles.value = []
-  try {
-    const detail = await userApi.getUser(user.id)
-    const ok = await ensureRoles()
-    if (ok) {
-      applyRoleDetail(detail)
-    } else {
-      // 目录失败时不要用空目录推算「待移除」项，否则会把全部现有角色误报成将删除。
-      selectedRoleIds.value = []
-      removedRoles.value = []
-      missingEnabledRoles.value = []
-    }
-    // DeepSeek 审查：弹窗标题/后续保存基于详情的最新值，不用列表快照对象。
-    dialog.value = {
-      type: 'role',
-      user: { ...user, id: detail?.id ?? user.id, realName: detail?.realName ?? user.realName },
-    }
-    // 详情成功才置位：即使随后目录加载失败，也只由 rolesLoadFailed 控制保存。
-    roleDetailLoaded.value = true
-    if (!ok) formError.value = '启用角色目录加载失败，为避免误删现有角色已禁止保存，请重试'
-  } catch {
-    // 公共层已提示 404 / 500，保持弹窗关闭状态。
-  } finally {
-    submitting.value = false
+  rolesReady.value = true
+  roleDetailFailed.value = false
+  // 打开/重试时刻的角色快照：保存前重读详情比对，角色被他人调整时拒绝提交（并发防护）。
+  if (dialog.value) {
+    dialog.value.roleSnapshot = (detail?.roles ?? []).map((role) => String(role?.id ?? role)).sort()
   }
 }
 
-/**
- * 目录或详情失败后的重试：两者都成功才允许保存。
- * 先清空 detail 就绪标记——目录成功但详情再次失败时，保存仍保持禁用，避免空选择清空角色。
- */
+/** 候选目录加载失败后的重试：目录与详情都重新成功才解锁保存并重建勾选。 */
 async function retryRoles() {
   if (submitting.value || !dialog.value || dialog.value.type !== 'role') return
   submitting.value = true
   formError.value = ''
-  roleDetailLoaded.value = false
   missingEnabledRoles.value = []
   try {
     const ok = await ensureRoles()
     if (!ok) {
+      rolesReady.value = false
       formError.value = '启用角色目录仍加载失败，请稍后重试'
       return
     }
+    // 详情失败时不能解锁保存：rolesReady 保持 false，勾选维持上一轮（无效）状态。
     const detail = await userApi.getUser(dialog.value.user.id)
-    applyRoleDetail(detail)
-    roleDetailLoaded.value = true
+    applyRoleSelection(detail)
   } catch {
-    formError.value = '员工详情加载失败，已禁止保存；请重试'
+    rolesReady.value = false
+    // 详情失败也要留下重试入口：此时 ensureRoles 已把 rolesLoadFailed 清空，
+    // 若不再单独标记，保存禁用且重试按钮消失，只能关闭弹窗重开（老师审查 #2）。
+    roleDetailFailed.value = true
+    formError.value = '员工详情加载失败，请重试'
   } finally {
     submitting.value = false
   }
 }
 
 function toggleRole(id) {
-  if (rolesLoadFailed.value || !roleDetailLoaded.value) return
+  if (!rolesReady.value) return
   const key = String(id)
   const index = selectedRoleIds.value.indexOf(key)
   if (index >= 0) selectedRoleIds.value.splice(index, 1)
@@ -284,7 +317,7 @@ async function saveDepartment() {
       return
     }
     // 完整 PUT 必带 realName：提交前重读详情，用最新姓名而不是开窗时的快照；
-    // 同时校验部门是否已被他人修改，避免静默覆盖对方的调整。
+    // 同时校验部门是否已被他人修改，避免静默覆盖对方的调整（老师审查 #3）。
     const latest = await userApi.getUser(user.id)
     const latestDepartment = latest?.departmentId == null ? null : String(latest.departmentId)
     if (latestDepartment !== original) {
@@ -314,24 +347,45 @@ async function saveDepartment() {
 
 async function saveRoles() {
   if (submitting.value || !dialog.value || dialog.value.type !== 'role') return
-  // 目录与详情任一未成功，或详情里的启用角色不在目录中，都不能做全量替换。
-  if (rolesLoadFailed.value || !roleDetailLoaded.value) {
+  // 门禁收敛到纯函数 roleSaveBlocked（organization.test.js 直接断言其行为）：
+  // 目录失败 / 详情未就绪 / 启用角色缺失任一成立都禁止全量替换。
+  if (roleSaveBlocked({
+    rolesLoadFailed: rolesLoadFailed.value,
+    roleDetailFailed: roleDetailFailed.value,
+    missingEnabledCount: missingEnabledRoles.value.length,
+  })) {
     formError.value = '角色目录或员工详情未加载成功，已禁止保存，请重试'
     return
   }
-  if (missingEnabledRoles.value.length) {
-    formError.value = '员工持有未出现在启用目录中的角色，目录可能不完整，已禁止保存'
+  if (!rolesReady.value) {
+    formError.value = '角色目录或员工详情未加载成功，已禁止保存，请重试'
     return
   }
   submitting.value = true
   formError.value = ''
   try {
+    // 并发校验：重读详情比对开窗时的角色快照，被其他管理员调整过就拒绝提交，
+    // 避免用旧勾选静默覆盖对方的分配（与 saveDepartment 的部门并发校验同一策略）。
+    const latest = await userApi.getUser(dialog.value.user.id)
+    const latestIds = (latest?.roles ?? []).map((role) => String(role?.id ?? role)).sort()
+    const snapshot = dialog.value.roleSnapshot ?? []
+    if (latestIds.length !== snapshot.length || latestIds.some((id, index) => id !== snapshot[index])) {
+      formError.value = '该员工的角色已被其他管理员修改，请关闭后重新打开再操作'
+      return
+    }
     // 全量替换：空数组即清空；先在本地归一化，超限/非法 ID 不发请求。
     const roleIds = normalizeRoleIds(selectedRoleIds.value)
     await userApi.setUserRoles(dialog.value.user.id, roleIds)
     dialog.value = null
     await loadUsers()
   } catch (error) {
+    if (error?.code === 404 || error?.status === 404) {
+      // 重读详情或提交时员工已被并发删除：公共层已提示，弹窗保留只会让管理员
+      // 对失效数据继续操作（与 saveDepartment 同一处理）。
+      dialog.value = null
+      await loadUsers()
+      return
+    }
     formError.value = error?.message || '保存失败，请按提示检查后重试'
   } finally {
     submitting.value = false
@@ -339,6 +393,15 @@ async function saveRoles() {
 }
 
 onMounted(() => {
+  // 员工页跳转带 ?keyword=<username>：首次请求前读取，避免目标员工不在第一页时
+  // 管理员还要手动重新搜索（老师审查 #5）；长度与契约 keyword 上限一致。
+  // 重复参数会解析成数组：取第一个值而不是静默忽略（DeepSeek 审查）。
+  const rawKeyword = Array.isArray(route.query.keyword) ? route.query.keyword[0] : route.query.keyword
+  const keyword = typeof rawKeyword === 'string' ? rawKeyword.trim() : ''
+  if (keyword) {
+    filters.value.keyword = keyword.slice(0, 100)
+    filters.value.current = 1
+  }
   void loadDepartments()
   void loadUsers()
 })
@@ -457,7 +520,7 @@ onMounted(() => {
       </div>
 
       <div v-else>
-        <p class="org-note">角色为全量替换：取消勾选即移除，最多 100 项；保存后重新加载列表以刷新回显。</p>
+        <p class="org-note">角色为全量替换：取消勾选即移除，最多 100 项；保存前会重新读取详情，角色已被其他管理员调整时会提示重新打开。</p>
         <div v-if="removedRoles.length" class="org-alert" role="status">
           以下已分配角色当前不可分配（停用或不存在），保存后将被移除：
           {{ removedRoles.map((role) => role.roleName).join('、') }}
@@ -466,15 +529,12 @@ onMounted(() => {
           员工持有未出现在启用目录中的角色（{{ missingEnabledRoles.map((role) => role.roleName).join('、') }}），
           目录可能不完整，已禁止保存。请重试加载目录后再操作。
         </p>
-        <ElButton v-if="rolesLoadFailed || !roleDetailLoaded" link type="danger" :disabled="submitting" @click="retryRoles">
-          {{ rolesLoadFailed ? '启用角色目录加载失败' : '员工详情加载失败' }}，点击重试
-        </ElButton>
-        <!-- 目录加载失败时不显示「暂无可分配」空态（误导），由上方重试按钮与提示接管。 -->
-        <div v-if="!assignableRoles.length && !rolesLoadFailed" class="org-empty">暂无可分配的启用角色。</div>
+        <ElButton v-if="rolesLoadFailed || roleDetailFailed" link type="danger" :disabled="submitting" @click="retryRoles">角色信息加载失败，点击重试</ElButton>
+        <div v-else-if="!assignableRoles.length" class="org-empty">暂无可分配的启用角色。</div>
         <div v-else class="org-check-list">
           <label v-for="role in assignableRoles" :key="role.id" class="org-check-item">
             <input
-              type="checkbox" :disabled="rolesLoadFailed || !roleDetailLoaded"
+              type="checkbox" :disabled="!rolesReady"
               :checked="selectedRoleIds.includes(String(role.id))" @change="toggleRole(role.id)"
             />
             <span>{{ role.roleName }}</span><span class="org-mono">{{ role.roleCode }}</span>
@@ -488,7 +548,7 @@ onMounted(() => {
         <ElButton
           type="primary" :loading="submitting"
           :disabled="submitting || (dialog?.type === 'role'
-            && (rolesLoadFailed || !roleDetailLoaded || missingEnabledRoles.length > 0))"
+            && roleSaveBlocked({ rolesLoadFailed, roleDetailFailed, missingEnabledCount: missingEnabledRoles.length }))"
           @click="dialog?.type === 'department' ? saveDepartment() : saveRoles()"
         >{{ submitting ? '保存中…' : '保存' }}</ElButton>
       </template>

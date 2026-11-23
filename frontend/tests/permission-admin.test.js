@@ -386,7 +386,8 @@ test('角色与权限页并发/一致性接线（评审四条修复的静态源�
   assert.match(source, /async function afterWrite\(\)/)
   const afterWriteCalls = source.match(/await afterWrite\(\)/g) ?? []
   assert.ok(afterWriteCalls.length >= 5, `5 个写成功点都应调用 afterWrite，实际 ${afterWriteCalls.length} 处`)
-  assert.match(source, /await loadPermissions\(\)\n  if \(disposed\) return\n  fetchRoles\(\)/)
+  // 合并 dev 后工作区文件为 CRLF（git core.autocrlf），断言需兼容两种换行符
+  assert.match(source, /await loadPermissions\(\)\r?\n  if \(disposed\) return\r?\n  fetchRoles\(\)/)
 })
 
 test('permissionIds 规范化：trim 去重、上限 100、非法项拒绝、空数组合法', () => {
