@@ -313,6 +313,25 @@ export function shouldReleaseAssignSaving(sessionChanged, visible) {
 }
 
 /**
+ * 编辑型弹窗（角色 / 权限项）会话有效性判断（评审 P2 同源竞态）：判断在途
+ * 保存响应返回时，是否仍是发起它的那个弹窗会话，避免旧响应关闭/改写刚打开的
+ * 另一条记录弹窗（未保存草稿丢失）。
+ *
+ * <p>复现：保存 A（请求挂起）→ 取消 → 打开 B 并填写 → A 响应成功 → 若无条件
+ * {@code visible=false} 会关闭 B。判定要求会话序号、可见性、记录 ID（创建模式
+ * 为 null）三者都与发起时一致，任一变化即作废旧响应。</p>
+ *
+ * @param saved   { session, recordId } 保存开始时捕获的快照
+ * @param current { session, recordId, visible } 响应返回时的当前弹窗状态
+ */
+export function isDialogSessionCurrent(saved, current) {
+  if (!saved || saved.session === undefined) return false
+  if (current?.visible !== true) return false
+  if (saved.session !== current?.session) return false
+  return String(saved.recordId ?? '') === String(current?.recordId ?? '')
+}
+
+/**
  * 两份读取的 status 漂移检测（评审 P2：避免「提示移除」与「预选保留」矛盾）：
  * 返回「在已分配与权限目录两份数据中 status 不一致」的权限 ID 列表。
  *

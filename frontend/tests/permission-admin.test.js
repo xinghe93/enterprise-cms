@@ -12,6 +12,7 @@ import {
   findUnpreselectableAssigned,
   formatDateTime,
   isAssignSessionCurrent,
+  isDialogSessionCurrent,
   normalizePermissionIds,
   shouldReleaseAssignSaving,
   permissionBaseline,
@@ -436,6 +437,46 @@ test('保存后 clearing saving（评审 P2）：成功关闭必须清，避免�
   open(); saveSuccess(); assert.equal(saving, false, '换角色再保存后入口应可用')
 })
 
+test('编辑弹窗会话守卫（评审 P2 同源竞态）：旧保存响应不得关闭新弹窗', () => {
+  // 评审复现：保存角色 A（挂起）→ 取消 → 打开 B 并填写 → A 成功响应返回，
+  // 若无条件 visible=false 会关闭 B、丢失未保存草稿。会话序号 + 记录 ID 双校验。
+  const saved = { session: 1, recordId: '37' }   // 编辑记录 A
+  const cur = (session, recordId, visible = true) => ({ session, recordId, visible })
+
+  // 同会话同记录仍开 → 响应有效（正常保存成功）
+  assert.equal(isDialogSessionCurrent(saved, cur(1, '37')), true)
+  // 不同记录重开（同一角色表另一行）→ 作废，旧响应不得关闭 B
+  assert.equal(isDialogSessionCurrent(saved, cur(2, '38')), false)
+  // 同一记录重开（会话序号变）→ 作废，旧响应不得覆盖新表单
+  assert.equal(isDialogSessionCurrent(saved, cur(2, '37')), false)
+  // 弹窗已关闭 → 作废
+  assert.equal(isDialogSessionCurrent(saved, cur(1, '37', false)), false)
+  // 创建模式（recordId=null）同会话 → 有效
+  assert.equal(isDialogSessionCurrent({ session: 3, recordId: null }, cur(3, null)), true)
+  // 数字/字符串 ID 归一
+  assert.equal(isDialogSessionCurrent({ session: 1, recordId: 37 }, cur(1, '37')), true)
+
+  // 防御性输入
+  assert.equal(isDialogSessionCurrent(null, cur(1, '37')), false)
+  assert.equal(isDialogSessionCurrent(saved, null), false)
+  assert.equal(isDialogSessionCurrent(saved, {}), false)
+
+  // 评审回归：连续保存同一记录、不同记录后，submitting 均被正确清理（入口可用）
+  // 用最小状态机模拟 open（换号+重置 submitting）与成功关闭（watch 换号+清理）
+  let submitting = false
+  let seq = 0
+  const open = () => { seq += 1; submitting = false }
+  const saveSuccess = (recordId) => {
+    const atStart = seq
+    submitting = true
+    seq += 1 // successful visible=false → watch bump
+    if (shouldReleaseAssignSaving(seq !== atStart, false)) submitting = false
+    return isDialogSessionCurrent({ session: atStart, recordId }, { session: seq, recordId, visible: false }) === false
+  }
+  open(); saveSuccess('37'); assert.equal(submitting, false, '同一记录重复保存后入口可用')
+  open(); saveSuccess('38'); assert.equal(submitting, false, '不同记录保存后入口可用')
+})
+
 test('状态漂移检测（评审 P2）：两份读取的 status 不一致必须报告，避免「提示移除+预选保留」矛盾', () => {
   const assignedRow = (id, status = 1) => ({ id, status })
   const catalogRow = (id, status = 1) => ({ id, status })
@@ -503,6 +544,18 @@ test('角色与权限页并发/一致性接线（评审四条修复的静态源�
   assert.match(source, /assignDialog\.visible = false[\s\S]{0,240}?await afterWrite\(\)/)
   const openSavingReset = source.match(/assignSessionSeq \+= 1[\s\S]{0,160}?assignDialog\.saving = false/)
   assert.ok(openSavingReset, 'openAssignDialog 打开新会话时应重置 saving')
+  // 评审 P2 同源竞态：角色/权限项编辑弹窗也绑定会话（会话序号 + watch 关闭换号 +
+  // 固定快照 + stillCurrent 守卫 + shouldRelease 清理），并导出纯函数可测
+  assert.match(utilsSource, /export function isDialogSessionCurrent/)
+  assert.match(source, /let roleDialogSessionSeq = 0/)
+  assert.match(source, /let permDialogSessionSeq = 0/)
+  assert.match(source, /watch\(\(\) => roleDialog\.visible/)
+  assert.match(source, /watch\(\(\) => permDialog\.visible/)
+  assert.match(source, /isDialogSessionCurrent\(savedSession, \{/)
+  const editStillCurrent = source.match(/if \(!stillCurrent\(\)\) return/g) ?? []
+  assert.ok(editStillCurrent.length >= 12, `三类弹窗每个 await/成功点都要校验会话，实际 ${editStillCurrent.length} 处`)
+  assert.match(source, /:show-close="!roleDialog\.submitting"/)
+  assert.match(source, /:show-close="!permDialog\.submitting"/)
   // P2 路径原样：payload 以 row.path 为准，不再有 trim 路由的 normalizeMenuRoute
   assert.doesNotMatch(utilsSource, /normalizeMenuRoute/)
   assert.match(utilsSource, /hasOwnProperty\.call\(row, 'path'\)/)

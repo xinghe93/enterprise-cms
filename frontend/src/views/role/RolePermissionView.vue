@@ -43,6 +43,7 @@ import {
   findUnpreselectableAssigned,
   formatDateTime,
   isAssignSessionCurrent,
+  isDialogSessionCurrent,
   normalizePermissionIds,
   shouldReleaseAssignSaving,
   permissionBaseline,
@@ -133,6 +134,12 @@ const assignGuard = createRequestGuard()
 // 序号，恢复后用 isAssignSessionCurrent 校验——会话已变（关闭/重开/换角色/
 // re-open 改写基线）即丢弃旧请求，绝不把旧勾选与新基线混用提交。
 let assignSessionSeq = 0
+
+// 评审 P2 同源竞态：角色编辑弹窗、权限项编辑弹窗的会话序号。各自在打开
+// （openRoleCreate/openRoleEdit、openPermCreate/openPermEdit）与关闭（watch
+// visible）时递增；在途保存响应返回后校验会话，只操作所属那一次弹窗。
+let roleDialogSessionSeq = 0
+let permDialogSessionSeq = 0
 
 const activeTab = ref('roles')
 
@@ -227,11 +234,18 @@ const roleDialog = reactive({
   errors: {},
 })
 
+// 评审 P2 同源竞态：角色编辑弹窗关闭即递增会话序号，作废该会话在途保存响应。
+watch(() => roleDialog.visible, (visible, wasVisible) => {
+  if (wasVisible && !visible) roleDialogSessionSeq += 1
+}, { flush: 'sync' })
+
 function openRoleCreate() {
   if (!canCreateRole.value) {
     ElMessage.warning('当前账号没有创建角色权限（role:create）。')
     return
   }
+  roleDialogSessionSeq += 1 // 评审 P2：新会话，旧在途保存响应作废
+  roleDialog.submitting = false
   roleDialog.mode = 'create'
   roleDialog.row = null
   roleDialog.form = { roleCode: '', roleName: '' }
@@ -244,6 +258,8 @@ function openRoleEdit(row) {
     ElMessage.warning('当前账号没有修改角色权限（role:update）。')
     return
   }
+  roleDialogSessionSeq += 1 // 评审 P2：新会话（同一记录重开也换号），旧在途响应作废
+  roleDialog.submitting = false
   roleDialog.mode = 'edit'
   roleDialog.row = row
   roleDialog.form = { roleCode: row.roleCode, roleName: row.roleName }
@@ -263,21 +279,44 @@ async function submitRoleDialog() {
     return
   }
   roleDialog.errors = {}
+  // 评审 P2 同源竞态：固定本次保存的会话快照（会话序号 + 记录 ID + 模式），
+  // 响应返回后只操作所属那一次弹窗，避免旧响应关闭刚打开的另一条记录弹窗、丢失草稿。
+  const savedSession = {
+    session: roleDialogSessionSeq,
+    recordId: isCreate ? null : roleDialog.row.id,
+    isCreate,
+  }
+  const stillCurrent = () => isDialogSessionCurrent(savedSession, {
+    session: roleDialogSessionSeq,
+    recordId: roleDialog.role?.id,
+    visible: roleDialog.visible,
+  })
   roleDialog.submitting = true
   try {
-    if (isCreate) {
+    if (savedSession.isCreate) {
       await permissionApi.createRole(payload)
-      ElMessage.success('角色已创建，默认启用且未分配权限')
     } else {
-      await permissionApi.updateRole(roleDialog.row.id, payload)
-      ElMessage.success('角色已更新')
+      // 记录 ID 用固定快照，不读共享 roleDialog.row（可能被重开改写）。
+      await permissionApi.updateRole(savedSession.recordId, payload)
     }
+    // 会话已变（保存期间取消/重开同记录或另一记录）→ 静默结束：不弹成功提示、
+    // 不关闭新弹窗，避免覆盖新弹窗未保存内容。写入本身已完成，列表由下方刷新。
+    if (!stillCurrent()) return
+    ElMessage.success(savedSession.isCreate ? '角色已创建，默认启用且未分配权限' : '角色已更新')
     roleDialog.visible = false
     await afterWrite()
   } catch {
     // api/index.js 的 onError 已统一提示（409 编码冲突等），这里只结束加载状态。
+    if (!stillCurrent()) return
   } finally {
-    roleDialog.submitting = false
+    // 与分配弹窗同理：成功关闭会让 watch 递增序号使 stillCurrent 变 false，
+    // 故用 shouldReleaseAssignSaving 区分「本次成功关闭」与「被新会话接管」。
+    if (shouldReleaseAssignSaving(
+      roleDialogSessionSeq !== savedSession.session,
+      roleDialog.visible,
+    )) {
+      roleDialog.submitting = false
+    }
   }
 }
 
@@ -686,6 +725,8 @@ function openPermCreate() {
     ElMessage.warning('当前账号没有创建权限项权限（permission:create）。')
     return
   }
+  permDialogSessionSeq += 1 // 评审 P2：新会话，旧在途保存响应作废
+  permDialog.submitting = false
   permDialog.mode = 'create'
   permDialog.row = null
   permDialog.form = { permissionCode: '', permissionName: '', permissionType: 'API', path: '', method: '' }
@@ -698,12 +739,15 @@ function openPermEdit(row) {
     ElMessage.warning('当前账号没有修改权限项权限（permission:update）。')
     return
   }
+  permDialogSessionSeq += 1 // 评审 P2：新会话（同一记录重开也换号），旧在途响应作废
+  permDialog.submitting = false
   permDialog.mode = 'edit'
   permDialog.row = row
   // 编码与类型不可改，回显只读。评审 P2：MENU/BUTTON 的 path 是「菜单路由」，
   // payload 以数据库已有值 row.path 为准【原样提交】（不 trim、不按 JS length
   // 复检长度，见 buildPermissionUpdatePayload）；form.path 只是编辑表单的回显
   // 载体（这些类型不显示路径输入框，仅 row 缺 path 字段时才作回退源）。
+  // 评审 P2 会话竞态：记录 ID 纳入会话快照，不同记录重开时旧响应不得关闭新弹窗。
   permDialog.form = {
     permissionCode: row.permissionCode,
     permissionName: row.permissionName,
@@ -714,6 +758,11 @@ function openPermEdit(row) {
   permDialog.errors = {}
   permDialog.visible = true
 }
+
+// 评审 P2 同源竞态：权限项编辑弹窗关闭即递增会话序号，作废该会话在途保存响应。
+watch(() => permDialog.visible, (visible, wasVisible) => {
+  if (wasVisible && !visible) permDialogSessionSeq += 1
+}, { flush: 'sync' })
 
 function onPermTypeChange() {
   // MENU/BUTTON 的 path 是菜单路由：编辑时类型选择框禁用，本函数只在创建时触发；
@@ -746,21 +795,42 @@ async function submitPermDialog() {
     return
   }
   permDialog.errors = {}
+  // 评审 P2 同源竞态：固定会话快照（会话序号 + 记录 ID + 模式），响应只操作
+  // 所属那一次弹窗，避免旧响应关闭刚打开的另一条记录弹窗、丢失未保存草稿。
+  const savedSession = {
+    session: permDialogSessionSeq,
+    recordId: isCreate ? null : permDialog.row.id,
+    isCreate,
+  }
+  const stillCurrent = () => isDialogSessionCurrent(savedSession, {
+    session: permDialogSessionSeq,
+    recordId: permDialog.role?.id,
+    visible: permDialog.visible,
+  })
   permDialog.submitting = true
   try {
-    if (isCreate) {
+    if (savedSession.isCreate) {
       await permissionApi.createPermission(payload)
-      ElMessage.success('权限项已创建，默认启用')
     } else {
-      await permissionApi.updatePermission(permDialog.row.id, payload)
-      ElMessage.success('权限项已更新')
+      // 记录 ID 用固定快照，不读共享 permDialog.row（可能被重开改写）。
+      await permissionApi.updatePermission(savedSession.recordId, payload)
     }
+    if (!stillCurrent()) return
+    ElMessage.success(savedSession.isCreate ? '权限项已创建，默认启用' : '权限项已更新')
     permDialog.visible = false
     await afterWrite()
   } catch {
     // 全局提示已弹出（409：编码/名称冲突；400：格式错误）。
+    if (!stillCurrent()) return
   } finally {
-    permDialog.submitting = false
+    // 成功关闭会让 watch 递增序号使 stillCurrent 变 false，用通用判定区分
+    // 「本次成功关闭」与「被新会话接管」，避免提交入口被永久禁用。
+    if (shouldReleaseAssignSaving(
+      permDialogSessionSeq !== savedSession.session,
+      permDialog.visible,
+    )) {
+      permDialog.submitting = false
+    }
   }
 }
 
@@ -852,7 +922,7 @@ onUnmounted(() => {
           <div class="filter-actions">
             <ElButton type="primary" :disabled="!canListRoles" :loading="roleLoading" @click="handleRoleSearch">查询</ElButton>
             <ElButton :disabled="!canListRoles || roleLoading" @click="handleRoleReset">重置</ElButton>
-            <ElButton v-if="canCreateRole" type="primary" plain @click="openRoleCreate">新建角色</ElButton>
+            <ElButton v-if="canCreateRole" type="primary" plain :disabled="roleDialog.submitting" @click="openRoleCreate">新建角色</ElButton>
           </div>
         </section>
 
@@ -888,7 +958,7 @@ onUnmounted(() => {
               </ElTableColumn>
               <ElTableColumn label="操作" width="200" fixed="right">
                 <template #default="{ row }">
-                  <ElButton v-if="canUpdateRole" link type="primary" @click="openRoleEdit(row)">编辑</ElButton>
+                  <ElButton v-if="canUpdateRole" link type="primary" :disabled="roleDialog.submitting" @click="openRoleEdit(row)">编辑</ElButton>
                   <ElButton v-if="canSetRoleStatus" link :type="row.status === 1 ? 'danger' : 'success'" @click="toggleRoleStatus(row)">
                     {{ row.status === 1 ? '停用' : '启用' }}
                   </ElButton>
@@ -941,7 +1011,7 @@ onUnmounted(() => {
           <div class="filter-actions">
             <ElButton type="primary" :disabled="!canListPermissions" :loading="permLoading" @click="handlePermSearch">查询</ElButton>
             <ElButton :disabled="!canListPermissions || permLoading" @click="handlePermReset">重置</ElButton>
-            <ElButton v-if="canCreatePermission" type="primary" plain @click="openPermCreate">新建权限项</ElButton>
+            <ElButton v-if="canCreatePermission" type="primary" plain :disabled="permDialog.submitting" @click="openPermCreate">新建权限项</ElButton>
           </div>
         </section>
 
@@ -985,7 +1055,7 @@ onUnmounted(() => {
               </ElTableColumn>
               <ElTableColumn label="操作" width="140" fixed="right">
                 <template #default="{ row }">
-                  <ElButton v-if="canUpdatePermission" link type="primary" @click="openPermEdit(row)">编辑</ElButton>
+                  <ElButton v-if="canUpdatePermission" link type="primary" :disabled="permDialog.submitting" @click="openPermEdit(row)">编辑</ElButton>
                   <ElButton v-if="canSetPermissionStatus" link :type="row.status === 1 ? 'danger' : 'success'" @click="togglePermStatus(row)">
                     {{ row.status === 1 ? '停用' : '启用' }}
                   </ElButton>
@@ -1013,6 +1083,8 @@ onUnmounted(() => {
 
     <ElDialog
       v-model="roleDialog.visible"
+      :show-close="!roleDialog.submitting"
+      :close-on-press-escape="!roleDialog.submitting"
       :title="roleDialog.mode === 'create' ? '新建角色' : '编辑角色'"
       width="480px"
       :close-on-click-modal="false"
@@ -1033,7 +1105,7 @@ onUnmounted(() => {
         <p v-if="roleDialog.mode === 'create'" class="dialog-note">新角色默认启用且未分配任何权限。</p>
       </ElForm>
       <template #footer>
-        <ElButton @click="roleDialog.visible = false">取消</ElButton>
+        <ElButton :disabled="roleDialog.submitting" @click="roleDialog.visible = false">取消</ElButton>
         <ElButton type="primary" :loading="roleDialog.submitting" @click="submitRoleDialog">
           {{ roleDialog.mode === 'create' ? '创建' : '保存' }}
         </ElButton>
@@ -1180,6 +1252,8 @@ onUnmounted(() => {
 
     <ElDialog
       v-model="permDialog.visible"
+      :show-close="!permDialog.submitting"
+      :close-on-press-escape="!permDialog.submitting"
       :title="permDialog.mode === 'create' ? '新建权限项' : '编辑权限项'"
       width="520px"
       :close-on-click-modal="false"
@@ -1222,7 +1296,7 @@ onUnmounted(() => {
         <p v-if="permDialog.mode === 'create'" class="dialog-note">新权限项默认启用；创建后编码与类型不可修改。</p>
       </ElForm>
       <template #footer>
-        <ElButton @click="permDialog.visible = false">取消</ElButton>
+        <ElButton :disabled="permDialog.submitting" @click="permDialog.visible = false">取消</ElButton>
         <ElButton type="primary" :loading="permDialog.submitting" @click="submitPermDialog">
           {{ permDialog.mode === 'create' ? '创建' : '保存' }}
         </ElButton>
