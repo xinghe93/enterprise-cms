@@ -149,7 +149,10 @@ public class UserAdminController {
         String keyword = params.get("keyword");
         if (keyword != null) {
             // 原始长度先按 schema 校验，再 trim；空串不筛选。
-            if (keyword.length() > 100) {
+            // 长度按 Unicode 代码点计数（老师复审 P2）：创建接口允许保存 100 个增补
+            // 平面字符的姓名，keyword.length() 会把它计成 200 个 UTF-16 代码单元，
+            // 按完整姓名搜索会被误判 400；与 AdminJson.text() 口径一致。
+            if (keyword.codePointCount(0, keyword.length()) > 100) {
                 throw new BusinessException(ResultCode.BAD_REQUEST, "keyword 长度不能超过 100");
             }
             keyword = keyword.trim();

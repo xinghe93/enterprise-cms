@@ -6,6 +6,7 @@ import { storeToRefs } from 'pinia'
 import AppIcon from '../components/AppIcon.vue'
 import { api } from '../api/index.js'
 import { createAuthApi } from '../api/auth.js'
+import { countCodePoints } from '../utils/text.js'
 import { useSessionStore } from '../stores/session.js'
 
 const router = useRouter()
@@ -77,10 +78,12 @@ async function signOut() {
       <p>使用企业账号访问知识与协作服务。</p>
       <ElForm ref="formRef" :model="form" :rules="rules" label-position="top" class="login-form" @submit.prevent="submit">
         <ElFormItem label="账号" prop="username">
-          <ElInput v-model="form.username" autocomplete="username" maxlength="64" placeholder="请输入登录账号" />
+          <!-- maxlength 按 count-graphemes 逐代码点计数（老师复审 P1）：与创建接口
+               的 Unicode「字符」语义一致，增补平面字符不再被按 UTF-16 代码单元截半。 -->
+          <ElInput v-model="form.username" autocomplete="username" :maxlength="64" :count-graphemes="countCodePoints" placeholder="请输入登录账号" />
         </ElFormItem>
         <ElFormItem label="密码" prop="password">
-          <ElInput v-model="form.password" type="password" show-password autocomplete="current-password" maxlength="128" placeholder="请输入密码" />
+          <ElInput v-model="form.password" type="password" show-password autocomplete="current-password" :maxlength="128" :count-graphemes="countCodePoints" placeholder="请输入密码" />
         </ElFormItem>
         <ElButton type="primary" native-type="submit" :loading="submitting" class="login-submit">登录</ElButton>
       </ElForm>

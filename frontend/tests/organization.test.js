@@ -179,6 +179,31 @@ test('账号表单：新建校验账号/密码/姓名/部门，长度与纯空�
   assert.match(validateAccountForm('create', { ...valid, departmentId: '9' }, allowed), /所属部门不可选/)
 })
 
+test('账号表单：字段长度按 Unicode 代码点计数，覆盖新建与编辑路径', () => {
+  // 老师复审 P2：输入框已按代码点允许输入，保存校验若仍按 UTF-16 length()
+  // 就会拒绝合法值（64 个「𠮷」用户名 / 100 个「𠮷」姓名 / 128 个「𠮷」密码），
+  // 或放行不足下限的 4 个「𠮷」密码（raw.length=8 却只有 4 个字符）。
+  const supplementary = '𠮷'
+  const valid = {
+    username: supplementary.repeat(64), // raw.length()=128
+    password: supplementary.repeat(128), // raw.length()=256
+    realName: supplementary.repeat(100), // raw.length()=200
+    departmentId: null,
+  }
+  assert.equal(validateAccountForm('create', valid), '', '创建：上限内的代码点值必须放行')
+
+  assert.match(validateAccountForm('create', { ...valid, username: supplementary.repeat(65) }), /登录账号/)
+  assert.match(validateAccountForm('create', { ...valid, password: supplementary.repeat(129) }), /密码/)
+  assert.match(validateAccountForm('create', { ...valid, realName: supplementary.repeat(101) }), /姓名/)
+  assert.match(validateAccountForm('create', { ...valid, password: supplementary.repeat(4) }), /密码/,
+    '4 个代码点的密码不足 8 位，不能靠代理对凑够 raw.length()=8')
+
+  // 编辑路径：完整 PUT 只校验姓名/部门，100 个代码点的姓名同样必须放行。
+  assert.equal(validateAccountForm('edit', { realName: supplementary.repeat(100), departmentId: null }), '',
+    '编辑：上限内的代码点姓名必须放行')
+  assert.match(validateAccountForm('edit', { realName: supplementary.repeat(101), departmentId: null }), /姓名/)
+})
+
 test('账号表单：部门树加载失败时编辑可保留详情原部门，换部门仍拒绝', () => {
   const emptyTree = new Set()
   assert.equal(validateAccountForm('edit', { realName: '张三', departmentId: '3' }, emptyTree, '3'), '',

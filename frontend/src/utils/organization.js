@@ -11,6 +11,8 @@
  * 不依赖 Vue / DOM，便于 Node 原生测试直接覆盖这些规则。
  */
 
+import { countCodePoints } from './text.js'
+
 const MAX_LONG = 9223372036854775807n
 const ID_PATTERN = /^[1-9][0-9]{0,18}$/
 
@@ -138,7 +140,10 @@ export function normalizeRoleIds(ids) {
  * 与后端反序列化器保持一致（UserCreateRequestDeserializer / UserUpdateRequestDeserializer）：
  *  - username 1～64、password 8～128、realName 1～100，按 Unicode 空白 strip 后判非空；
  *  - 纯空白（含 U+3000 全角空格）视为非法，与后端 strip() 判定一致；
- *  - departmentId 可空，非空必须是合法十进制 ID。
+ *  - departmentId 可空，非空必须是合法十进制 ID；
+ *  - 字段长度按 Unicode 代码点计数（老师复审 P2），与后端 AdminJson/DepartmentJson
+ *    同口径：String.length() 按 UTF-16 计，会把 64 个「𠮷」用户名误判超长、
+ *    4 个「𠮷」密码误判满足 8 位下限。
  *
  * mode=create 校验全部四项；mode=edit 只校验 realName 与 departmentId（完整 PUT）。
  * allowedDepartmentIds 为可选部门 ID 集合，传入时校验所选部门在候选内。
@@ -155,13 +160,14 @@ export function validateAccountForm(mode, form, allowedDepartmentIds = null,
 
   if (mode === 'create') {
     const username = value('username')
-    if (blank(username) || username.length > 64) return '登录账号必填且不超过 64 字'
+    if (blank(username) || countCodePoints(username) > 64) return '登录账号必填且不超过 64 字'
     const password = typeof form?.password === 'string' ? form.password : ''
-    if (password.length < 8 || password.length > 128) return '密码长度需为 8～128 字'
+    const passwordLength = countCodePoints(password)
+    if (passwordLength < 8 || passwordLength > 128) return '密码长度需为 8～128 字'
   }
 
   const realName = value('realName')
-  if (blank(realName) || realName.length > 100) return '姓名必填且不超过 100 字'
+  if (blank(realName) || countCodePoints(realName) > 100) return '姓名必填且不超过 100 字'
 
   const departmentId = form?.departmentId
   if (departmentId !== '' && departmentId !== null && departmentId !== undefined) {

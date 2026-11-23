@@ -3,6 +3,7 @@ package com.xinghe.cms.user.controller;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -125,5 +126,51 @@ class AuthControllerHttpTests {
         verify(authService).login(request.capture());
         assertEquals("editor_demo", request.getValue().username());
         assertEquals("  pw  ", request.getValue().password(), "密码首尾空白不得被 trim 或截断");
+    }
+
+    /**
+     * 登录与创建入口共用同一 Unicode 长度口径（老师复审 P1）：创建接口（AdminJson）
+     * 按 Unicode 代码点计数，允许保存 64 个「𠮷」组成的用户名（raw.length()=128）
+     * 与 128 个代码点的密码（raw.length()=256）；登录若继续按 @Size 的 UTF-16
+     * 计数会在验证凭据前返回 400。登录必须按代码点校验并原样传入登录服务；
+     * 65 / 129 个代码点则仍在绑定阶段 400。
+     */
+    @Test
+    void loginCountsLengthByCodePointsConsistentWithCreateContract() throws Exception {
+        String username = "\uD842\uDFB7".repeat(64);
+        String password = "\uD842\uDFB7".repeat(128);
+        when(authService.login(any(LoginRequest.class))).thenReturn(
+                new LoginResultVO("opaque-token", "Bearer", 7200L,
+                        new UserVO("7", username, "演示编辑", null, null, 1,
+                                List.of(), null, null)));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.accessToken").value("opaque-token"));
+
+        ArgumentCaptor<LoginRequest> request = ArgumentCaptor.forClass(LoginRequest.class);
+        verify(authService).login(request.capture());
+        assertEquals(username, request.getValue().username(), "64 个代码点用户名必须原样传入");
+        assertEquals(password, request.getValue().password(), "128 个代码点密码必须原样传入");
+
+        // 65 个代码点的用户名 / 129 个代码点的密码超出创建契约上限，登录同样拒绝。
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + "\uD842\uDFB7".repeat(65)
+                                + "\",\"password\":\"12345678\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"editor_demo\",\"password\":\""
+                                + "\uD842\uDFB7".repeat(129) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 超限请求不得进入登录服务：合法调用只有上面的一次。
+        verify(authService, times(1)).login(any(LoginRequest.class));
     }
 }

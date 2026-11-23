@@ -45,7 +45,13 @@ final class AdminJson {
             return context.reportInputMismatch(target, "字段 %s 必须是 JSON 字符串", field);
         }
         String raw = value.textValue();
-        if (raw.length() < min || raw.length() > max) {
+        // 长度按 Unicode 代码点计数：String.length() 返回 UTF-16 代码单元，含增补平面
+        // 字符（如「𠮷」或 emoji，每个占 2 个 char）的合法值会被误判超长——51 个扩展
+        // 汉字 raw.length()=102 却 codePointCount=51。契约上限按「字符」语义，与
+        // DepartmentJson 的修复（#40）保持一致；min 同理按代码点判定，单个代理对
+        // 不应被当作 2 个字符凑满下限。
+        int length = raw.codePointCount(0, raw.length());
+        if (length < min || length > max) {
             return context.reportInputMismatch(target, "字段 %s 长度必须在 %d 到 %d 之间",
                     field, min, max);
         }

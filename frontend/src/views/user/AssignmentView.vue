@@ -20,6 +20,7 @@ import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { createRoleApi } from '../../api/role.js'
 import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree } from '../../utils/organization.js'
+import { syncClampedInput, trimOnBlur } from '../../utils/text.js'
 
 const route = useRoute()
 
@@ -130,6 +131,8 @@ async function loadUsers() {
 }
 
 function search() {
+  // 首尾空白只在提交查询时处理（老师复审 P2：@input 逐键 trim 会吃掉姓名中的空格）。
+  filters.value.keyword = filters.value.keyword.trim()
   filters.value.current = 1
   void loadUsers()
 }
@@ -418,7 +421,9 @@ onMounted(() => {
     <div class="org-toolbar org-toolbar-wrap">
       <label class="org-inline-field">
         <span>关键字</span>
-        <input v-model.trim="filters.keyword" maxlength="100" placeholder="账号或姓名" @keyup.enter="search" />
+        <!-- syncClampedInput 逐代码点截断并同步回 DOM：后端 keyword 同口径，
+             完整姓名可搜索，且显示值与提交值始终一致。 -->
+        <input :value="filters.keyword" @input="filters.keyword = syncClampedInput($event, 100)" @blur="filters.keyword = trimOnBlur($event)" placeholder="账号或姓名" @keyup.enter="search" />
       </label>
       <label class="org-inline-field">
         <span>部门（含后代）</span>
