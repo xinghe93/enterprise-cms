@@ -11,6 +11,7 @@ import {
   findStatusConflicts,
   findUnpreselectableAssigned,
   formatDateTime,
+  isAssignSessionCurrent,
   normalizePermissionIds,
   permissionBaseline,
   permissionBaselineIds,
@@ -357,6 +358,54 @@ test('并发基线签名（评审 P1 并发覆盖）：顺序无关、去重、�
     permissionBaselineIds([{ id: '9' }, { id: '3' }]).join(','))
 })
 
+test('弹窗会话守卫（评审 P2 会话竞态）：关闭/重开同一角色时旧保存请求必须作废', () => {
+  // 评审复现：原基线 [X]，勾选 [X,Y]；保存挂起期间另一管理员撤销 X，
+  // 用户取消并重开同一角色 → 新基线 []。旧请求若继续用「旧勾选 + 新基线」提交，
+  // 后端 current=[] 与 expected=[] 相等 → 恢复已撤销的 X。
+  // saved = 保存开始时固定的局部快照；current = 恢复执行时的共享弹窗状态。
+  const saved = {
+    session: 1,
+    roleId: '37',
+    baselineIds: ['9'],              // 打开时基线 [X=9]
+    baseline: '9',
+  }
+
+  // 场景一：同一会话、弹窗仍开、基线未变 → 放行
+  assert.equal(isAssignSessionCurrent(saved, {
+    session: 1, roleId: '37', baselineIds: ['9'], visible: true,
+  }), true)
+
+  // 场景二（评审复现）：关闭并重开同一角色 → 会话序号递增 + 基线被改写为 [] → 拒绝
+  assert.equal(isAssignSessionCurrent(saved, {
+    session: 2, roleId: '37', baselineIds: [], visible: true,
+  }), false)
+
+  // 场景三：仅基线被改写但会话序号没变（防御）→ 拒绝
+  assert.equal(isAssignSessionCurrent(saved, {
+    session: 1, roleId: '37', baselineIds: [], visible: true,
+  }), false)
+
+  // 场景四：弹窗已关闭 → 拒绝
+  assert.equal(isAssignSessionCurrent(saved, {
+    session: 1, roleId: '37', baselineIds: ['9'], visible: false,
+  }), false)
+
+  // 场景五：切换到另一角色（同一会话序号）→ 拒绝
+  assert.equal(isAssignSessionCurrent(saved, {
+    session: 1, roleId: '38', baselineIds: ['9'], visible: true,
+  }), false)
+
+  // 场景六：基线相同但顺序不同 → 仍视为同一会话（集合语义）
+  assert.equal(isAssignSessionCurrent({
+    ...saved, baselineIds: ['9', '3'],
+  }, { session: 1, roleId: '37', baselineIds: ['3', '9'], visible: true }), true)
+
+  // 防御性输入：缺省字段不抛错，判为无效会话
+  assert.equal(isAssignSessionCurrent(null, { visible: true }), false)
+  assert.equal(isAssignSessionCurrent(saved, null), false)
+  assert.equal(isAssignSessionCurrent(saved, {}), false)
+})
+
 test('状态漂移检测（评审 P2）：两份读取的 status 不一致必须报告，避免「提示移除+预选保留」矛盾', () => {
   const assignedRow = (id, status = 1) => ({ id, status })
   const catalogRow = (id, status = 1) => ({ id, status })
@@ -390,19 +439,31 @@ test('角色与权限页并发/一致性接线（评审四条修复的静态源�
   // P1 并发覆盖：打开弹窗记录基线、保存前重读并比对、冲突阻止保存并提示重新加载
   assert.match(source, /assignDialog\.baseline = permissionBaseline\(assigned\)/)
   assert.match(source, /await permissionApi\.getRolePermissions\(roleId\)/)
-  assert.match(source, /permissionBaseline\(latestAssigned\) !== assignDialog\.baseline/)
+  // 本地比对用固定局部副本 savedSession.baseline（P2 会话竞态修复后不再读共享对象）
+  assert.match(source, /permissionBaseline\(latestAssigned\) !== savedSession\.baseline/)
   assert.match(source, /assignDialog\.concurrencyError/)
   assert.match(source, /!!assignDialog\.concurrencyError/)
   assert.match(utilsSource, /export function permissionBaseline/)
   // 评审 P1 复审（服务端原子校验）：打开弹窗记录基线 ID 数组并提交给后端、
   // API 层透传 expectedPermissionIds、收到 409 设置 concurrencyError 要求重新加载
   assert.match(source, /assignDialog\.baselineIds = permissionBaselineIds\(assigned\)/)
-  assert.match(source, /setRolePermissions\(roleId, permissionIds, assignDialog\.baselineIds\)/)
+  assert.match(source, /setRolePermissions\(roleId, permissionIds, savedSession\.baselineIds\)/)
   assert.match(source, /error\?\.status === 409 \|\| error\?\.code === 409/)
   assert.match(utilsSource, /export function permissionBaselineIds/)
   const apiSource = readFileSync(new URL('../src/api/permission.js', import.meta.url), 'utf8')
   assert.match(apiSource, /setRolePermissions: \(id, permissionIds, expectedPermissionIds\)/)
   assert.match(apiSource, /\? \{ expectedPermissionIds \} : \{\}\)/)
+  // 评审 P2 会话竞态：会话序号递增（打开 + 关闭 watch）、固定局部基线副本、
+  // stillCurrent 守卫包裹每个 await、提交携带固定副本、模板保存期间禁用关闭/重开
+  assert.match(source, /let assignSessionSeq = 0/)
+  assert.match(source, /wasVisible && !visible\) assignSessionSeq \+= 1/)
+  assert.match(source, /baselineIds: \[\.\.\.assignDialog\.baselineIds\]/)
+  assert.match(source, /const stillCurrent = \(\) => isAssignSessionCurrent\(savedSession, \{/)
+  const stillCurrentCalls = source.match(/if \(!stillCurrent\(\)\) return/g) ?? []
+  assert.ok(stillCurrentCalls.length >= 5, `每个 await 后都要校验会话，实际 ${stillCurrentCalls.length} 处`)
+  assert.match(source, /setRolePermissions\(roleId, permissionIds, savedSession\.baselineIds\)/)
+  assert.match(source, /:show-close="!assignDialog\.saving"/)
+  assert.match(source, /:close-on-press-escape="!assignDialog\.saving"/)
   // P2 路径原样：payload 以 row.path 为准，不再有 trim 路由的 normalizeMenuRoute
   assert.doesNotMatch(utilsSource, /normalizeMenuRoute/)
   assert.match(utilsSource, /hasOwnProperty\.call\(row, 'path'\)/)

@@ -7,7 +7,7 @@
 // loaded / unavailable 四态——只有 loaded 才按本次结果门控，空数组（无任何权限）
 // 隐藏全部操作且不发列表请求；加载中与加载失败均隐藏操作，失败提供重试入口，
 // 不再"未下发即放行"发出会被拒绝的请求。首屏查询在本次权限加载完成后发起。
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert,
   ElButton,
@@ -42,6 +42,7 @@ import {
   findStatusConflicts,
   findUnpreselectableAssigned,
   formatDateTime,
+  isAssignSessionCurrent,
   normalizePermissionIds,
   permissionBaseline,
   permissionBaselineIds,
@@ -125,6 +126,12 @@ function createRequestGuard() {
 const roleListGuard = createRequestGuard()
 const permListGuard = createRequestGuard()
 const assignGuard = createRequestGuard()
+
+// 评审 P2 会话竞态：弹窗会话序号。每次打开（openAssignDialog）或关闭
+// （onAssignDialogVisibleChange）分配弹窗都递增；在途保存请求捕获打开时的
+// 序号，恢复后用 isAssignSessionCurrent 校验——会话已变（关闭/重开/换角色/
+// re-open 改写基线）即丢弃旧请求，绝不把旧勾选与新基线混用提交。
+let assignSessionSeq = 0
 
 const activeTab = ref('roles')
 
@@ -323,6 +330,13 @@ const assignTableRef = ref(null)
 const assignSelectedIds = ref([])
 const assignRemovedDisabled = ref([])
 
+// 评审 P2 会话竞态：弹窗从打开→关闭（含取消、X、保存成功）即递增会话序号，
+// 作废该会话所有在途保存请求。用 watch 统一拦截所有关闭路径，避免遗漏某个
+// 模板按钮；flush:'sync' 保证 visible 变 false 的同一时刻旧请求即失效。
+watch(() => assignDialog.visible, (visible, wasVisible) => {
+  if (wasVisible && !visible) assignSessionSeq += 1
+}, { flush: 'sync' })
+
 // 评审 P2：只读账号、或目录未就绪（加载失败/一致性冲突）时展示只读的
 // 「已分配权限」列表；只有目录成功加载完成才显示可勾选的编辑目录。
 const assignReadOnlyView = computed(() => assignDialog.readOnly || !assignDialog.catalogLoaded)
@@ -336,6 +350,12 @@ async function openAssignDialog(row) {
     ElMessage.warning('当前账号没有角色已分配权限查询权限（role:read-permission）。')
     return
   }
+  // 评审 P2 会话竞态：每次打开（含"重新加载"重开同一角色）递增会话序号，
+  // 让上一会话仍在途的保存请求失效——即使它随后在 await 处恢复也不会提交。
+  assignSessionSeq += 1
+  // 新会话开始：清除旧会话可能残留的 saving 标志，避免程序化关闭/重开时
+  // 旧在途请求的 finally 与新会话互相干扰导致保存按钮卡在 loading。
+  assignDialog.saving = false
   assignDialog.role = row
   assignDialog.assigned = []
   assignDialog.assignedError = ''
@@ -456,11 +476,33 @@ async function submitAssignDialog() {
   }
   let permissionIds
   try {
+    // 勾选也固定为局部副本：不能让弹窗重开后 assignSelectedIds 变化影响本次提交。
     permissionIds = normalizePermissionIds(assignSelectedIds.value)
   } catch (error) {
     ElMessage.error(error?.message || '权限选择数据异常，请重新选择')
     return
   }
+  // ── 评审 P2 会话竞态：固定本次保存的会话快照 ──
+  // 关键：基线 ID 数组与签名、角色、会话序号全部复制为局部常量。旧实现提交时读
+  // 共享的 assignDialog.baselineIds，若保存期间取消并重开同一角色，重开会把它
+  // 改写为新基线（如 []），旧请求遂用「旧勾选 [X,Y] + 新基线 []」提交，后端校验
+  // 通过并恢复其他管理员刚撤销的 X。固定局部副本后，无论弹窗被怎样重开，本次
+  // 请求始终携带打开时那一份基线，后端能正确识别冲突并返回 409。
+  const savedSession = {
+    session: assignSessionSeq,
+    roleId,
+    baselineIds: [...assignDialog.baselineIds],
+    baseline: assignDialog.baseline,
+  }
+  // 每个 await 之后都重新校验：会话已变（关闭 / 重开 / 换角色）就静默丢弃，不再写
+  // 任何共享 UI 状态、也不发 PUT。pure 函数便于 Node 单测复现评审的交错顺序。
+  const stillCurrent = () => isAssignSessionCurrent(savedSession, {
+    session: assignSessionSeq,
+    roleId: assignDialog.role?.id,
+    baselineIds: assignDialog.baselineIds,
+    visible: assignDialog.visible,
+  })
+
   assignDialog.saving = true
   try {
     // 评审 P1 并发覆盖：保存前重读最新「已分配 + 目录」，与打开弹窗时的基线比对。
@@ -470,9 +512,10 @@ async function submitAssignDialog() {
     let latestAssigned = []
     try {
       const result = await permissionApi.getRolePermissions(roleId)
-      if (!assignDialog.visible || assignDialog.role?.id !== roleId) return
+      if (!stillCurrent()) return
       latestAssigned = Array.isArray(result) ? result : []
     } catch (error) {
+      if (!stillCurrent()) return
       assignDialog.concurrencyError = error?.message
         ? `保存前重读已分配权限失败：${error.message}；已阻止保存，请重新加载后再分配。`
         : '保存前重读已分配权限失败；已阻止保存，请重新加载后再分配。'
@@ -481,14 +524,17 @@ async function submitAssignDialog() {
     let latestCatalog = []
     try {
       latestCatalog = (await permissionApi.listAllPermissions()).records
-      if (!assignDialog.visible || assignDialog.role?.id !== roleId) return
+      if (!stillCurrent()) return
     } catch (error) {
+      if (!stillCurrent()) return
       assignDialog.concurrencyError = error?.message
         ? `保存前重读权限目录失败：${error.message}；已阻止保存，请重新加载后再分配。`
         : '保存前重读权限目录失败；已阻止保存，请重新加载后再分配。'
       return
     }
-    if (permissionBaseline(latestAssigned) !== assignDialog.baseline) {
+    if (!stillCurrent()) return
+    // 本地快速比对用固定的基线签名（不是共享对象）。
+    if (permissionBaseline(latestAssigned) !== savedSession.baseline) {
       assignDialog.concurrencyError =
         '该角色的权限在弹窗打开期间已被其他管理员变更，为避免覆盖对方修改，已阻止保存；请重新加载后再分配。'
       return
@@ -501,16 +547,21 @@ async function submitAssignDialog() {
         '检测到权限状态在弹窗打开期间被其他管理员变更，已阻止保存；请重新加载后再分配。'
       return
     }
-    // 评审 P1 并发覆盖（复审要求）：把打开弹窗时的基线 ID 数组交给后端，在角色行锁
-    // 内与数据库当前集合原子比对。前端上面的重读只能缩小窗口，重读到 PUT 之间仍
-    // 可能被其他管理员插入变更——只有服务端的锁内校验能保证不覆盖他人修改。
-    await permissionApi.setRolePermissions(roleId, permissionIds, assignDialog.baselineIds)
+    // 会话最后一次校验：PUT 携带固定的局部基线副本（不是共享对象）——这是并发
+    // 安全的最终凭据；后端在角色行锁内与当前集合原子比对，冲突返回 409。
+    if (!stillCurrent()) return
+    await permissionApi.setRolePermissions(roleId, permissionIds, savedSession.baselineIds)
+    // PUT 返回后若会话已变（保存期间被关闭/重开），不再改动新会话的 UI：写入已
+    // 完成且后端已做原子校验，这里只结束在途请求，不误关新弹窗、不弹成功提示。
+    if (!stillCurrent()) return
     ElMessage.success('角色权限已更新')
     assignDialog.visible = false
     // 评审 P2：分配会立即改变当前账号的有效权限（含撤销自身权限的可能），
     // 成功后重载会话权限并刷新列表。
     await afterWrite()
   } catch (error) {
+    // 会话已变的在途请求：静默结束，不把错误写到新会话的 UI 上。
+    if (!stillCurrent()) return
     // 409 有两种：请求中含停用权限（校验类）和并发基线冲突（写前校验）。两者都
     // 阻止保存；并发冲突特化提示要求重新加载，并在弹窗展示重新加载按钮。
     if (error?.status === 409 || error?.code === 409) {
@@ -519,7 +570,9 @@ async function submitAssignDialog() {
     }
     // 其余错误全局提示已弹出（404：权限/角色不存在；400：参数非法）。
   } finally {
-    assignDialog.saving = false
+    // 只清理由本次会话置位的 saving：若期间弹窗被重开，旧请求的 finally 不得
+    // 把新会话的 saving 标志清掉（新会话的 open 已自行重置，二者不互相干扰）。
+    if (stillCurrent()) assignDialog.saving = false
   }
 }
 
@@ -830,7 +883,7 @@ onUnmounted(() => {
                   <ElButton v-if="canSetRoleStatus" link :type="row.status === 1 ? 'danger' : 'success'" @click="toggleRoleStatus(row)">
                     {{ row.status === 1 ? '停用' : '启用' }}
                   </ElButton>
-                  <ElButton v-if="canReadRolePermissions || canAssignRolePermissions" link type="primary" @click="openAssignDialog(row)">分配权限</ElButton>
+                  <ElButton v-if="canReadRolePermissions || canAssignRolePermissions" link type="primary" :disabled="assignDialog.saving" @click="openAssignDialog(row)">分配权限</ElButton>
                   <span
                     v-if="!canUpdateRole && !canSetRoleStatus && !canReadRolePermissions && !canAssignRolePermissions"
                     class="muted-text"
@@ -983,6 +1036,8 @@ onUnmounted(() => {
       :title="`分配权限 · ${assignDialog.role?.roleName ?? ''}`"
       width="680px"
       :close-on-click-modal="false"
+      :show-close="!assignDialog.saving"
+      :close-on-press-escape="!assignDialog.saving"
     >
       <ElAlert
         v-if="assignRemovedDisabled.length > 0"
@@ -1002,7 +1057,7 @@ onUnmounted(() => {
         :title="assignDialog.consistencyError"
       >
         <template #default>
-          <ElButton link type="primary" :disabled="assignDialog.loading" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
+          <ElButton link type="primary" :disabled="assignDialog.loading || assignDialog.saving" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
         </template>
       </ElAlert>
       <!-- 评审 P1 并发覆盖：保存前基线比对不通过/重读失败时阻止保存并提示重新加载。 -->
@@ -1015,7 +1070,7 @@ onUnmounted(() => {
         :title="assignDialog.concurrencyError"
       >
         <template #default>
-          <ElButton link type="primary" :disabled="assignDialog.loading" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
+          <ElButton link type="primary" :disabled="assignDialog.loading || assignDialog.saving" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
         </template>
       </ElAlert>
       <ElAlert
@@ -1027,7 +1082,7 @@ onUnmounted(() => {
         :title="assignDialog.assignedError || assignDialog.loadError"
       >
         <template #default>
-          <ElButton link type="primary" :disabled="assignDialog.loading" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
+          <ElButton link type="primary" :disabled="assignDialog.loading || assignDialog.saving" @click="openAssignDialog(assignDialog.role)">重新加载</ElButton>
         </template>
       </ElAlert>
       <ElAlert
@@ -1101,11 +1156,12 @@ onUnmounted(() => {
       <p v-if="assignReadOnlyView" class="dialog-note">只读视图：以上为该角色当前已分配的权限，不加载编辑目录、不可修改。</p>
       <p v-else class="dialog-note">已选 {{ assignSelectedIds.length }} 项；全量替换以本次勾选为准，空选表示清空该角色全部权限。</p>
       <template #footer>
-        <ElButton @click="assignDialog.visible = false">取消</ElButton>
+        <!-- 评审 P2 会话竞态：保存期间禁用取消，避免关闭/重开打断在途请求 -->
+        <ElButton :disabled="assignDialog.saving" @click="assignDialog.visible = false">取消</ElButton>
         <ElButton
           type="primary"
           :loading="assignDialog.saving"
-          :disabled="assignDialog.loading || assignDialog.readOnly || !assignDialog.catalogLoaded
+          :disabled="assignDialog.loading || assignDialog.saving || assignDialog.readOnly || !assignDialog.catalogLoaded
             || !!assignDialog.loadError || !!assignDialog.assignedError || !!assignDialog.consistencyError
             || !!assignDialog.concurrencyError || !canAssignRolePermissions"
           @click="submitAssignDialog"

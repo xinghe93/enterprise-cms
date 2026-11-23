@@ -260,6 +260,35 @@ export function permissionBaseline(assigned) {
 }
 
 /**
+ * 弹窗会话有效性判断（评审 P2 会话竞态）：判断一个在途保存请求是否仍属于它
+ * 开始时那个弹窗会话，防止「保存期间取消并重开同一角色」时旧请求混用旧勾选和
+ * 新基线——旧请求继续 PUT 会恢复其他管理员刚撤销的权限。
+ *
+ * <p>必须同时满足：
+ *  1. 会话序号未变（关闭 / 重开弹窗都会递增会话序号）；
+ *  2. 弹窗仍可见（已被关闭则作废）；
+ *  3. 仍是同一角色（切换到别的角色则作废）；
+ *  4. 共享基线未被改写（保存开始时已固定局部副本，若共享基线与之不同说明
+ *     弹窗已被重开并重新加载，作废旧请求）。</p>
+ *
+ * @param saved 保存开始时捕获的会话快照 { session, roleId, baselineIds }
+ * @param current 当前弹窗状态 { session, roleId, baselineIds, visible }
+ */
+export function isAssignSessionCurrent(saved, current) {
+  if (current?.visible !== true) return false
+  if (!saved || saved.session === undefined) return false
+  if (saved?.session !== current?.session) return false
+  if (String(saved?.roleId ?? '') !== String(current?.roleId ?? '')) return false
+  // 基线数组逐项比对（顺序无关）：共享基线被重开改写即判为不同会话。
+  // 注意 session 里存的是纯 ID 字符串数组（permissionBaselineIds 的输出），
+  // 不是 {id} 对象数组，故这里单独归一化，不能复用 permissionBaselineIds。
+  const normalize = (ids) => Array.isArray(ids)
+    ? [...new Set(ids.map((id) => String(id)))].sort().join(',')
+    : ''
+  return normalize(saved?.baselineIds) === normalize(current?.baselineIds)
+}
+
+/**
  * 两份读取的 status 漂移检测（评审 P2：避免「提示移除」与「预选保留」矛盾）：
  * 返回「在已分配与权限目录两份数据中 status 不一致」的权限 ID 列表。
  *
