@@ -16,7 +16,7 @@ import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { findDepartment, flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
-import { countCodePoints, syncClampedInput } from '../../utils/text.js'
+import { countCodePoints, syncClampedInput, trimOnBlur } from '../../utils/text.js'
 
 const userApi = createUserApi(api)
 const tree = ref([])
@@ -129,6 +129,12 @@ function validateForm() {
 }
 
 async function save() {
+  // 首尾空白留到提交时统一处理（老师复审 P2：@input 逐键 trim 会吃掉名称中的空格）。
+  // 先归一化再校验，长度按 trim 后的真实提交值计算。
+  if (editor.value?.form) {
+    editor.value.form.deptCode = String(editor.value.form.deptCode ?? '').trim()
+    editor.value.form.deptName = String(editor.value.form.deptName ?? '').trim()
+  }
   const message = validateForm()
   if (message) {
     formError.value = message
@@ -285,12 +291,12 @@ onMounted(loadTree)
         <span>部门编码 <em>*</em></span>
         <!-- syncClampedInput 按代码点截断并同步回 DOM：与 DepartmentJson.text()
              的字符语义一致，且显示值与提交值始终一致（老师复审 #1/#2）。 -->
-        <input :value="editor.form.deptCode" @input="editor.form.deptCode = syncClampedInput($event, 64, { trim: true })" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
+        <input :value="editor.form.deptCode" @input="editor.form.deptCode = syncClampedInput($event, 64)" @blur="editor.form.deptCode = trimOnBlur($event)" :disabled="editor.mode === 'edit'" placeholder="如 DEPT_SALES" />
         <small v-if="editor.mode === 'edit'">编码创建后不可修改；更新请求不提交该字段。</small>
       </label>
       <label class="org-field">
         <span>部门名称 <em>*</em></span>
-        <input :value="editor.form.deptName" @input="editor.form.deptName = syncClampedInput($event, 100, { trim: true })" placeholder="如 销售部" />
+        <input :value="editor.form.deptName" @input="editor.form.deptName = syncClampedInput($event, 100)" @blur="editor.form.deptName = trimOnBlur($event)" placeholder="如 销售部" />
       </label>
       <label class="org-field">
         <span>上级部门</span>
