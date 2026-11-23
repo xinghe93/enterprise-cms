@@ -10,7 +10,8 @@ export const navigation = [
     { path: '/admin/reviews', name: 'reviews', title: '审核与发布', icon: 'check', description: '审核内容、发布文章并查看审核历史。', owner: 'D' },
   ] },
   { title: '组织管理', items: [
-    { path: '/admin/users', name: 'users', title: '员工管理', icon: 'users', description: '维护员工账号、所属部门与角色分配。', owner: 'A' },
+    { path: '/admin/users', name: 'users', title: '员工管理', icon: 'users', description: '维护员工账号的新建、编辑与启停。', owner: 'A' },
+    { path: '/admin/assignments', name: 'assignments', title: '岗位分配', icon: 'users', description: '维护员工所属部门与角色分配。', owner: 'A' },
     { path: '/admin/departments', name: 'departments', title: '部门管理', icon: 'layers', description: '维护部门层级与组织结构。', owner: 'A' },
     { path: '/admin/roles', name: 'roles', title: '角色与权限', icon: 'shield', description: '维护角色、权限项与权限分配。', owner: 'B' },
     { path: '/admin/logs', name: 'logs', title: '操作日志', icon: 'clock', description: '查询关键操作记录，追溯内容与权限变更。', owner: 'D' },
