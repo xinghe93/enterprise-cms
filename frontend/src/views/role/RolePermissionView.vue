@@ -288,7 +288,9 @@ async function submitRoleDialog() {
   }
   const stillCurrent = () => isDialogSessionCurrent(savedSession, {
     session: roleDialogSessionSeq,
-    recordId: roleDialog.role?.id,
+    // 评审 P2 修复：记录保存在 roleDialog.row（不是 assignDialog.role），
+    // 字段名写错会读到 undefined，编辑模式会话恒判失效→成功提示/关窗/刷新被跳过。
+    recordId: roleDialog.row?.id,
     visible: roleDialog.visible,
   })
   roleDialog.submitting = true
@@ -804,7 +806,9 @@ async function submitPermDialog() {
   }
   const stillCurrent = () => isDialogSessionCurrent(savedSession, {
     session: permDialogSessionSeq,
-    recordId: permDialog.role?.id,
+    // 评审 P2 修复：记录保存在 permDialog.row（不是 assignDialog.role），
+    // 字段名写错会读到 undefined，编辑模式会话恒判失效→成功提示/关窗/刷新被跳过。
+    recordId: permDialog.row?.id,
     visible: permDialog.visible,
   })
   permDialog.submitting = true

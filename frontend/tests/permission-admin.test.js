@@ -552,6 +552,13 @@ test('角色与权限页并发/一致性接线（评审四条修复的静态源�
   assert.match(source, /watch\(\(\) => roleDialog\.visible/)
   assert.match(source, /watch\(\(\) => permDialog\.visible/)
   assert.match(source, /isDialogSessionCurrent\(savedSession, \{/)
+  // 评审第七轮：编辑弹窗记录字段是 row（不是 assignDialog.role）——字段名写错会
+  // 读到 undefined，编辑模式会话恒判失效、成功提示/关窗/刷新全被跳过。静态锁定
+  // 两处会话快照的 recordId 来源，并断言不存在误读的 role?.id。
+  assert.match(source, /recordId: roleDialog\.row\?\.id/)
+  assert.match(source, /recordId: permDialog\.row\?\.id/)
+  assert.doesNotMatch(source, /recordId: roleDialog\.role\?\.id/)
+  assert.doesNotMatch(source, /recordId: permDialog\.role\?\.id/)
   const editStillCurrent = source.match(/if \(!stillCurrent\(\)\) return/g) ?? []
   assert.ok(editStillCurrent.length >= 12, `三类弹窗每个 await/成功点都要校验会话，实际 ${editStillCurrent.length} 处`)
   assert.match(source, /:show-close="!roleDialog\.submitting"/)
