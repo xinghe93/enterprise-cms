@@ -1,10 +1,11 @@
 <script setup>
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppIcon from '../components/AppIcon.vue'
 import { navigation } from '../router/navigation.js'
 import { useSessionStore } from '../stores/session.js'
+import { visibleNavigation } from '../utils/menuPermission.js'
 
 const route = useRoute()
 const menuOpen = ref(false)
@@ -12,7 +13,12 @@ const menuToggle = ref(null)
 const sidebar = ref(null)
 const mobileQuery = window.matchMedia('(max-width: 640px)')
 const isMobile = ref(mobileQuery.matches)
-const { user } = storeToRefs(useSessionStore())
+const session = useSessionStore()
+const { user } = storeToRefs(session)
+
+// 菜单按后端有效权限过滤（《接口与协作约定》3.4）：导航编码与路由 meta 同源，
+// 权限未就绪时只显示免权限入口，加载失败也不会误展示需要权限的入口。
+const menuGroups = computed(() => visibleNavigation(navigation, session.hasPermission))
 watch(() => route.fullPath, async () => {
   if (menuOpen.value) {
     menuOpen.value = false
@@ -68,7 +74,7 @@ function trapFocus(event) {
         <span>Enterprise<span class="brand-cms">CMS</span><small>企业知识与内容管理</small></span>
       </RouterLink>
       <nav aria-label="主要导航">
-        <div v-for="group in navigation" :key="group.title" class="nav-group">
+        <div v-for="group in menuGroups" :key="group.title" class="nav-group">
           <p class="nav-group-title">{{ group.title }}</p>
           <RouterLink v-for="item in group.items" :key="item.path" :to="item.path" class="nav-link" active-class="is-active">
             <AppIcon :name="item.icon" :size="18" /><span>{{ item.title }}</span><span class="nav-active-dot" />
