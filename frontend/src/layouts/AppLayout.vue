@@ -16,9 +16,17 @@ const isMobile = ref(mobileQuery.matches)
 const session = useSessionStore()
 const { user } = storeToRefs(session)
 
-// 菜单按后端有效权限过滤（《接口与协作约定》3.4）：导航编码与路由 meta 同源，
-// 权限未就绪时只显示免权限入口，加载失败也不会误展示需要权限的入口。
-const menuGroups = computed(() => visibleNavigation(navigation, session.hasPermission))
+// 菜单按后端有效权限过滤（《接口与协作约定》3.4）：导航编码与路由 meta 同源。
+// 权限已加载（loaded）才严格过滤；加载失败（unavailable）时无法判断，展示全部入口
+// 并由页面自身门控兜底，同时在菜单底部给出重试入口——不把「不可用」误当成「没有权限」。
+const permissionFailed = computed(() => session.permissionStatus === 'unavailable')
+const menuGroups = computed(() => (permissionFailed.value
+  ? navigation
+  : visibleNavigation(navigation, session.hasPermission)))
+
+async function retryPermissions() {
+  await session.refreshPermissions()
+}
 watch(() => route.fullPath, async () => {
   if (menuOpen.value) {
     menuOpen.value = false
@@ -79,6 +87,11 @@ function trapFocus(event) {
           <RouterLink v-for="item in group.items" :key="item.path" :to="item.path" class="nav-link" active-class="is-active">
             <AppIcon :name="item.icon" :size="18" /><span>{{ item.title }}</span><span class="nav-active-dot" />
           </RouterLink>
+        </div>
+        <!-- 权限加载失败：不做「当成没有权限」的静默降级，给出可见的重试入口 -->
+        <div v-if="permissionFailed" class="nav-group">
+          <p class="nav-group-title">权限</p>
+          <button type="button" class="nav-link" @click="retryPermissions">权限加载失败，点击重试</button>
         </div>
       </nav>
       <div class="sidebar-note"><span class="status-dot" /><span>让知识成为团队的共同资产</span></div>
