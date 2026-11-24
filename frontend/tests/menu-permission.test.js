@@ -6,6 +6,7 @@ import {
   requiredCodes,
   resolveMenuAccess,
   shouldRefreshOnNavigation,
+  shouldRefreshOnSamePageClick,
   visibleNavigation,
 } from '../src/utils/menuPermission.js'
 import { navigation, moduleEntries } from '../src/router/navigation.js'
@@ -114,6 +115,33 @@ test('进入已放行的页面也要刷新权限（评审 P2 子功能新增即�
   assert.equal(shouldRefreshOnNavigation({
     requiredPermissions: ['role:list'], isAuthenticated: false,
   }), false)
+})
+
+test('同页重复点击菜单直接刷新（评审 P2：Vue Router 判 duplicated、不执行守卫）', () => {
+  // 用户停留在 /admin/categories，管理员新增 tag:list；再次点击当前菜单被 Vue Router
+  // 判为重复导航，beforeEach 不执行，所以必须由菜单 click 自己识别同页并刷新。
+  assert.equal(shouldRefreshOnSamePageClick('/admin/categories', '/admin/categories'), true)
+  assert.equal(shouldRefreshOnSamePageClick('/admin/categories', '/admin/categories?tab=tags'), false, '带 query 的不是同页')
+  assert.equal(shouldRefreshOnSamePageClick('/admin/roles', '/admin/categories'), false, '不同页不在此处理，交给守卫')
+  assert.equal(shouldRefreshOnSamePageClick('', '/admin/categories'), false)
+  assert.equal(shouldRefreshOnSamePageClick(null, '/admin/categories'), false)
+})
+
+test('登录初始化权限 + 同页刷新接线（评审 P2：workspace 不触发守卫、重复点击不触发守卫）', () => {
+  const layout = readFileSync(new URL('../src/layouts/AppLayout.vue', import.meta.url), 'utf8')
+  const login = readFileSync(new URL('../src/views/LoginView.vue', import.meta.url), 'utf8')
+
+  // ① 布局感知令牌变化：immediate watch 令牌非空则 ensurePermissions，登录即可显示已授权菜单
+  assert.match(layout, /watch\(\(\) => session\.accessToken, async \(token\) => \{/)
+  assert.match(layout, /if \(token && session\.permissionStatus !== 'loaded'\) await session\.ensurePermissions\(\)/)
+  assert.match(layout, /\{ immediate: true \}/)
+  // ② 同页点击刷新 + loaded 状态常驻公共刷新入口
+  assert.match(layout, /@click="onMenuClick\(item\)"/)
+  assert.match(layout, /shouldRefreshOnSamePageClick\(item\.path, route\.path\)/)
+  assert.match(layout, /await session\.refreshPermissions\(\)/)
+  assert.match(layout, /permissionFailed \? '权限加载失败，点击重试' : '刷新权限'/)
+  // 登录完成后主动初始化（与布局 watch 双保险，ensurePermissions 同令牌去重）
+  assert.match(login, /await session\.ensurePermissions\(\)/)
 })
 
 test('导航声明的权限码必须存在于 OpenAPI x-permission-catalog（防止写错码导致菜单永久隐藏）', () => {

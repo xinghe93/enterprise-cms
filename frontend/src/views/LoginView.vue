@@ -34,6 +34,10 @@ async function submit() {
     session.setToken(result.accessToken)
     // LoginResult.user 与 GET /auth/me 返回的是同一个 User 契约，无需重复请求。
     session.setUser(result.user)
+    // 登录完成即初始化有效权限（评审 P2）：workspace 免权限、守卫不会刷新，若不在此
+    // 加载，跳过去后权限仍是 idle、侧栏隐藏全部业务菜单，直到手工进业务页才恢复。
+    // 与 AppLayout 的令牌 watch 双保险；ensurePermissions 同令牌去重，不会重复请求。
+    await session.ensurePermissions()
     form.value.password = ''
     await router.push('/workspace')
   } catch {

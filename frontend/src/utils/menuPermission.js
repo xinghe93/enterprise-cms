@@ -85,6 +85,20 @@ export function shouldRefreshOnNavigation({ requiredPermissions, isAuthenticated
 }
 
 /**
+ * 同页重复点击菜单是否应直接刷新权限（评审 P2）：
+ * Vue Router 4.6.4 对与当前路径相同的 `router.push` 判为 `duplicated`、不触发
+ * `beforeEach`，所以守卫里的刷新不会发生。用户停留在业务页时管理员新授予的子功能
+ * 权限（如 `tag:list`）在「再点一次当前菜单」时不会生效，页面自身的 Tab 又是本地
+ * ref、不会重新读权限。因此菜单点击必须自己识别同页并直接刷新。
+ *
+ * @param {string} targetPath 被点击菜单的目标路径
+ * @param {string} currentPath 当前路由 fullPath
+ */
+export function shouldRefreshOnSamePageClick(targetPath, currentPath) {
+  return typeof targetPath === 'string' && targetPath.length > 0 && targetPath === currentPath
+}
+
+/**
  * 路由访问决策：`allow` 放行 / `login` 跳登录 / `forbidden` 跳 403。
  *
  * <p>权限状态只有 {@code loaded} 时才按编码裁决；{@code idle}/{@code loading}/
