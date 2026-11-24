@@ -3,7 +3,7 @@ import { moduleEntries } from './navigation.js'
 import { contentViewProps, hasModuleView, resolveModuleView } from './viewComponents.js'
 import { pinia } from '../stores/index.js'
 import { useSessionStore } from '../stores/session.js'
-import { resolveMenuAccess } from '../utils/menuPermission.js'
+import { resolveMenuAccess, shouldRefreshOnNavigation } from '../utils/menuPermission.js'
 
 const articleDetail = () => import('../views/content/ArticleDetailView.vue')
 const articleEditor = () => import('../views/content/ArticleEditorView.vue')
@@ -43,10 +43,14 @@ export const router = createRouter({
 // 菜单的权限编码与路由 meta 同源（navigation.js 的 requiredPermissions），
 // 保证「菜单可见」与「直达 URL 可访问」一致，不存在菜单藏了但 URL 能进的反向绕过。
 //
-// 三条异步真实约束（PR 评审 P2）：
+// 四条异步真实约束（PR 评审 P2）：
 // ① 未就绪（idle）先加载；**unavailable（上次请求失败）也重试**，否则一次超时会永久只剩工作空间；
-// ② 已 loaded 但即将判 403 时，先强制刷新一次快照再裁决——本会话内刚被管理员授予权限的账号
-//    不能因为首次加载的旧快照被永久拒绝；
+// ② 每次进入「声明了权限的业务页面」都强制刷新一次快照（force 忽略 loaded）——
+//    只在判 403 前刷新不够：组合页已被旧快照的任一编码放行时，守卫不会刷新，而会话期间
+//    新授予的子功能权限（如只有 category:tree 的账号新获 tag:list）永远读不到；
+//    页面自身的 hasPermission 仍用旧快照，且页面不主动拉权限。用户在页面内的 Tab 切换
+//    也会经本守卫刷新。权限接口只返回字符串数组、轻量，且同令牌的并发导航由 session 的
+//    inflight 复用同一请求，不会放大流量；
 // ③ 仍未就绪（刷新也失败）时放行，由页面自身门控兜底，不把「不可用」当成「没有」。
 router.beforeEach(async (to) => {
   const session = useSessionStore(pinia)
@@ -60,14 +64,12 @@ router.beforeEach(async (to) => {
 
   if (!session.isAuthenticated) return decide() === 'login' ? { name: 'login' } : true
 
-  // 未就绪或上次失败：首次加载 / 自动重试
-  if (session.permissionStatus !== 'loaded') await session.ensurePermissions()
-
-  if (decide() === 'forbidden') {
-    // 拒绝前复核：权限可能在本会话期间被他人授予，用新快照再判一次
+  // 进入任一需权限的页面都刷新（含已放行页面）：让本会话内新增的子功能权限即时生效，
+  // 同时覆盖「首次加载 / unavailable 重试 / 403 前复核」三种旧逻辑。
+  if (shouldRefreshOnNavigation({ requiredPermissions: required, isAuthenticated: true })) {
     await session.refreshPermissions()
-    if (decide() === 'forbidden') return { name: 'forbidden' }
   }
+  if (decide() === 'forbidden') return { name: 'forbidden' }
   return true
 })
 

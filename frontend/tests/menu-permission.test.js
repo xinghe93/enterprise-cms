@@ -5,6 +5,7 @@ import {
   canSeeMenuItem,
   requiredCodes,
   resolveMenuAccess,
+  shouldRefreshOnNavigation,
   visibleNavigation,
 } from '../src/utils/menuPermission.js'
 import { navigation, moduleEntries } from '../src/router/navigation.js'
@@ -92,6 +93,29 @@ test('路由访问决策：未就绪不误判、组合页任一满足、未登�
   assert.equal(resolveMenuAccess({ requiredPermissions: [], isAuthenticated: false, permissionStatus: 'idle' }), 'allow')
 })
 
+test('进入已放行的页面也要刷新权限（评审 P2 子功能新增即时生效）', () => {
+  // 评审复现：登录时只有 category:tree、随后被授予 tag:list；旧快照已满足组合页
+  // 入口条件，若只在 forbidden 前刷新，进入 /admin/categories 时 tag:list 永远读不到。
+  // 规则：只要进入声明了权限的业务页面（含已放行的）就刷新，未登录/免权限页不刷新。
+  assert.equal(shouldRefreshOnNavigation({
+    requiredPermissions: ['category:tree', 'tag:list'], isAuthenticated: true,
+  }), true)
+  assert.equal(shouldRefreshOnNavigation({
+    requiredPermissions: ['role:list', 'permission:list'], isAuthenticated: true,
+  }), true)
+  // 已加载（loaded）也要刷新——force 忽略快照新鲜度，这正是本轮修复点
+  assert.equal(shouldRefreshOnNavigation({
+    requiredPermissions: ['category:tree'], isAuthenticated: true,
+  }), true)
+  // 免权限页（工作空间/403/登录）不刷新
+  assert.equal(shouldRefreshOnNavigation({ isAuthenticated: true }), false)
+  assert.equal(shouldRefreshOnNavigation({ requiredPermissions: [], isAuthenticated: true }), false)
+  // 未登录不刷新（无有效令牌，刷新也拿不到权限）
+  assert.equal(shouldRefreshOnNavigation({
+    requiredPermissions: ['role:list'], isAuthenticated: false,
+  }), false)
+})
+
 test('导航声明的权限码必须存在于 OpenAPI x-permission-catalog（防止写错码导致菜单永久隐藏）', () => {
   const openapi = JSON.parse(readFileSync(new URL('../../docs/api/enterprise-cms.openapi.json', import.meta.url), 'utf8'))
   const catalog = new Set((openapi['x-permission-catalog'] || []).map((entry) => entry.code))
@@ -140,10 +164,11 @@ test('接线：守卫支持失败重试与拒绝前复核；菜单区分「加�
   assert.match(routerSource, /router\.beforeEach\(async \(to\) => \{/)
   assert.match(routerSource, /name: 'forbidden'/)
   assert.match(routerSource, /ForbiddenView\.vue/)
-  // P2-3：非 loaded（含 unavailable）都要走 ensurePermissions 重试，不能只在 idle
-  assert.match(routerSource, /if \(session\.permissionStatus !== 'loaded'\) await session\.ensurePermissions\(\)/)
-  // P2-2：即将 403 前强制刷新快照再判一次
-  assert.match(routerSource, /if \(decide\(\) === 'forbidden'\) \{[\s\S]{0,200}?await session\.refreshPermissions\(\)/)
+  // P2-复查：进入任一需权限页面（含已放行）都刷新——用 shouldRefreshOnNavigation 判定；
+  // 不再只在 forbidden 前刷新，否则会话内新增的子功能权限（tag:list）永远读不到。
+  assert.match(routerSource, /shouldRefreshOnNavigation/)
+  assert.match(routerSource, /if \(shouldRefreshOnNavigation\(\{[\s\S]{0,120}?\}\)\) \{\s*await session\.refreshPermissions\(\)/)
+  assert.doesNotMatch(routerSource, /if \(session\.permissionStatus !== 'loaded'\) await session\.ensurePermissions\(\)/)
 
   // 会话：四态 + 强制刷新入口 + 同令牌复用 + 换令牌/切号丢弃旧结果
   assert.match(sessionSource, /permissionStatus: 'idle'/)

@@ -66,6 +66,25 @@ export function visibleNavigation(groups, hasPermission) {
 }
 
 /**
+ * 导航时是否需要刷新权限快照（评审 P2：已进入的组合页也要更新新增子功能权限）。
+ *
+ * <p>只在「即将判 403」时才刷新是不够的：若旧快照已满足入口的任一编码（如
+ * `category:tree`），守卫不会刷新，而会话期间新增的子功能权限（`tag:list`）永远
+ * 读不到——页面自己的 `hasPermission` 仍用旧快照，且页面不主动拉权限。因此只要
+ * 进入<b>声明了权限的业务页面</b>就刷新一次（`force` 忽略 loaded），保证本会话内
+ * 新增的子功能权限即时生效。权限接口只返回字符串数组、很轻量，且同一令牌的并发
+ * 导航由 `inflight` 复用同一请求，不会放大流量。</p>
+ *
+ * @param {object} state
+ * @param {string[]|string} [state.requiredPermissions] 目标路由声明的权限编码
+ * @param {boolean} state.isAuthenticated 是否已登录
+ */
+export function shouldRefreshOnNavigation({ requiredPermissions, isAuthenticated }) {
+  if (isAuthenticated !== true) return false
+  return requiredCodes({ requiredPermissions }).length > 0
+}
+
+/**
  * 路由访问决策：`allow` 放行 / `login` 跳登录 / `forbidden` 跳 403。
  *
  * <p>权限状态只有 {@code loaded} 时才按编码裁决；{@code idle}/{@code loading}/
