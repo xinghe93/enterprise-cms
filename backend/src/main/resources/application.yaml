@@ -1,3 +1,35 @@
 spring:
   application:
     name: backend
+  jackson:
+    deserialization:
+      # 契约 8.1：未知 JSON 字段必须返回 400。Jackson 3 中类上的
+      # @JsonIgnoreProperties(ignoreUnknown = false) 不能覆盖全局忽略设置，
+      # 必须在全局开启严格检查，否则 extra 字段会进入登录服务并返回 200。
+      fail-on-unknown-properties: true
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/enterprise_cms}
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+  sql:
+    init:
+      mode: never
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:127.0.0.1}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      username: ${SPRING_DATA_REDIS_USERNAME:}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
+      database: ${SPRING_DATA_REDIS_DATABASE:0}
+      connect-timeout: 3s
+      timeout: 3s
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-value: 1
+      logic-not-delete-value: 0

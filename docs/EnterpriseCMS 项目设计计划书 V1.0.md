@@ -88,7 +88,7 @@ EnterpriseCMS 是面向中小型企业内部员工的知识与内容管理平台
 
 
 ### 4.2 推荐目录
-仓库建议采用一个 monorepo：/backend、/frontend、/sql、/docs、/tests。后端按 user、permission、content、review、log 五个业务包划分；每个业务包内部再按 controller / service / mapper / entity / dto / vo 分层。common、config、security 为共享基础模块。
+仓库建议采用一个 monorepo：/backend、/frontend、/database、/docs、/tests。后端按 user、permission、content、review、log 五个业务包划分；每个业务包内部再按 controller / service / mapper / entity / dto / vo 分层。common、config、security 为共享基础模块。
 
 
 ### 4.3 API 与异常规范
@@ -191,6 +191,7 @@ EnterpriseCMS 是面向中小型企业内部员工的知识与内容管理平台
 ## 八、测试计划与性能优化
 
 ### 8.1 功能与权限测试
+
 | 测试项 | 代表场景 | 预期结果 |
 |---|---|---|
 | 登录与账号 | 正确登录、错误密码、停用账号请求 | 仅合规身份成功登录；无效身份被拒绝 |

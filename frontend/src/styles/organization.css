@@ -1,0 +1,98 @@
+/* A 模块组织管理页（部门树 / 员工部门与角色分配）共享样式。
+   只使用 main.css 已有的 CSS 变量与 Element Plus 已按需引入的按钮、标签样式，
+   不额外引入组件 CSS，避免新增全局样式依赖。 */
+
+.org-page { max-width: 1240px; }
+.org-toolbar { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.org-toolbar-hint { margin-left: auto; font-size: 11px; color: var(--muted); }
+.org-inline-field { display: flex; flex-direction: column; gap: 6px; font-size: 11px; color: var(--muted); }
+.org-inline-field input,
+.org-inline-field select,
+.org-field input,
+.org-field select {
+  min-height: 34px; padding: 6px 10px; border: 1px solid #d9e1d4; border-radius: 6px;
+  background: #fff; color: var(--ink); font: inherit; font-size: 13px; outline: none;
+}
+.org-inline-field input { min-width: 180px; }
+.org-inline-field select { min-width: 150px; }
+.org-field input:focus, .org-field select:focus,
+.org-inline-field input:focus, .org-inline-field select:focus { border-color: #6f9a8c; box-shadow: 0 0 0 3px #e5efe8; }
+.org-inline-field input:disabled, .org-field input:disabled { background: #f2f4ef; color: #8b968c; }
+.org-card { border: 1px solid var(--line); border-radius: 10px; background: #fdfefa; overflow-x: auto; }
+.org-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 720px; }
+.org-table th {
+  text-align: left; white-space: nowrap; padding: 13px 16px; font-weight: 600; font-size: 11px;
+  color: #6d7a6c; background: #f3f6ef; border-bottom: 1px solid var(--line);
+}
+.org-table td { padding: 12px 16px; border-bottom: 1px solid #edf0e8; vertical-align: middle; }
+.org-table tbody tr:last-child td { border-bottom: 0; }
+.org-table tbody tr:hover { background: #f8faf5; }
+.org-mono { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11px; color: #5d6b60; }
+.org-muted { color: #9aa59a; font-size: 11px; }
+.org-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.org-tree-label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.org-tree-branch { color: #aab7a4; }
+.org-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.org-actions button {
+  padding: 5px 9px; border: 1px solid #d9e1d4; border-radius: 5px; background: #fff;
+  color: #40645a; font-size: 11px; white-space: nowrap;
+}
+.org-actions button:hover:not(:disabled) { border-color: #6f9a8c; background: #f1f6f0; }
+.org-actions button.is-danger { color: #a5524c; }
+.org-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.org-empty { padding: 34px 16px !important; text-align: center; color: #9aa59a; font-size: 12px; }
+.org-loading { padding: 16px; text-align: center; color: var(--muted); font-size: 12px; }
+.org-alert {
+  margin: 0 0 16px; padding: 11px 14px; border: 1px solid #e6d6b8; border-radius: 7px;
+  background: #fdf8ec; color: #8a6d3b; font-size: 12px; line-height: 1.8;
+}
+.org-note { margin-top: 10px; color: var(--muted); font-size: 11px; line-height: 1.8; }
+.org-pager {
+  display: flex; align-items: end; gap: 12px; flex-wrap: wrap; padding: 14px 16px;
+  border-top: 1px solid var(--line); font-size: 11px; color: var(--muted);
+}
+.org-pager > span { margin-right: auto; }
+.org-pager button {
+  min-height: 30px; padding: 4px 12px; border: 1px solid #d9e1d4; border-radius: 5px;
+  background: #fff; color: #40645a; font-size: 11px;
+}
+.org-pager button:disabled { opacity: .45; cursor: not-allowed; }
+
+.org-overlay {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+  padding: 24px; background: #142f2bb3;
+}
+.org-dialog {
+  width: min(560px, 100%); max-height: min(86vh, 760px); overflow-y: auto;
+  border-radius: 12px; background: #fff; box-shadow: 0 24px 64px #142f2b40;
+}
+.org-dialog-sm { width: min(430px, 100%); }
+.org-dialog-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 18px 22px; border-bottom: 1px solid var(--line);
+}
+.org-dialog-head h2 { font-size: 16px; font-weight: 600; line-height: 1.5; }
+.org-icon-btn { border: 0; background: transparent; font-size: 22px; line-height: 1; color: #7a887d; }
+.org-dialog-body { padding: 20px 22px; font-size: 12px; line-height: 1.8; }
+.org-field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 16px; font-size: 12px; color: #496053; }
+.org-field > span em { color: #b45b50; font-style: normal; }
+.org-field small { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.org-form-error { margin-top: 6px; color: #a5524c; font-size: 12px; }
+.org-check-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; margin-top: 14px; }
+.org-check-item {
+  display: flex; align-items: center; gap: 8px; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: 6px; font-size: 12px; cursor: pointer;
+}
+.org-check-item:hover { border-color: #6f9a8c; background: #f8faf5; }
+.org-check-item .org-mono { margin-left: auto; }
+.org-dialog-foot {
+  display: flex; justify-content: end; gap: 10px; padding: 16px 22px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 640px) {
+  .org-toolbar-hint { margin-left: 0; width: 100%; }
+  .org-inline-field input { min-width: 0; width: 100%; }
+  .org-overlay { padding: 12px; }
+  .org-dialog-body { padding: 16px; }
+}

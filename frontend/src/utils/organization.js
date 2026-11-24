@@ -1,0 +1,237 @@
+/**
+ * 组织管理页的纯逻辑（A 模块）。
+ *
+ * 契约依据：《接口与协作约定 V1.0》3.2 / 5 / 7 节——
+ *  - 业务 ID 是十进制字符串，不使用虚构的 "0" 表示根节点，null 表示根；
+ *  - 部门树各层按 sortOrder ASC、id ASC 排列（ID 必须按数值比较，不能按字典序）；
+ *  - 树节点不允许成为自身或后代的父节点；
+ *  - 新建或切换父节点时，目标及其所有祖先必须启用；原引用不变时允许保留停用引用；
+ *  - 角色全量替换最多 100 项、不得重复，空列表表示清空。
+ *
+ * 不依赖 Vue / DOM，便于 Node 原生测试直接覆盖这些规则。
+ */
+
+import { countCodePoints } from './text.js'
+
+const MAX_LONG = 9223372036854775807n
+const ID_PATTERN = /^[1-9][0-9]{0,18}$/
+
+/** ID 必须是正整数十进制字符串，且不超过 Java Long.MAX_VALUE。 */
+export function isValidId(value) {
+  if (typeof value !== 'string' || !ID_PATTERN.test(value)) return false
+  try {
+    return BigInt(value) <= MAX_LONG
+  } catch {
+    return false
+  }
+}
+
+/** 可选查询条件：省略 undefined / null / 空串，但必须保留 status=0 与 sortOrder=0。 */
+export function compactParams(params = {}) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''),
+  )
+}
+
+function compareId(a, b) {
+  // 服务端 ID 恒为十进制字符串，BigInt 失败只可能是异常脏数据：回退字典序保持排序
+  // 确定性（避免 NaN 打乱 sort），不在纯工具层抛错或丢弃节点，由展示层如实呈现。
+  try {
+    const left = BigInt(a.id)
+    const right = BigInt(b.id)
+    return left < right ? -1 : left > right ? 1 : 0
+  } catch {
+    return String(a.id).localeCompare(String(b.id))
+  }
+}
+
+/** 各层按 sortOrder ASC、id ASC 排序，返回新树，不改原数组。 */
+export function sortDepartmentTree(nodes = []) {
+  // sortOrder 服务端恒为合法整数；防御性兜底：脏值转 NaN 会让 sort 结果未定义，
+  // 统一回退 0，保证排序始终确定（DeepSeek 审查）。
+  const orderOf = (node) => {
+    const order = Number(node?.sortOrder ?? 0)
+    return Number.isFinite(order) ? order : 0
+  }
+  return [...(nodes ?? [])]
+    .sort((a, b) => (orderOf(a) - orderOf(b)) || compareId(a, b))
+    .map((node) => ({ ...node, children: sortDepartmentTree(node.children) }))
+}
+
+/**
+ * 扁平化树，供缩进表格渲染。
+ * ancestors 是父链上的部门对象引用，可直接读取真实 status。
+ */
+export function flattenDepartments(nodes = [], depth = 0, ancestors = [], rows = []) {
+  for (const node of nodes ?? []) {
+    rows.push({ node, depth, ancestors })
+    flattenDepartments(node.children, depth + 1, [...ancestors, node], rows)
+  }
+  return rows
+}
+
+export function findDepartment(nodes, id) {
+  for (const node of nodes ?? []) {
+    if (node.id === id) return node
+    const hit = findDepartment(node.children, id)
+    if (hit) return hit
+  }
+  return null
+}
+
+/** 目标节点自身 + 全部后代的 ID，用于前端防环。 */
+export function collectSubtreeIds(nodes, targetId) {
+  const target = findDepartment(nodes, targetId)
+  const ids = []
+  const walk = (list) => {
+    for (const node of list ?? []) {
+      ids.push(node.id)
+      walk(node.children)
+    }
+  }
+  if (target) walk([target])
+  return ids
+}
+
+/**
+ * 可选的父部门列表。
+ *  - editingId：编辑时排除自身及全部后代，关闭成环入口；
+ *  - keepParentId：原父引用（可能已停用）仍保留，符合「原引用不变可保留停用引用」；
+ *  - 其余候选项要求自身及全部祖先均为启用状态。
+ */
+export function parentOptions(nodes, { editingId = null, keepParentId = null } = {}) {
+  const rows = flattenDepartments(sortDepartmentTree(nodes))
+  const excluded = new Set(editingId ? collectSubtreeIds(nodes, editingId) : [])
+  return rows
+    .filter(({ node }) => !excluded.has(node.id))
+    .filter(({ node, ancestors }) => node.id === keepParentId
+      || (node.status === 1 && ancestors.every((parent) => parent.status === 1)))
+    .map(({ node, depth }) => ({
+      id: node.id,
+      depth,
+      status: node.status,
+      label: `${'　'.repeat(depth)}${node.deptName} · ${node.deptCode}`,
+    }))
+}
+
+/** 角色全量替换：转字符串、去重、逐个校验、上限 100；空数组表示清空。 */
+export function normalizeRoleIds(ids) {
+  if (!Array.isArray(ids)) throw new TypeError('roleIds 必须是数组')
+  // 先逐项校验原始值：null/undefined 转 String 会变成 'null'/'undefined'，
+  // 既掩盖真实来源又让错误信息难以定位，这里显式拒绝并指出位置。
+  ids.forEach((id, index) => {
+    if (id === null || id === undefined) {
+      throw new TypeError(`角色 ID 第 ${index + 1} 项为空，请重新选择`)
+    }
+  })
+  // 先 trim 再去重：' 5 ' 与 '5' 是同一个角色，不裁剪会因去重偏差放行重复项，
+  // 且带空白的 ID 会在 isValidId 处以更难定位的信息报错（DeepSeek 审查）。
+  const unique = [...new Set(ids.map((id) => String(id).trim()))]
+  if (unique.length > 100) throw new RangeError('角色最多 100 项')
+  for (const id of unique) {
+    if (!isValidId(id)) throw new TypeError(`非法角色 ID：${id}`)
+  }
+  return unique
+}
+
+/**
+ * 校验员工账号表单（功能① 账号管理页）。返回错误文案，空串表示通过。
+ *
+ * 与后端反序列化器保持一致（UserCreateRequestDeserializer / UserUpdateRequestDeserializer）：
+ *  - username 1～64、password 8～128、realName 1～100，按 Unicode 空白 strip 后判非空；
+ *  - 纯空白（含 U+3000 全角空格）视为非法，与后端 strip() 判定一致；
+ *  - departmentId 可空，非空必须是合法十进制 ID；
+ *  - 字段长度按 Unicode 代码点计数（老师复审 P2），与后端 AdminJson/DepartmentJson
+ *    同口径：String.length() 按 UTF-16 计，会把 64 个「𠮷」用户名误判超长、
+ *    4 个「𠮷」密码误判满足 8 位下限。
+ *
+ * mode=create 校验全部四项；mode=edit 只校验 realName 与 departmentId（完整 PUT）。
+ * allowedDepartmentIds 为可选部门 ID 集合，传入时校验所选部门在候选内。
+ *
+ * retainedDepartmentId 是编辑时从员工详情读到的原部门（PR #47 审查 #3/#7）：契约
+ * 允许原引用不变时保留停用/不可选的原部门，因此只要提交值与详情原值一致就放行；
+ * 换成其他部门（候选缺失时无法验证启用链）仍必须拒绝，新建也没有原部门可依据。
+ */
+export function validateAccountForm(mode, form, allowedDepartmentIds = null,
+  retainedDepartmentId = null) {
+  if (mode !== 'create' && mode !== 'edit') return '未知的编辑模式'
+  const value = (key) => (typeof form?.[key] === 'string' ? form[key].trim() : '')
+  const blank = (s) => s.length === 0 || !/[^\s\u3000]/.test(s)
+
+  if (mode === 'create') {
+    const username = value('username')
+    if (blank(username) || countCodePoints(username) > 64) return '登录账号必填且不超过 64 字'
+    const password = typeof form?.password === 'string' ? form.password : ''
+    const passwordLength = countCodePoints(password)
+    if (passwordLength < 8 || passwordLength > 128) return '密码长度需为 8～128 字'
+  }
+
+  const realName = value('realName')
+  if (blank(realName) || countCodePoints(realName) > 100) return '姓名必填且不超过 100 字'
+
+  const departmentId = form?.departmentId
+  if (departmentId !== '' && departmentId !== null && departmentId !== undefined) {
+    const id = String(departmentId)
+    if (!isValidId(id)) return '所属部门 ID 非法'
+    const keepingDetailDepartment = mode === 'edit' && retainedDepartmentId != null
+      && id === String(retainedDepartmentId)
+    if (allowedDepartmentIds && !allowedDepartmentIds.has(id) && !keepingDetailDepartment) {
+      return '所属部门不可选：仅能选择启用部门或保留原部门'
+    }
+  }
+  return ''
+}
+
+/**
+ * 部门树加载失败后的筛选处置（纯函数，PR #47 复审 P2）。
+ *
+ * 场景：用户先选了部门筛选，随后点「刷新」且部门树请求失败——目录被清空、
+ * 部门下拉被禁用，但 filters.departmentId 仍保留旧 ID，后续员工查询继续
+ * 带着已不可见的部门过滤条件，且下拉禁用后用户无法切回「全部部门」。
+ *
+ * 返回值：
+ *  - { departmentId: '', current: 1 }：需要重置筛选并回到第 1 页重新查询（覆盖全部员工）；
+ *  - null：原本就是「全部部门」，无需重置，也不应触发重复请求（如首次进入页面时）。
+ */
+export function treeFailureFilterPatch(filters = {}) {
+  const departmentId = filters?.departmentId
+  if (departmentId === '' || departmentId === null || departmentId === undefined) return null
+  return { departmentId: '', current: 1 }
+}
+
+/**
+ * 角色分配保存门禁（纯函数）：目录加载失败、员工详情未就绪，或详情里存在
+ * 不在完整启用目录中的启用角色时，禁止全量替换——任何一条不满足都可能把
+ * 现有角色清空。抽成纯函数让 Node 测试直接断言行为，而不是对 .vue 源码做
+ * 正则匹配（DeepSeek 审查：源码正则无法验证真实门禁逻辑）。
+ */
+export function roleSaveBlocked({ rolesLoadFailed, roleDetailFailed, missingEnabledCount }) {
+  return Boolean(rolesLoadFailed || roleDetailFailed || missingEnabledCount > 0)
+}
+
+/**
+ * 按完整启用角色目录拆分员工详情里的已分配角色：
+ *  - selected：启用且在完整目录中，作为可保留项；
+ *  - removed：不在目录中且未标记为启用（停用或状态缺失），全量替换后会被移除并提示用户；
+ *  - missingEnabledRoles：详情标记为启用、却不在启用目录中——目录不完整或数据不一致，
+ *    此时绝不能当作「停用待移除」直接保存，调用方必须阻止提交。
+ *    启用缺失项也不进 removed：弹窗对它们展示的是「禁止保存」警告，而不是「将被移除」。
+ * ID 统一转字符串比较，避免详情与目录类型不一致导致误判；候选必须完整，否则会把
+ * 第二页的启用角色误当成 removed，保存时误删。
+ */
+export function partitionAssignedRoles(assigned = [], assignable = []) {
+  // 目录侧防御：null 项或缺失 ID 的记录不进候选集——否则 String(null)='null' 这样的
+  // 占位键会混入可用集合，甚至 role.id 直接抛 TypeError（DeepSeek 审查）。
+  const available = new Set(
+    (Array.isArray(assignable) ? assignable : [])
+      .filter((role) => role != null && role.id != null)
+      .map((role) => String(role.id)),
+  )
+  const list = (Array.isArray(assigned) ? assigned : []).filter((role) => role != null)
+  const idOf = (role) => String(typeof role === 'object' ? role.id ?? role : role)
+  return {
+    selectedRoleIds: list.filter((role) => available.has(idOf(role))).map(idOf),
+    removedRoles: list.filter((role) => !available.has(idOf(role)) && role?.status !== 1),
+    missingEnabledRoles: list.filter((role) => role?.status === 1 && !available.has(idOf(role))),
+  }
+}
