@@ -1,10 +1,11 @@
 <script setup>
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppIcon from '../components/AppIcon.vue'
 import { navigation } from '../router/navigation.js'
 import { useSessionStore } from '../stores/session.js'
+import { shouldRefreshOnSamePageClick, visibleNavigation } from '../utils/menuPermission.js'
 
 const route = useRoute()
 const menuOpen = ref(false)
@@ -12,7 +13,33 @@ const menuToggle = ref(null)
 const sidebar = ref(null)
 const mobileQuery = window.matchMedia('(max-width: 640px)')
 const isMobile = ref(mobileQuery.matches)
-const { user } = storeToRefs(useSessionStore())
+const session = useSessionStore()
+const { user } = storeToRefs(session)
+
+// 菜单按后端有效权限过滤（《接口与协作约定》3.4）：导航编码与路由 meta 同源。
+// 权限已加载（loaded）才严格过滤；加载失败（unavailable）时无法判断，展示全部入口
+// 并由页面自身门控兜底，同时在菜单底部给出重试入口——不把「不可用」误当成「没有权限」。
+const permissionFailed = computed(() => session.permissionStatus === 'unavailable')
+const menuGroups = computed(() => (permissionFailed.value
+  ? navigation
+  : visibleNavigation(navigation, session.hasPermission)))
+
+async function retryPermissions() {
+  await session.refreshPermissions()
+}
+
+// ① 布局感知令牌变化：登录/切换账号后主动初始化权限。workspace 不声明权限、
+// 守卫不会为其刷新，若不在这里加载，侧栏会一直只显示工作空间（评审 P2）。
+watch(() => session.accessToken, async (token) => {
+  if (token && session.permissionStatus !== 'loaded') await session.ensurePermissions()
+}, { immediate: true })
+
+// ② 同页重复点击菜单：Vue Router 判为 duplicated 导航、不执行 beforeEach，
+// 守卫里的刷新不会发生；这里直接刷新，让会话内新增的子功能权限（tag:list）即时生效。
+async function onMenuClick(item) {
+  if (shouldRefreshOnSamePageClick(item.path, route.path)) await session.refreshPermissions()
+}
+
 watch(() => route.fullPath, async () => {
   if (menuOpen.value) {
     menuOpen.value = false
@@ -68,11 +95,19 @@ function trapFocus(event) {
         <span>Enterprise<span class="brand-cms">CMS</span><small>企业知识与内容管理</small></span>
       </RouterLink>
       <nav aria-label="主要导航">
-        <div v-for="group in navigation" :key="group.title" class="nav-group">
+        <div v-for="group in menuGroups" :key="group.title" class="nav-group">
           <p class="nav-group-title">{{ group.title }}</p>
-          <RouterLink v-for="item in group.items" :key="item.path" :to="item.path" class="nav-link" active-class="is-active">
+          <RouterLink v-for="item in group.items" :key="item.path" :to="item.path" class="nav-link" active-class="is-active" @click="onMenuClick(item)">
             <AppIcon :name="item.icon" :size="18" /><span>{{ item.title }}</span><span class="nav-active-dot" />
           </RouterLink>
+        </div>
+        <!-- 公共权限刷新入口：常驻，覆盖同页重复点击（不触发守卫）与 loaded 下
+             会话内新增授权两种场景；加载失败时文案强调重试，不做静默降级。 -->
+        <div class="nav-group">
+          <p class="nav-group-title">权限</p>
+          <button type="button" class="nav-link" @click="retryPermissions">
+            {{ permissionFailed ? '权限加载失败，点击重试' : '刷新权限' }}
+          </button>
         </div>
       </nav>
       <div class="sidebar-note"><span class="status-dot" /><span>让知识成为团队的共同资产</span></div>
