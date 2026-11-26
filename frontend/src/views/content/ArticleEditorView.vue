@@ -111,11 +111,13 @@ async function reloadArticle() {
 </script>
 
 <template>
-  <section class="content-page">
-    <RouterLink :to="back" class="content-back"><AppIcon name="arrow" :size="16" />{{ editing && validId ? '返回文章' : '返回文章管理' }}</RouterLink>
+  <section class="cms-page content-page">
+    <RouterLink :to="back" class="content-back"><AppIcon name="arrow" :size="15" />{{ editing && validId ? '返回文章' : '返回文章管理' }}</RouterLink>
     <header class="content-heading">
       <div class="page-heading">
+        <p class="eyebrow">CONTENT EDITOR</p>
         <h1>{{ editing ? '编辑文章' : '新建草稿' }}</h1>
+        <p>{{ editing ? '修改文章内容、分类与标签绑定，保存后自动递增版本号。' : '撰写新的知识草稿，配置所属分类和标签后可保存或提交审核。' }}</p>
       </div>
       <ElTag v-if="article" :type="articleStatuses[article.status]?.type" effect="plain">{{ articleStatuses[article.status]?.label }}</ElTag>
     </header>

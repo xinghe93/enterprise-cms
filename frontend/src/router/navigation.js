@@ -12,8 +12,8 @@ export const navigation = [
     { path: '/admin/articles', name: 'articles', title: '文章管理', icon: 'document', description: '创建草稿、编辑内容并提交审核。', owner: 'C', requiredPermissions: ['article:list'] },
     // TaxonomyView 单页双 Tab：分类（category:tree）与标签（tag:list）各自门控
     { path: '/admin/categories', name: 'categories', title: '分类与标签', icon: 'layers', description: '维护知识分类树和内容标签。', owner: 'C', requiredPermissions: ['category:tree', 'tag:list'] },
-    // ReviewListView 含待审列表、审核历史与通过/驳回：任一子功能权限即可进入
-    { path: '/admin/reviews', name: 'reviews', title: '审核与发布', icon: 'check', description: '审核内容、发布文章并查看审核历史。', owner: 'D', requiredPermissions: ['article:review-list', 'review:list', 'article:approve', 'article:reject'] },
+    // ReviewListView 含待审队列、发布/下架管理与审核历史：任一子功能权限即可进入
+    { path: '/admin/reviews', name: 'reviews', title: '审核与发布', icon: 'check', description: '审核内容、发布文章并查看审核历史。', owner: 'D', requiredPermissions: ['article:review-list', 'review:list', 'article:approve', 'article:reject', 'article:publish', 'article:offline', 'article:publish-batch', 'article:offline-batch'] },
   ] },
   { title: '组织管理', items: [
     { path: '/admin/users', name: 'users', title: '员工管理', icon: 'users', description: '维护员工账号的新建、编辑与启停。', owner: 'A', requiredPermissions: ['user:list'] },

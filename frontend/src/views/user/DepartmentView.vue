@@ -211,12 +211,18 @@ onMounted(loadTree)
 </script>
 
 <template>
-  <section class="org-page">
-    <div class="page-heading">
-      <p class="eyebrow">ORGANIZATION / A</p>
-      <h1>部门管理</h1>
-      <p>维护部门层级、编码与排序；启停只影响当前节点，删除空部门需无子部门与员工引用。</p>
-    </div>
+  <section class="cms-page org-page">
+    <header class="cms-page-header">
+      <div class="page-heading">
+        <p class="eyebrow">ORGANIZATION · DEPARTMENTS</p>
+        <h1>部门管理</h1>
+        <p>维护部门层级、编码与排序；启停只影响当前节点，删除空部门需无子部门与员工引用。</p>
+      </div>
+      <div class="cms-page-header-actions">
+        <ElButton :disabled="loading" @click="loadTree">刷新</ElButton>
+        <ElButton type="primary" :disabled="loading" @click="openCreate()">新建根部门</ElButton>
+      </div>
+    </header>
 
     <div class="org-toolbar">
       <label class="org-inline-field">
@@ -228,14 +234,17 @@ onMounted(loadTree)
         </select>
       </label>
       <span class="org-toolbar-hint">树各层按排序值、ID 升序；筛选保留必要祖先的真实状态</span>
-      <ElButton type="primary" :disabled="loading" @click="openCreate()">新建根部门</ElButton>
-      <ElButton :disabled="loading" @click="loadTree">刷新</ElButton>
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">部门树未加载完成，请确认服务与登录态后重试。</p>
 
     <div class="org-card">
-      <table class="org-table">
+      <div class="cms-card-meta">
+        <span>共 {{ rows.length }} 个部门节点</span>
+        <span>层级按排序值与 ID 升序排列</span>
+      </div>
+      <div class="org-table-scroll">
+        <table class="org-table">
         <thead>
           <tr><th>部门</th><th>编码</th><th>排序</th><th>状态</th><th>操作</th></tr>
         </thead>
@@ -276,6 +285,7 @@ onMounted(loadTree)
           </tr>
         </tbody>
       </table>
+      </div>
       <p v-if="loading" class="org-loading">正在加载部门树…</p>
     </div>
 

@@ -242,12 +242,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="org-page">
-    <div class="page-heading">
-      <p class="eyebrow">ORGANIZATION / A</p>
-      <h1>员工管理</h1>
-      <p>维护员工账号的新建、编辑与启停；部门与角色分配请到「岗位分配」。</p>
-    </div>
+  <section class="cms-page org-page">
+    <header class="cms-page-header">
+      <div class="page-heading">
+        <p class="eyebrow">ORGANIZATION · ACCOUNTS</p>
+        <h1>员工管理</h1>
+        <p>维护员工账号的新建、编辑与启停；部门与角色分配请前往「岗位分配」。</p>
+      </div>
+      <div class="cms-page-header-actions">
+        <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
+        <ElButton type="primary" :disabled="loading || !treeLoaded || treeFailed" @click="openCreate">新建员工</ElButton>
+      </div>
+    </header>
 
     <div class="org-toolbar">
       <label class="org-inline-field">
@@ -273,17 +279,20 @@ onMounted(() => {
           <option value="0">仅停用</option>
         </select>
       </label>
-      <ElButton @click="search">查询</ElButton>
+      <ElButton type="primary" :disabled="loading" @click="search">查询</ElButton>
       <span class="org-toolbar-hint">部门筛选含本部门及全部后代</span>
-      <ElButton type="primary" :disabled="loading || !treeLoaded || treeFailed" @click="openCreate">新建员工</ElButton>
-      <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
     <p v-if="treeFailed" class="org-alert" role="alert">部门树未加载，已清除部门筛选并查询全部员工；点击「刷新」可重试。编辑时仍可保留员工详情返回的部门并只改姓名。</p>
 
     <div class="org-card">
-      <table class="org-table">
+      <div class="cms-card-meta">
+        <span>共 {{ total }} 名员工</span>
+        <span>第 {{ filters.current }} / {{ totalPages }} 页</span>
+      </div>
+      <div class="org-table-scroll">
+        <table class="org-table">
         <thead>
           <tr><th>登录账号</th><th>姓名</th><th>所属部门</th><th>角色</th><th>状态</th><th>操作</th></tr>
         </thead>
@@ -320,6 +329,7 @@ onMounted(() => {
           </tr>
         </tbody>
       </table>
+      </div>
       <p v-if="loading" class="org-loading">正在加载员工列表…</p>
       <div class="org-pager">
         <span>共 {{ total }} 条 · 第 {{ filters.current }} / {{ totalPages }} 页</span>

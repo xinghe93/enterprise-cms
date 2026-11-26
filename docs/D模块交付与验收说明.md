@@ -58,8 +58,8 @@
 | 日志模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.log.**"` | JDK25、`SPRING_DATASOURCE_PASSWORD` | **63 项全过** |
 | 审核模块单测 | `mvn -B -o clean test "-Dtest=com.xinghe.cms.review.**"` | 同上 + Docker MySQL（含 IT） | **170 项全过**（#30、#56、#57 均已合入 dev） |
 | 全量后端测试 | 完整命令见 §4.1（自动生成 Mockito 排除项） | JDK25、Docker MySQL、`SPRING_DATASOURCE_PASSWORD` | **321 项全过**（dev `c834385` 实测，2026-11-22，含 #57 标签绑定） |
-| 真实登录态手工验收 | 可直接执行的步骤见 §4.2 | **前置条件：`database/005_seed_review_log_demo.sql`（#53）已导入目标库**；Docker mysql8/redis、jar、admin/editor/staff 账号 | 2026-11-22 用临时审核员账号走通登录→权限→待审→正文→通过/驳回→审核历史（证据 `项目指导/evidence/reviewer_flow_20261122_085611.txt`），随后在隔离库复核种子（`docs/操作日志说明.md` §9.2） |
-| 真实登录态 e2e 脚本 | 仓库外脚本 `课程设计/项目指导/scripts/run_e2e_review_log.ps1`（需本机 e2e 账号密码，按要求不入库） | Docker mysql8/redis、`005` 种子、jar、`SPRING_DATASOURCE_PASSWORD` 与账号密码 | **35 PASS / 0 FAIL / 0 SKIP**（2026-11-21，含审核历史、审核/发布命令、标签绑定；证据 `e2e_review_log_20261121_001357.txt`） |
+| 真实登录态手工验收 | 可直接执行的步骤见 §4.2 | **前置条件：`database/004_seed_review_log_demo.sql` 已导入目标库**；Docker mysql8/redis、jar、admin/editor/staff 账号 | 2026-11-22 用临时审核员账号走通登录→权限→待审→正文→通过/驳回→审核历史（证据 `项目指导/evidence/reviewer_flow_20261122_085611.txt`），随后在隔离库复核种子（`docs/操作日志说明.md` §9.2） |
+| 真实登录态 e2e 脚本 | 仓库外脚本 `课程设计/项目指导/scripts/run_e2e_review_log.ps1`（需本机 e2e 账号密码，按要求不入库） | Docker mysql8/redis、`004` 种子、jar、`SPRING_DATASOURCE_PASSWORD` 与账号密码 | **35 PASS / 0 FAIL / 0 SKIP**（2026-11-21，含审核历史、审核/发布命令、标签绑定；证据 `e2e_review_log_20261121_001357.txt`） |
 | 压测 | 仓库外脚本 `run_pressure_logs.ps1` | 同上 | PASS，见 §5 |
 
 > 本机完整 `mvn verify` 会因宿主机不允许外部进程 attach 而在 A/B/C 的 Mockito 测试类上报 `MockMaker` 失败（非 D 模块问题），§4.1 给出了可复现的排除方式。
@@ -89,12 +89,12 @@ mvn -B -o clean verify "-Dtest=$ex" "-Dsurefire.failIfNoSpecifiedTests=false"
 
 ### 4.2 手工验收步骤（真实登录态）
 
-前置条件：`database/005_seed_review_log_demo.sql`（PR #53）已导入目标库；种子在隔离库的导入命令与幂等复核见 `docs/操作日志说明.md` §9.2。种子使用固定 ID：文章 `990301`–`990305`、审核历史 `990601`/`990602`。
+前置条件：`database/004_seed_review_log_demo.sql` 已导入目标库；种子在隔离库的导入命令与幂等复核见 `docs/操作日志说明.md` §9.2。种子使用固定 ID：文章 `990301`–`990305`、审核历史 `990601`/`990602`。
 
 > **执行顺序**：先按 §9.2 的“导入命令”准备隔离库（该代码块只准备、不清理）→ 再按本节启动后端并完成验收 → 最后执行 §9.2 末尾的“验收完成后清理”代码块。不要在准备后立即清理，否则本节会连不上库。
 
 ```powershell
-# 1) 启动后端（Docker mysql8/redis 已运行，001–005 已按 docs/操作日志说明.md §9.2 导入隔离库）
+# 1) 启动后端（Docker mysql8/redis 已运行，001–004 已按 docs/操作日志说明.md §9.2 导入隔离库）
 cd D:\大三第一学期\JAVA框架技术（一）\课程设计\enterprise-cms\backend
 # 当前 pom 版本 0.0.1-SNAPSHOT、未覆盖 finalName，实际产物为 enterprise-cms-backend-0.0.1-SNAPSHOT.jar
 $jar = (Get-ChildItem target\enterprise-cms-backend-*.jar | Select-Object -First 1).Name
@@ -161,7 +161,7 @@ if ($tagIds.Count -lt 2) { throw "启用的演示标签不足 2 个：请先按 
 | 审核历史查询接口 | 已随 PR #56 合入 dev（`ed620c3`），`GET /api/admin/articles/{id}/reviews` 可用（e2e PASS） | 无待办；压测纳入 |
 | 标签绑定接口 | 已随 PR #57 合入 dev（`920c1d8`），`PUT /api/admin/articles/{id}/tags` 可用；严格 JSON 类型（`5a7ede6`）与重复标签 ID 前置校验（`c394feb`）已按复审补齐 | 无待办；e2e/压测纳入 |
 | 前端权限门控 | 前端日志页/审核页已从 `GET /api/auth/permissions` 取权限并做严格门控（#34 已合入 dev `17ba15d`），加载失败提供重试 | 无待办；该接口契约 owner=B，D 侧临时接线已获组长复审确认 |
-| 演示种子 | `005_seed_review_log_demo.sql` 在 PR #53（`feature/D/e2e-seed`）；已按复审改为不写 `USE`、固定 ID（文章 990301–990305），关联数据只引用身份匹配的演示文章；隔离库连续导入两次 0 行变化，同名/ID 冲突时跳过关联（复核见 `docs/操作日志说明.md` §9.2） | 合并后可直接导入；e2e/压测均以该种子为前置条件 |
+| 演示种子 | `database/004_seed_review_log_demo.sql` 使用固定 ID（文章 990301–990305）。关联数据只引用身份匹配的演示文章。 | 隔离库导入见 `docs/操作日志说明.md` §9.2。 |
 | 本机 Mockito | JDK25 + Windows 不允许外部 attach | 加 javaagent 或 CI 指定 JDK |
 | 日志数据范围 | 全局审计，首期按权限码全量可读 | 若要求部门级范围需另行评审 |
 

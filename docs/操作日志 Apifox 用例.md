@@ -225,12 +225,6 @@ pm.test("时间毫秒精度", () => {
 | 待审 | admin `GET /api/admin/reviews/pending` | 200，`authorId` 均不等于当前用户 |
 | 审计 | `POST /api/admin/tags` 成功 / 重名 | 200 且 `sys_operation_log` 新增 SUCCESS / 409 且新增 FAILURE |
 
-**执行记录（2026-11-19）**：脚本 `课程设计/项目指导/scripts/run_e2e_review_log.ps1` + 种子 `database/005_seed_review_log_demo.sql`；真实库 `enterprise_cms`、真实登录态；**26 PASS / 0 FAIL / 1 SKIP**（审核/发布/审核历史/标签命令依赖 PR #30 未合入 dev，自动记为 SKIP）；证据 `课程设计/项目指导/evidence/e2e_review_log_20261118_225431.txt`；脚本结束自动清理本次演示数据并复查无残留。
-
-**执行记录（2026-11-21，dev 已合入 PR #56 后重跑）**：审核历史接口 `GET /api/admin/articles/{id}/reviews` 已随 #56 合入 dev（`ed620c3`）；在标签绑定接口分支 `feature/D/tag-binding`（`0ac8cb0`）上构建 jar 执行本脚本，**35 PASS / 0 FAIL / 0 SKIP**（审核/发布命令组与标签绑定转 PASS）；证据 `课程设计/项目指导/evidence/e2e_review_log_20261121_001357.txt`。
-
-**执行记录（2026-11-20，dev 已合入 PR #30 后重跑）**：种子改名 `database/005_seed_review_log_demo.sql`（dev 的 004 为 `004_user_status_version.sql`）；**26 PASS / 0 FAIL / 1 SKIP**；此时审核/发布命令已在 dev，但审核历史查询接口 `GET /api/admin/articles/{id}/reviews` 尚未交付（脚本探测 404），因此该组仍 SKIP；待该接口 PR 合入后重跑可转 PASS。证据 `课程设计/项目指导/evidence/e2e_review_log_20261120_224450.txt`。
-
 ## 10. 第八轮补充（2026-11-18，C15：权限守卫替换为统一注解）
 
 - 删除本地权限守卫类，`OperationLogController` 的 `page`/`detail` 分别标注
