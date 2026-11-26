@@ -225,8 +225,6 @@ pm.test("时间毫秒精度", () => {
 | 待审 | admin `GET /api/admin/reviews/pending` | 200，`authorId` 均不等于当前用户 |
 | 审计 | `POST /api/admin/tags` 成功 / 重名 | 200 且 `sys_operation_log` 新增 SUCCESS / 409 且新增 FAILURE |
 
-**执行记录（2026-11-21，dev 已合入 PR #56 后重跑）**：审核历史接口 `GET /api/admin/articles/{id}/reviews` 已随 #56 合入 dev（`ed620c3`）；在标签绑定接口分支 `feature/D/tag-binding`（`0ac8cb0`）上构建 jar 执行本脚本，**35 PASS / 0 FAIL / 0 SKIP**（审核/发布命令组与标签绑定转 PASS）；证据 `课程设计/项目指导/evidence/e2e_review_log_20261121_001357.txt`。
-
 ## 10. 第八轮补充（2026-11-18，C15：权限守卫替换为统一注解）
 
 - 删除本地权限守卫类，`OperationLogController` 的 `page`/`detail` 分别标注
