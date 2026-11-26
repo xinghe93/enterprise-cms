@@ -17,7 +17,6 @@ import {
   ElTableColumn,
   ElTag,
 } from 'element-plus'
-import 'element-plus/dist/index.css'
 import { createLatestRequestGuard, formatLogTime, getLog, isValidLogId, listLogs, normalizeTotal } from '../api/log.js'
 import { useSessionStore } from '../stores/session.js'
 
@@ -153,12 +152,14 @@ onMounted(fetchLogs)
 </script>
 
 <template>
-  <section class="module-page log-page">
-    <div class="page-heading">
-      <p class="eyebrow">OPERATION AUDIT</p>
-      <h1>操作日志</h1>
-      <p>查询关键操作的执行记录，追溯内容审核、发布与权限变更。</p>
-    </div>
+  <section class="cms-page log-page">
+    <header class="cms-page-header">
+      <div class="page-heading">
+        <p class="eyebrow">OPERATION AUDIT</p>
+        <h1>操作日志</h1>
+        <p>查询关键操作的执行记录，追溯内容审核、发布与权限变更。</p>
+      </div>
+    </header>
 
     <ElAlert
       v-if="!canListLogs"
@@ -187,7 +188,7 @@ onMounted(fetchLogs)
             <ElOption label="失败" value="FAILURE" />
           </ElSelect>
         </label>
-        <label class="filter-field">
+        <label class="filter-field filter-field-range">
           <span>时间范围</span>
           <ElDatePicker
             v-model="filters.timeRange"
@@ -294,115 +295,48 @@ onMounted(fetchLogs)
 </template>
 
 <style scoped>
-.log-page {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.filter-card,
-.table-card {
-  border: 1px solid var(--line, #e5e7eb);
-  border-radius: 14px;
-  background: var(--surface, #fff);
-  padding: 18px 20px;
-}
-
 .filter-card {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 16px;
-  justify-content: space-between;
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px 16px;
+  border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: var(--surface); padding: 16px 20px; box-shadow: var(--shadow-xs);
 }
-
 .filter-grid {
-  display: grid;
-  flex: 1 1 640px;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 14px 16px;
+  display: grid; flex: 1 1 640px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 14px;
 }
-
-.filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--muted, #6b7280);
+.filter-field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--ink-secondary); min-width: 0; }
+.filter-field-range { grid-column: span 2; }
+.filter-field :deep(.el-select), .filter-field :deep(.el-input), .filter-field :deep(.el-date-editor) { width: 100%; }
+.filter-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.filter-actions .el-button + .el-button { margin-left: 0; }
+.table-card {
+  border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: var(--surface); box-shadow: var(--shadow-xs); overflow: hidden;
 }
-
-.filter-field > span {
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.filter-actions {
-  display: flex;
-  gap: 10px;
-}
-
 .table-meta {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 2px 10px;
-  font-size: 13px;
-  color: var(--muted, #6b7280);
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid #ebf0e6; font-size: 12.5px; color: var(--muted);
 }
-
-.table-wrap {
-  min-height: 180px;
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-  font-size: 12.5px;
-}
-
+.table-wrap { min-height: 180px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace; font-size: 12.5px; color: var(--ink-secondary); }
 .pagination-wrap {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 14px;
+  display: flex; justify-content: flex-end; padding: 14px 20px;
+  border-top: 1px solid #ebf0e6; background: var(--surface);
 }
-
-.detail-body {
-  min-height: 160px;
-}
-
-.detail-alert {
-  margin-bottom: 14px;
-}
-
-.muted-text {
-  color: var(--muted, #9ca3af);
-  font-size: 12.5px;
-}
-
+.detail-body { min-height: 160px; }
+.detail-alert { margin-bottom: 14px; }
+.muted-text { color: var(--muted); font-size: 12.5px; }
 .detail-grid {
-  display: grid;
-  grid-template-columns: 108px 1fr;
-  gap: 10px 14px;
-  margin: 0;
+  display: grid; grid-template-columns: 104px 1fr; gap: 12px 14px; margin: 0;
+  padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-elevated);
 }
-
-.detail-grid dt {
-  color: var(--muted, #6b7280);
-  font-size: 13px;
+.detail-grid dt { color: var(--muted); font-size: 12.5px; font-weight: 500; }
+.detail-grid dd { margin: 0; color: var(--ink); font-size: 13.5px; word-break: break-all; }
+@media (max-width: 720px) {
+  .filter-field-range { grid-column: span 1; }
 }
-
-.detail-grid dd {
-  margin: 0;
-  color: var(--ink, #1f2937);
-  font-size: 14px;
-  word-break: break-all;
-}
-
 @media (max-width: 640px) {
-  .filter-card {
-    padding: 14px;
-  }
-
-  .pagination-wrap {
-    justify-content: center;
-  }
+  .filter-card { padding: 14px; }
+  .pagination-wrap { justify-content: center; padding: 12px 14px; }
 }
 </style>

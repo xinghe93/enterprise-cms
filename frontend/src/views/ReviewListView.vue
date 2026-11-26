@@ -10,8 +10,6 @@ import {
   ElAlert, ElButton, ElDialog, ElDrawer, ElEmpty, ElInput, ElLoading, ElMessage,
   ElPagination, ElTable, ElTableColumn, ElTag,
 } from 'element-plus'
-// 骨架项目未在 main.js 全局注册 Element Plus，本页按需引入组件并加载样式。
-import 'element-plus/dist/index.css'
 import {
   approveArticle, buildPendingQuery, buildReviewQuery, fetchMyPermissions, getArticleDetail,
   formatLocalDateTime, formatReviewTime, isValidArticleId, listPendingReviews,
@@ -400,46 +398,66 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="module-page review-page">
-    <header class="page-heading">
-      <p class="eyebrow">REVIEW &amp; PUBLISH</p>
-      <h1>审核工作台</h1>
-      <p>待审核队列：审核通过或驳回员工提交的内容，并查看每一次审核历史。</p>
+  <section class="cms-page review-page">
+    <header class="cms-page-header">
+      <div class="page-heading">
+        <p class="eyebrow">REVIEW &amp; PUBLISH</p>
+        <h1>审核工作台</h1>
+        <p>待审核队列：审核通过或驳回员工提交的内容，并查看每一次审核历史。</p>
+      </div>
     </header>
 
-    <div class="review-filter">
-      <ElInput v-model="filters.keyword" class="filter-input" clearable maxlength="255" placeholder="标题关键词" />
-      <ElInput v-model="filters.categoryId" class="filter-input" clearable maxlength="64" placeholder="分类 ID（提交时校验）" />
-      <ElInput v-model="filters.authorId" class="filter-input" clearable maxlength="64" placeholder="作者 ID（提交时校验）" />
-      <ElButton type="primary" @click="handleSearch">查询</ElButton>
-      <ElButton @click="handleReset">重置</ElButton>
-      <span v-if="lastLoadedAt" class="filter-meta">更新于 {{ lastLoadedAt }}</span>
-    </div>
+    <section class="cms-filter-bar" aria-label="待审核筛选">
+      <div class="cms-filter-fields">
+        <label class="cms-filter-field">
+          <span>标题关键词</span>
+          <ElInput v-model="filters.keyword" clearable maxlength="255" placeholder="输入文章标题关键词" @keyup.enter="handleSearch" />
+        </label>
+        <label class="cms-filter-field">
+          <span>分类 ID</span>
+          <ElInput v-model="filters.categoryId" clearable maxlength="64" placeholder="分类 ID（提交时校验）" @keyup.enter="handleSearch" />
+        </label>
+        <label class="cms-filter-field">
+          <span>作者 ID</span>
+          <ElInput v-model="filters.authorId" clearable maxlength="64" placeholder="作者 ID（提交时校验）" @keyup.enter="handleSearch" />
+        </label>
+      </div>
+      <div class="cms-filter-actions">
+        <ElButton type="primary" :loading="loading" @click="handleSearch">查询</ElButton>
+        <ElButton :disabled="loading" @click="handleReset">重置</ElButton>
+      </div>
+    </section>
 
-    <div v-if="canReadHistory" class="review-history-lookup">
-      <span class="filter-meta">审核完成后仍可核对记录：</span>
-      <ElInput v-model="historyForm.articleId" class="filter-input" clearable maxlength="64" placeholder="文章 ID（提交时校验）" />
-      <ElButton @click="openHistoryById">查看该文章审核历史</ElButton>
-    </div>
+    <section v-if="canReadHistory" class="review-history-bar" aria-label="按文章 ID 核对审核历史">
+      <span class="history-bar-label">按文章 ID 核对历史记录</span>
+      <ElInput v-model="historyForm.articleId" class="history-id-input" clearable maxlength="64" placeholder="输入文章 ID（提交时校验）" @keyup.enter="openHistoryById" />
+      <ElButton @click="openHistoryById">查看审核历史</ElButton>
+    </section>
 
-    <ElAlert v-if="permissionStatus === 'loading'" class="review-alert" type="info" :closable="false" show-icon
+    <ElAlert v-if="permissionStatus === 'loading'" type="info" :closable="false" show-icon
       title="正在加载当前账号权限…" />
-    <ElAlert v-else-if="permissionStatus === 'unavailable'" class="review-alert" type="warning" :closable="false" show-icon
+    <ElAlert v-else-if="permissionStatus === 'unavailable'" type="warning" :closable="false" show-icon
       title="权限列表加载失败，审核入口已隐藏；请重试加载权限。">
       <ElButton size="small" @click="retryPermissions">重试加载权限</ElButton>
     </ElAlert>
-    <ElAlert v-if="permissionsKnown && !canListReviews" class="review-alert" type="warning" :closable="false" show-icon
+    <ElAlert v-if="permissionsKnown && !canListReviews" type="warning" :closable="false" show-icon
       title="当前账号缺少 article:review-list 权限，无法查看待审核队列。" />
-    <ElAlert v-if="loadError" class="review-alert" :title="loadError" type="error" :closable="false" show-icon>
+    <ElAlert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon>
       <ElButton size="small" @click="fetchPending">重新加载</ElButton>
     </ElAlert>
 
-    <div v-loading="loading" class="review-table-shell">
-      <ElTable :data="rows" border stripe empty-text="暂无待审核内容">
-        <ElTableColumn prop="id" label="文章 ID" width="120" />
+    <section v-loading="loading" class="cms-surface-card" aria-label="待审核队列">
+      <div class="cms-card-meta">
+        <span>共 {{ total }} 篇待审核文章</span>
+        <span v-if="lastLoadedAt">最近查询：{{ lastLoadedAt }}</span>
+      </div>
+      <ElTable :data="rows" stripe empty-text="暂无待审核内容">
+        <ElTableColumn label="文章 ID" width="120">
+          <template #default="{ row }"><span class="cms-mono">{{ row.id }}</span></template>
+        </ElTableColumn>
         <ElTableColumn label="标题" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
-            <RouterLink v-if="canReadArticle" class="article-link" :to="{ name: 'article-detail', params: { id: row.id } }">{{ row.title }}</RouterLink>
+            <RouterLink v-if="canReadArticle" class="cms-inline-link" :to="{ name: 'article-detail', params: { id: row.id } }">{{ row.title }}</RouterLink>
             <span v-else>{{ row.title }}</span>
           </template>
         </ElTableColumn>
@@ -447,30 +465,33 @@ onMounted(async () => {
         <ElTableColumn prop="authorName" label="作者" width="120" />
         <ElTableColumn label="状态" width="110">
           <template #default="{ row }">
-            <ElTag :type="statusTagType(row.status)" effect="light" round>{{ statusLabel(row.status) }}</ElTag>
+            <ElTag :type="statusTagType(row.status)" effect="plain" size="small">{{ statusLabel(row.status) }}</ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn prop="version" label="版本" width="80" />
         <ElTableColumn label="更新时间" width="170">
-          <template #default="{ row }">{{ formatLocalDateTime(row.updatedAt) }}</template>
+          <template #default="{ row }"><span class="cms-mono">{{ formatLocalDateTime(row.updatedAt) }}</span></template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="220" fixed="right">
+        <ElTableColumn label="操作" width="210" fixed="right">
           <template #default="{ row }">
-            <ElButton v-if="canApprove" link type="success" @click="openDecision(row, 'approve')">通过</ElButton>
-            <ElButton v-if="canReject" link type="danger" @click="openDecision(row, 'reject')">驳回</ElButton>
-            <ElButton v-if="canReadHistory" link type="primary" @click="openHistory(row)">历史</ElButton>
+            <div class="cms-row-actions">
+              <ElButton v-if="canApprove" link type="success" @click="openDecision(row, 'approve')">通过</ElButton>
+              <ElButton v-if="canReject" link type="danger" @click="openDecision(row, 'reject')">驳回</ElButton>
+              <ElButton v-if="canReadHistory" link type="primary" @click="openHistory(row)">历史</ElButton>
+            </div>
           </template>
         </ElTableColumn>
       </ElTable>
-      <div class="review-pagination">
+      <div class="cms-pagination">
         <ElPagination
+          background
           :current-page="current" :page-size="size" :page-sizes="[10, 20, 50]" :total="total"
           :disabled="loading"
           layout="total, sizes, prev, pager, next, jumper"
           @size-change="handleSizeChange" @current-change="handleCurrentChange"
         />
       </div>
-    </div>
+    </section>
 
     <ElDialog
       :key="decisionDialog.instanceKey"
@@ -545,20 +566,24 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.review-page { display: grid; gap: 18px; }
-.review-filter { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.filter-input { width: 180px; }
-.filter-meta { color: var(--muted, #6b7280); font-size: 12px; }
-.review-alert { margin-top: 4px; }
-.review-table-shell { border: 1px solid var(--line, #e5e7eb); border-radius: 12px; padding: 12px; background: var(--surface, #fff); }
-.review-pagination { display: flex; justify-content: flex-end; margin-top: 12px; }
-.dialog-tip { margin: 0 0 12px; color: var(--ink, #111827); }
-.dialog-version { margin-left: 8px; color: var(--muted, #6b7280); font-size: 12px; }
-.review-history-lookup { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.article-preview { max-height: 300px; overflow: auto; padding: 12px 14px; margin-bottom: 12px; border: 1px solid var(--line, #e4e7ed); border-radius: 8px; background: var(--surface, #f8fafc); }
-.preview-title { margin: 0 0 6px; font-weight: 600; color: var(--ink, #1f2937); }
-.preview-summary { margin: 0 0 8px; color: var(--muted, #6b7280); font-size: 13px; }
-.preview-content { white-space: pre-wrap; word-break: break-word; line-height: 1.7; font-size: 13px; color: var(--ink, #1f2937); }
-.article-link { color: var(--el-color-primary, #409eff); text-decoration: none; }
-.article-link:hover { text-decoration: underline; }
+.review-history-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px;
+  padding: 12px 20px; border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+.history-bar-label { font-size: 12.5px; font-weight: 500; color: var(--ink-secondary); }
+.history-id-input { width: 220px; }
+.review-pagination { display: flex; justify-content: flex-end; margin-top: 14px; }
+.dialog-tip { margin: 0 0 12px; font-size: 13.5px; color: var(--ink); }
+.dialog-version { margin-left: 8px; color: var(--muted); font-size: 12px; }
+.article-preview {
+  max-height: 300px; overflow: auto; padding: 14px 16px; margin-bottom: 14px;
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-subtle);
+}
+.preview-title { margin: 0 0 6px; font-weight: 600; color: var(--ink); }
+.preview-summary { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+.preview-content { white-space: pre-wrap; word-break: break-word; line-height: 1.75; font-size: 13.5px; color: var(--ink); }
+@media (max-width: 640px) {
+  .history-id-input { width: 100%; }
+}
 </style>

@@ -28,9 +28,10 @@ async function retryPermissions() {
   await session.refreshPermissions()
 }
 
-// ① 布局感知令牌变化：登录/切换账号后主动初始化权限。workspace 不声明权限、
+// ① 布局感知令牌变化：登录/刷新恢复/切换账号后主动初始化用户信息与权限。workspace 不声明权限、
 // 守卫不会为其刷新，若不在这里加载，侧栏会一直只显示工作空间（评审 P2）。
 watch(() => session.accessToken, async (token) => {
+  if (token && !session.user) void session.ensureUser()
   if (token && session.permissionStatus !== 'loaded') await session.ensurePermissions()
 }, { immediate: true })
 
@@ -101,12 +102,16 @@ function trapFocus(event) {
             <AppIcon :name="item.icon" :size="18" /><span>{{ item.title }}</span><span class="nav-active-dot" />
           </RouterLink>
         </div>
-        <!-- 公共权限刷新入口：常驻，覆盖同页重复点击（不触发守卫）与 loaded 下
-             会话内新增授权两种场景；加载失败时文案强调重试，不做静默降级。 -->
-        <div class="nav-group">
-          <p class="nav-group-title">权限</p>
-          <button type="button" class="nav-link" @click="retryPermissions">
-            {{ permissionFailed ? '权限加载失败，点击重试' : '刷新权限' }}
+        <!-- 仅在权限接口加载失败（unavailable）时展示重试入口；正常状态下由路由守卫、
+             同页菜单点击与刷新恢复自动同步权限，不在侧栏常驻额外按钮。 -->
+        <div v-if="permissionFailed" class="nav-group nav-group-utility">
+          <button
+            type="button"
+            class="nav-link nav-refresh-btn is-warning"
+            @click="retryPermissions"
+          >
+            <AppIcon name="refresh" :size="16" />
+            <span>权限加载失败，点击重试</span>
           </button>
         </div>
       </nav>
@@ -119,7 +124,16 @@ function trapFocus(event) {
           <button ref="menuToggle" type="button" class="icon-button menu-toggle" :aria-expanded="menuOpen" aria-controls="app-navigation" aria-label="切换导航菜单" @click="toggleMenu"><AppIcon :name="menuOpen ? 'close' : 'menu'" /></button>
           <span class="breadcrumb-root">EnterpriseCMS</span><span class="breadcrumb-divider">/</span><span>{{ route.meta.title }}</span>
         </div>
-        <RouterLink to="/login" class="account-link"><span class="account-avatar"><AppIcon name="users" :size="17" /></span><span>{{ user?.realName || '未登录' }}</span></RouterLink>
+        <RouterLink to="/login" class="account-link">
+          <span class="account-avatar">
+            <template v-if="user?.realName">{{ Array.from(user.realName)[0] }}</template>
+            <AppIcon v-else name="users" :size="15" />
+          </span>
+          <span>{{ user?.realName || '未登录' }}</span>
+          <span class="account-status-badge" :class="{ 'is-online': session.isAuthenticated }">
+            {{ session.isAuthenticated ? '在线' : '登录' }}
+          </span>
+        </RouterLink>
       </header>
       <main id="main-content" class="page-content" tabindex="-1"><RouterView /></main>
       <footer class="app-footer"><span>EnterpriseCMS</span><span>企业内部知识与内容管理平台</span></footer>

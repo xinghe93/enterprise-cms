@@ -2,6 +2,9 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import { router } from './router/index.js'
 import { pinia } from './stores/index.js'
+// 统一在应用入口先加载 Element Plus 完整样式，确保 main.css 中的森林绿主题变量稳定生效，
+// 避免各业务页懒加载 element-plus/dist/index.css 时将主色覆盖回默认蓝色。
+import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/base.css'
 import 'element-plus/theme-chalk/el-button.css'
 import 'element-plus/theme-chalk/el-tag.css'

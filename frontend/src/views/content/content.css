@@ -1,36 +1,44 @@
+/* C 模块内容管理与知识门户共享辅助样式（建立在 main.css 统一 .cms-* 体系之上） */
+.content-page { width: 100%; display: flex; flex-direction: column; gap: 20px; }
 .content-page .content-heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 22px;
-  flex-wrap: wrap;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px 24px; flex-wrap: wrap;
 }
-
 .content-page .page-heading { margin: 0; }
 .content-page .content-panel {
-  background: #fdfefa;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  min-width: 0;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); min-width: 0; overflow: hidden;
 }
-
 .content-page .content-filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 12px;
-  margin-bottom: 18px;
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px;
+  padding: 16px 20px; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: var(--surface); box-shadow: var(--shadow-xs);
 }
-.content-page .content-filters label { display: grid; gap: 6px; flex: 1 1 132px; min-width: 0; color: var(--ink); font-size: 12px; }
-.content-page .content-filters label:first-child { flex-basis: 190px; }
-.content-page .content-filters .el-select { width: 100%; }
+.content-page .content-filters label {
+  display: grid; gap: 6px; flex: 1 1 155px; min-width: 0;
+  color: var(--ink-secondary); font-size: 12.5px; font-weight: 500;
+}
+.content-page .content-filters label:first-child { flex-basis: 210px; }
+.content-page .content-filters .el-select, .content-page .content-filters .el-input { width: 100%; }
 .content-page .filter-actions, .content-page .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .content-page .filter-actions .el-button + .el-button,
 .content-page .row-actions .el-button + .el-button { margin-left: 0; }
 .content-page .table-wrap { overflow: hidden; }
-.content-page .content-pagination { padding: 12px; }
+.content-page .content-pagination {
+  display: flex; justify-content: flex-end; padding: 14px 20px;
+  border-top: 1px solid #ebf0e6; background: var(--surface);
+}
 .content-page .field-help { color: var(--muted); font-size: 12px; line-height: 1.6; }
-.content-page .text-link { color: var(--el-color-primary); text-decoration: underline; text-underline-offset: 3px; }
-.content-page .content-back { display: inline-flex; align-items: center; gap: 8px; color: var(--el-color-primary); font-size: 13px; margin-bottom: 18px; }
+.content-page .text-link { color: var(--brand); font-weight: 500; transition: color .15s; }
+.content-page .text-link:hover { color: var(--brand-hover); text-decoration: underline; text-underline-offset: 3px; }
+.content-page .content-back {
+  display: inline-flex; align-items: center; gap: 7px; align-self: flex-start;
+  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--brand); font-size: 13px; font-weight: 500; transition: border-color .15s, background .15s;
+}
+.content-page .content-back:hover { border-color: var(--brand); background: var(--brand-soft); }
 .content-page .content-back svg { transform: rotate(180deg); }
+@media (max-width: 640px) {
+  .content-page .content-filters { padding: 14px; }
+  .content-page .content-pagination { justify-content: center; padding: 12px 14px; }
+}

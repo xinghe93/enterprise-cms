@@ -19,10 +19,12 @@ watch([canSeeCategories, canSeeTags], ([categories, tags]) => {
 </script>
 
 <template>
-  <section class="content-page">
+  <section class="cms-page content-page">
     <header class="content-heading">
       <div class="page-heading">
+        <p class="eyebrow">TAXONOMY &amp; TAGS</p>
         <h1>分类与标签</h1>
+        <p>维护多级文章分类树与知识标签目录，控制分类排序与启停状态。</p>
       </div>
     </header>
 

@@ -411,12 +411,17 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="org-page">
-    <div class="page-heading">
-      <p class="eyebrow">ORGANIZATION / A</p>
-      <h1>部门与角色分配</h1>
-      <p>按部门（含全部后代）筛选员工，调整所属部门或全量替换已分配角色；停用角色在保存后移除。</p>
-    </div>
+  <section class="cms-page org-page">
+    <header class="cms-page-header">
+      <div class="page-heading">
+        <p class="eyebrow">ORGANIZATION · ASSIGNMENTS</p>
+        <h1>岗位分配</h1>
+        <p>按部门（含全部后代）筛选员工，调整所属部门或全量替换已分配角色；停用角色将在保存后移除。</p>
+      </div>
+      <div class="cms-page-header-actions">
+        <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
+      </div>
+    </header>
 
     <div class="org-toolbar org-toolbar-wrap">
       <label class="org-inline-field">
@@ -443,7 +448,6 @@ onMounted(() => {
         </select>
       </label>
       <ElButton type="primary" :disabled="loading" @click="search">查询</ElButton>
-      <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
@@ -452,7 +456,12 @@ onMounted(() => {
     </p>
 
     <div class="org-card">
-      <table class="org-table">
+      <div class="cms-card-meta">
+        <span>共 {{ total }} 名员工</span>
+        <span>第 {{ filters.current }} / {{ totalPages }} 页</span>
+      </div>
+      <div class="org-table-scroll">
+        <table class="org-table">
         <thead>
           <tr><th>账号</th><th>姓名</th><th>部门</th><th>状态</th><th>已分配角色（含停用）</th><th>操作</th></tr>
         </thead>
@@ -486,6 +495,7 @@ onMounted(() => {
           </tr>
         </tbody>
       </table>
+      </div>
       <p v-if="loading" class="org-loading">正在加载员工列表…</p>
       <div class="org-pager">
         <span>共 {{ total }} 条 · 第 {{ filters.current }} / {{ totalPages }} 页</span>

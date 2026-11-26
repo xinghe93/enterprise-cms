@@ -135,11 +135,12 @@ test('登录初始化权限 + 同页刷新接线（评审 P2：workspace 不触�
   assert.match(layout, /watch\(\(\) => session\.accessToken, async \(token\) => \{/)
   assert.match(layout, /if \(token && session\.permissionStatus !== 'loaded'\) await session\.ensurePermissions\(\)/)
   assert.match(layout, /\{ immediate: true \}/)
-  // ② 同页点击刷新 + loaded 状态常驻公共刷新入口
+  // ② 同页点击刷新 + 权限加载失败时展示重试入口（正常状态不常驻额外按钮）
   assert.match(layout, /@click="onMenuClick\(item\)"/)
   assert.match(layout, /shouldRefreshOnSamePageClick\(item\.path, route\.path\)/)
   assert.match(layout, /await session\.refreshPermissions\(\)/)
-  assert.match(layout, /permissionFailed \? '权限加载失败，点击重试' : '刷新权限'/)
+  assert.match(layout, /v-if="permissionFailed"/)
+  assert.match(layout, /权限加载失败，点击重试/)
   // 登录完成后主动初始化（与布局 watch 双保险，ensurePermissions 同令牌去重）
   assert.match(login, /await session\.ensurePermissions\(\)/)
 })
