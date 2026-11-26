@@ -30,9 +30,11 @@ CREATE TABLE IF NOT EXISTS sys_user (
     status TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '0 停用，1 启用',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    status_version BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '状态变更版本：每次启停 +1，作为会话撤销的幂等版本',
     PRIMARY KEY (id),
     UNIQUE KEY uk_user_username (username),
     KEY idx_user_department (department_id),
+    KEY idx_user_updated (updated_at, id),
     CONSTRAINT fk_user_department FOREIGN KEY (department_id) REFERENCES sys_department (id),
     CONSTRAINT chk_user_status CHECK (status IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='员工账号';
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS sys_permission (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     UNIQUE KEY uk_permission_code (permission_code),
+    KEY idx_permission_type_status (permission_type, status, updated_at, id),
     CONSTRAINT chk_permission_type CHECK (permission_type IN ('MENU', 'BUTTON', 'API')),
     CONSTRAINT chk_permission_status CHECK (status IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='权限';
@@ -126,6 +129,9 @@ CREATE TABLE IF NOT EXISTS cms_article (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
     KEY idx_article_status_published (is_deleted, status, published_at),
+    KEY idx_article_deleted_status_updated (is_deleted, status, updated_at, id),
+    KEY idx_article_deleted_updated (is_deleted, updated_at, id),
+    KEY idx_article_author_deleted_updated (author_id, is_deleted, updated_at, id),
     KEY idx_article_category (category_id),
     KEY idx_article_author (author_id),
     CONSTRAINT fk_article_category FOREIGN KEY (category_id) REFERENCES cms_category (id),
@@ -174,6 +180,8 @@ CREATE TABLE IF NOT EXISTS sys_operation_log (
     PRIMARY KEY (id),
     KEY idx_operation_log_user_time (user_id, created_at),
     KEY idx_operation_log_time (created_at),
+    KEY idx_operation_log_op_time (operation, created_at, id),
+    KEY idx_operation_log_result_time (result, created_at, id),
     CONSTRAINT fk_operation_log_user FOREIGN KEY (user_id) REFERENCES sys_user (id),
     CONSTRAINT chk_operation_log_result CHECK (result IN ('SUCCESS', 'FAILURE'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='操作审计日志';
