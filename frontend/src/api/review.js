@@ -160,6 +160,13 @@ export const MAX_BATCH_ITEMS = 100
 export const MAX_TAG_BINDINGS = 100
 const INT32_MAX = 2147483647
 const PUBLISH_MANAGE_STATUSES = new Set(['APPROVED', 'PUBLISHED', 'OFFLINE'])
+const PUBLICATION_SOURCE_STATUS = { publish: 'APPROVED', offline: 'PUBLISHED' }
+
+export function canChangePublication(action, status, batch, hasPermission) {
+  return Object.hasOwn(PUBLICATION_SOURCE_STATUS, action)
+    && PUBLICATION_SOURCE_STATUS[action] === status
+    && hasPermission(`article:${action}${batch ? '-batch' : ''}`)
+}
 
 export function isValidVersion(value) {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= INT32_MAX
