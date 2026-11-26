@@ -10,6 +10,7 @@ import com.xinghe.cms.review.service.ArticleTagService;
 import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -18,10 +19,12 @@ public class ArticleReadService {
 
     private final ArticleQueryService queries;
     private final ArticleTagService tags;
+    private final PortalContentCache portalCache;
 
-    public ArticleReadService(ArticleQueryService queries, ArticleTagService tags) {
+    public ArticleReadService(ArticleQueryService queries, ArticleTagService tags, PortalContentCache portalCache) {
         this.queries = queries;
         this.tags = tags;
+        this.portalCache = portalCache;
     }
 
     public PageResult<ArticleSummaryVO> adminPage(ArticleQuery query) {
@@ -36,8 +39,10 @@ public class ArticleReadService {
         return detail(queries.adminDetail(id));
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ArticleDetailVO portalDetail(long id) {
-        return detail(queries.portalDetail(id));
+        queries.requirePortalDetailPermission();
+        return portalCache.article(id, () -> detail(queries.findPortalDetail(id)));
     }
 
     private PageResult<ArticleSummaryVO> summarize(PageResult<ArticleRow> page) {

@@ -21,6 +21,7 @@ import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.entity.Tag;
 import com.xinghe.cms.content.mapper.TagMapper;
+import com.xinghe.cms.content.mapper.PortalCacheMapper;
 import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import com.xinghe.cms.security.CurrentUserProvider;
@@ -64,6 +65,9 @@ class TagWriteHttpTests {
     private TagMapper tagMapper;
 
     @MockitoBean
+    private PortalCacheMapper portalCacheMapper;
+
+    @MockitoBean
     private DataSource dataSource;
 
     @MockitoBean
@@ -78,6 +82,7 @@ class TagWriteHttpTests {
         connection = mock(Connection.class);
         when(dataSource.getConnection()).thenReturn(connection);
         when(connection.getAutoCommit()).thenReturn(true);
+        when(portalCacheMapper.advanceRevisions(any(), any())).thenReturn(1);
     }
 
     @Test

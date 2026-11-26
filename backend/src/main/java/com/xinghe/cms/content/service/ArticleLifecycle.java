@@ -4,6 +4,7 @@ import com.xinghe.cms.common.contract.ArticleSnapshot;
 import com.xinghe.cms.common.contract.ArticleState;
 import com.xinghe.cms.common.contract.AuthorizationSnapshot;
 import com.xinghe.cms.common.enums.ArticleAction;
+import com.xinghe.cms.common.enums.ArticleStatus;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.mapper.ArticleMapper;
@@ -19,11 +20,14 @@ public class ArticleLifecycle implements ArticleAccessService, ArticleWorkflowSe
     private final ArticleMapper mapper;
     private final CurrentUserProvider users;
     private final AuthorizationQueryService permissions;
+    private final PortalContentCache portalCache;
 
-    public ArticleLifecycle(ArticleMapper mapper, CurrentUserProvider users, AuthorizationQueryService permissions) {
+    public ArticleLifecycle(ArticleMapper mapper, CurrentUserProvider users, AuthorizationQueryService permissions,
+            PortalContentCache portalCache) {
         this.mapper = mapper;
         this.users = users;
         this.permissions = permissions;
+        this.portalCache = portalCache;
     }
 
     @Override
@@ -59,6 +63,9 @@ public class ArticleLifecycle implements ArticleAccessService, ArticleWorkflowSe
             throw new BusinessException(ResultCode.CONFLICT, "文章状态或版本已变化，请刷新后重试");
         }
         ArticleSnapshot updated = requireArticle(mapper.findSnapshot(articleId));
+        if (article.status() == ArticleStatus.PUBLISHED || updated.status() == ArticleStatus.PUBLISHED) {
+            portalCache.invalidateCategoryTree();
+        }
         return new ArticleState(updated.id(), updated.status(), updated.version(), updated.publishedAt());
     }
 

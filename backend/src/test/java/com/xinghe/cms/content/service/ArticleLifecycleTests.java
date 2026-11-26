@@ -32,7 +32,8 @@ class ArticleLifecycleTests {
     private final ArticleMapper mapper = mock(ArticleMapper.class);
     private final CurrentUserProvider users = mock(CurrentUserProvider.class);
     private final AuthorizationQueryService permissions = mock(AuthorizationQueryService.class);
-    private final ArticleLifecycle lifecycle = new ArticleLifecycle(mapper, users, permissions);
+    private final ArticleLifecycle lifecycle = new ArticleLifecycle(mapper, users, permissions,
+            mock(PortalContentCache.class));
     private final ArticleAccessService access = lifecycle;
     private final ArticleWorkflowService workflow = lifecycle;
 

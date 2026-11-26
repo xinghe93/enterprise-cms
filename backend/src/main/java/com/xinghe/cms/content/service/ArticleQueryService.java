@@ -63,8 +63,16 @@ public class ArticleQueryService {
     }
 
     public ArticleRow portalDetail(Long id) {
+        requirePortalDetailPermission();
+        return findPortalDetail(id);
+    }
+
+    void requirePortalDetailPermission() {
         AuthorizationSnapshot authorization = permissions.getForUser(users.requireCurrentUser().userId());
         ArticlePolicy.requirePermission(authorization, "portal:article:read");
+    }
+
+    ArticleRow findPortalDetail(Long id) {
         return requireDetail(id, true, null, false);
     }
 
