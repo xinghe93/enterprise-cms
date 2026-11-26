@@ -1,15 +1,12 @@
 -- =====================================================================
--- EnterpriseCMS 005：审核与操作日志演示种子（D 模块，课程演示用）
+-- EnterpriseCMS 004：审核与操作日志演示种子（D 模块，课程演示用，可选）
 -- 依赖：
 --   1) 001_init.sql（建表，必须已执行）；
 --   2) 002_seed_permission_baseline.sql（角色与权限基线，必须已执行）；
---   3) 003_seed_user_baseline.sql（admin / editor / staff 账号，必须已执行）。
+--   3) 003_seed_user_baseline.sql（用户组织基线，需存在 admin 和 editor 账号）。
 -- 目标库：
---   本脚本不含 USE 语句，写入调用方当前选中的数据库。请显式指定目标库，
---   例如隔离库 enterprise_cms_seedtest：
---     mysql --default-character-set=utf8mb4 -h127.0.0.1 -uroot -p \
---           enterprise_cms_seedtest < 005_seed_review_log_demo.sql
---   不要依赖“默认库”或客户端上一次选中的库，否则可能写进 enterprise_cms。
+--   本脚本默认指向 enterprise_cms（与 001/002/003 保持一致，便于 Navicat
+--   直接按 001 → 002 → 003 → 004 顺序执行）；如需导入隔离库，替换下方 USE 语句即可。
 -- 用途：
 --   为审核工作台、审核历史、发布/下架与操作日志查询准备可重复的演示数据
 --   （演示分类 1、标签 2、文章 5、审核历史 2、标签关联 2），
@@ -20,7 +17,7 @@
 --      不会因为同标题的真实文章存在而把审核历史/标签挂到别的文章上；
 --   2) 每一条 INSERT 都带 NOT EXISTS 守卫，连续执行两遍不新增任何行；
 --   3) 若固定 ID 已被其他数据占用，或同名但身份不匹配，则跳过该条插入及
---      其关联数据（脚本不报错，末尾会输出“同名非演示文章”计数供核对）；
+--      其关联数据（脚本不报错，末尾输出文章冲突与审核历史 ID 冲突计数供核对）；
 --   4) 只增不改：不 UPDATE / DELETE / TRUNCATE 任何业务数据，不写任何密码；
 --   5) 作者取 sys_user.username='editor'，审核人取 username='admin'；
 --      账号或分类缺失时跳过对应插入，不报错；
@@ -28,6 +25,8 @@
 --      否则无法证明审计链路有效；
 --   7) 安全边界：仅用于本地/课程开发环境，禁止在生产或任何公网可达环境执行。
 -- =====================================================================
+
+USE enterprise_cms;
 
 -- ---------------------------------------------------------------------
 -- 0. 演示账号：作者 editor、审核人 admin（缺少任一账号则后续插入自动跳过）
@@ -86,7 +85,7 @@ WHERE @demo_editor_id IS NOT NULL
 INSERT INTO cms_article
     (id, title, summary, content, category_id, author_id, status, visibility, version)
 SELECT 990302, '演示待审文章：审核驳回',
-       '演示摘要：用于验证驳回流程与审计日志 FAILURE 记录',
+       '演示摘要：用于验证正常驳回流程与审计日志 SUCCESS 记录',
        '演示正文：这篇文章用于验证驳回接口，驳回意见必须由请求体提供。',
        @demo_category_id, @demo_editor_id, 'PENDING_REVIEW', 'ALL', 0
 FROM DUAL
@@ -196,7 +195,8 @@ WHERE @demo_approved_article_id IS NOT NULL
   );
 
 -- ---------------------------------------------------------------------
--- 7. 执行结果（便于确认幂等：第二遍执行数量不变）
+-- 7. 执行结果（空库初始化预期：1 / 2 / 5 / 2 / 2；第二遍执行数量不变）
+--    审核历史同时核对固定 ID、文章、审核人和结果，不把占用 ID 的其他记录计入。
 -- ---------------------------------------------------------------------
 SELECT '演示分类' AS item, COUNT(*) AS rows_count
 FROM cms_category
@@ -212,10 +212,31 @@ SELECT '演示文章', COUNT(*) FROM cms_article
    AND is_deleted = 0
 UNION ALL
 SELECT '演示审核历史', COUNT(*) FROM cms_review
-WHERE id IN (990601, 990602)
+WHERE (id = 990601
+       AND article_id = @demo_approved_article_id
+       AND reviewer_id = @demo_admin_id
+       AND result = 'APPROVED')
+   OR (id = 990602
+       AND article_id = @demo_rejected_article_id
+       AND reviewer_id = @demo_admin_id
+       AND result = 'REJECTED')
 UNION ALL
 SELECT '演示标签关联', COUNT(*)
 FROM cms_article_tag WHERE article_id = @demo_approved_article_id;
+
+-- 固定审核历史 ID 已被不匹配的记录占用时，保留原记录并明确报告。
+-- <=> 为 NULL 安全比较；预期文章或审核人缺失时，也不能把占用记录当作演示数据。
+SELECT '审核历史 ID 冲突（已跳过）' AS item,
+       COUNT(*) AS rows_count
+FROM cms_review
+WHERE (id = 990601 AND NOT (
+           article_id <=> @demo_approved_article_id
+           AND reviewer_id <=> @demo_admin_id
+           AND result = 'APPROVED'))
+   OR (id = 990602 AND NOT (
+           article_id <=> @demo_rejected_article_id
+           AND reviewer_id <=> @demo_admin_id
+           AND result = 'REJECTED'));
 
 -- 同名但身份不匹配的文章数量（>0 表示本次有演示文章被跳过、关联数据未写入）
 SELECT '同名非演示文章（已跳过）' AS item,

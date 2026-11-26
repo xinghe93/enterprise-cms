@@ -44,7 +44,7 @@ npm run preview # 仅本地预览构建结果，默认 4173
 | `src/views/ModuleView.vue` | 共用业务占位页，开发时替换对应路由组件 |
 | `src/api/client.js` | Axios 工厂、统一响应和错误归一化，可独立测试 |
 | `src/api/index.js` | 供业务模块导入的实例、Element Plus 提示及 401 处理 |
-| `src/stores/session.js` | 内存会话与后端有效权限编码 |
+| `src/stores/session.js` | `sessionStorage` 令牌持久化、刷新自动恢复会话与后端有效权限编码 |
 | `src/styles/main.css` | 公共主题、布局及响应式样式 |
 
 A：登录、员工、部门；B：角色与权限；C：门户、文章、分类和标签；D：审核发布和日志。后续分别增加 `views/user`、`views/permission`、`views/content`、`views/review` 等目录，新增业务 API 文件，避免集中修改公共布局。分类与标签、角色与权限目前是组合入口，各负责人可在内部增加子页面。
@@ -72,7 +72,7 @@ export const getUsers = (params) => api.get('/admin/users', { params })
 2. B 使用 `/auth/permissions` 返回的编码数组调用 `setPermissions()`，接入路由守卫、菜单与按钮可见性。不能从角色名称推断有效权限。
 3. 请求自动携带 `Authorization: Bearer ...`；401 清空用户、令牌及权限并跳转 `/login`；403 只提示错误。退出登录请求成功后调用 `session.clear()` 并跳转登录页。
 
-令牌当前只存内存，刷新页面后需重新登录，没有本地持久化、自动续期或刷新令牌。公共层不自动重试写操作。当前不提供业务路由鉴权守卫，菜单入口也未按权限过滤；这些必须在真实业务接入时完成，后端仍须独立强制鉴权。
+令牌保存在当前标签页的 `sessionStorage` 中（刷新页面后自动调用 `/api/auth/me` 与 `/api/auth/permissions` 恢复用户与有效权限，关闭标签页自动清理，多标签页可登录不同账号互不干扰；退出登录或 401 时同步清空）；不写入 `localStorage`，也没有自动续期或刷新令牌。公共层不自动重试写操作。路由守卫与菜单已按后端有效权限过滤，后端仍独立强制鉴权。
 
 ## 验收
 

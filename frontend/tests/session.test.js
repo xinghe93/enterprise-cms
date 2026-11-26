@@ -28,3 +28,34 @@ test('有效权限整批替换，用户角色不能自动授予权限', () => {
   session.setPermissions(['article:list'])
   assert.equal(session.hasPermission('article:publish'), false)
 })
+
+test('令牌持久化到 sessionStorage：刷新重载可恢复，清理会话时同步移除', () => {
+  const store = new Map()
+  const prev = globalThis.sessionStorage
+  globalThis.sessionStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { store.set(k, String(v)) },
+    removeItem: (k) => { store.delete(k) },
+  }
+  try {
+    setActivePinia(createPinia())
+    const first = useSessionStore()
+    first.setToken('persisted-token')
+    assert.equal(store.get('enterprise_cms_access_token'), 'persisted-token')
+
+    // 模拟浏览器刷新（全新 Pinia 实例）：应自动恢复 accessToken
+    setActivePinia(createPinia())
+    const reloaded = useSessionStore()
+    assert.equal(reloaded.accessToken, 'persisted-token')
+    assert.equal(reloaded.isAuthenticated, true)
+
+    // 退出或 401 清理时同步移除 sessionStorage，且重置后的 state 为空
+    reloaded.clear()
+    assert.equal(store.has('enterprise_cms_access_token'), false)
+    assert.equal(reloaded.accessToken, '')
+    assert.equal(reloaded.isAuthenticated, false)
+  } finally {
+    if (prev === undefined) delete globalThis.sessionStorage
+    else globalThis.sessionStorage = prev
+  }
+})

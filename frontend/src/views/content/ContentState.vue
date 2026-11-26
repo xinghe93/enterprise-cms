@@ -35,8 +35,11 @@ const session = useSessionStore()
 </template>
 
 <style scoped>
-.state-panel { border: 1px solid var(--line); background: #fdfefa; border-radius: 10px; padding: 24px; }
-.failure { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.state-panel {
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--radius-lg); padding: 28px 24px; box-shadow: var(--shadow-xs);
+}
+.failure { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .failure .el-alert { flex: 1 1 250px; overflow-wrap: anywhere; }
-.login-link { color: var(--el-color-primary); font-size: 14px; text-decoration: underline; text-underline-offset: 4px; }
+.login-link { color: var(--brand); font-size: 14px; font-weight: 500; text-decoration: underline; text-underline-offset: 4px; }
 </style>

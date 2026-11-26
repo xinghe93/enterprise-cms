@@ -7,7 +7,7 @@
 --      （账号可登录，roles 返回 []），待 002 执行后重跑本脚本即可补齐。
 -- 数据：
 --   部门 2 个：总部（根，parent_id=NULL）、技术部（总部子部门）
---   账号 3 个：admin / editor / staff，分别关联 ADMIN / EDITOR / EMPLOYEE 角色
+--   账号 4 个：admin / editor / reviewer / staff，对应 ADMIN / EDITOR / REVIEWER / EMPLOYEE
 -- 特性：
 --   1) 可重复执行：全部按业务键（dept_code / username / role_code）定位，
 --      指纹未变时只补充缺失行，第二遍执行 0 行变化；
@@ -22,14 +22,18 @@
 --      发现同名但指纹不符的账号时，本次全部写入跳过（0 行变化），并在结果集中
 --      列出冲突账号；不会提权，也不会覆盖已有账号。
 -- 重复运行说明：
---   按安全要求首次登录后修改了初始密码的账号，指纹将不再匹配，重跑本脚本会
+--   手工修改过初始密码的账号，指纹将不再匹配，重跑本脚本会
 --   报告冲突并跳过写入。此时角色关联已在首次执行时建立，不需要重跑 003；
 --   如需补角色，请在 002 就绪后、改密前重跑，或使用正式的账号角色分配接口。
--- 安全边界（务必遵守）：
+-- 本地测试账号（各成员连接自己的本机数据库，用户名和明文密码如下）：
+--   系统管理员：admin    / Admin@2026
+--   内容编辑：  editor   / Editor@2026
+--   审核员：    reviewer / Review@2026
+--   普通员工：  staff    / Staff@2026
+-- 使用范围：
 --   * 本脚本仅用于本地/课程开发环境初始化可登录账号，
 --     禁止在生产或任何公网可达环境执行；
---   * 三个账号共用同一初始密码，由仓库负责人在团队内线下同步，不写入仓库；
---     首次登录后必须立即修改，未改密前不得接入任何真实数据；
+--   * 以上是公开的本地测试凭据；数据库字段仍只保存密码哈希；
 --   * password_hash 是创建可登录账号的必需字段，必须写在脚本中；
 --     它由 security.PasswordHasher 生成（PBKDF2WithHmacSHA256 / 210000 次 /
 --     16B 随机盐 / 256 位，base64url），不是明文、不能反推，但仍是弱初始凭据。
@@ -57,17 +61,20 @@ INSERT INTO cms_seed_accounts
     (username, password_hash, real_name, dept_code, role_code)
 VALUES
     ('admin',
-     'pbkdf2-sha256$210000$g4d7cXQUljtH34Wvyt483A$_an56CsO4bIHt5YWTbWaBbuWbkr7hAaZ2-OLjwOW53M',
+     'pbkdf2-sha256$210000$OOw7HoB_m1Y23uE_Lf9I1A$8Y1hOgnXo3tYMN2Yxsxa3xIRDnw7troq6kr8UzBnDH8',
      '系统管理员', 'HQ', 'ADMIN'),
     ('editor',
-     'pbkdf2-sha256$210000$xDwhtX27UuRvk_HywMthtQ$Z9ysuktyu9csHMO_Zkvc_Pjs9k0iQ8FiShc5RuI5ovw',
+     'pbkdf2-sha256$210000$Z5WbTxD8RpHdrBK46bGyMQ$_zyGoBAet7w-IdO-LBF4HxOdSRVyx5oEAut_eGYgI0g',
      '内容编辑', 'TECH', 'EDITOR'),
+    ('reviewer',
+     'pbkdf2-sha256$210000$MuNg4yxtFgm2bzKh5Zxqow$Loddi8sSDrhzojWmx6iG4uJ5HhW7oHvDxbu33s-gjME',
+     '审核员', 'TECH', 'REVIEWER'),
     ('staff',
-     'pbkdf2-sha256$210000$pFaQvfUUyX7jskvs9g-7GA$EZo63FQsksGbFDFzkVumCPLrdOey8nHJQrcxGilnNfc',
+     'pbkdf2-sha256$210000$OeQJN5D7VD9PKcapmTSvcg$Cdi5kyuXp0_6QF46X2l4UR7tTSGm3JB_T5cGUNcriNU',
      '普通员工', 'TECH', 'EMPLOYEE');
 
 -- ---------------------------------------------------------------------
--- 0. 同名账号冲突预检：联调库里若已有同名的 admin / editor / staff 账号，
+-- 0. 同名账号冲突预检：联调库里若已有同名的 admin / editor / reviewer / staff 账号，
 --    但不是本脚本写入的（哈希或姓名不同），一律视为冲突。此时脚本仍会
 --    执行完，但所有 INSERT 均带 @seed_account_conflicts = 0 条件，
 --    因此 0 行写入；结果集会列出冲突账号供人工核对。
@@ -148,7 +155,7 @@ DROP TEMPORARY TABLE IF EXISTS cms_seed_accounts;
 
 -- ---------------------------------------------------------------------
 -- 4. 执行后自检（手工运行确认基线完整）
---    预期：conflicting_accounts=0，departments=2，users=3；已执行 002 时 user_roles=3
+--    预期：conflicting_accounts=0，departments=2，users=4；已执行 002 时 user_roles=4（空库初始化）
 -- ---------------------------------------------------------------------
 -- SELECT (SELECT COUNT(*) FROM sys_department) AS departments,
 --        (SELECT COUNT(*) FROM sys_user)       AS users,

@@ -155,3 +155,111 @@ export async function rejectArticle(articleId, { version, comment } = {}, config
     version, comment: normalizedComment,
   }, config)
 }
+
+export const MAX_BATCH_ITEMS = 100
+export const MAX_TAG_BINDINGS = 100
+const INT32_MAX = 2147483647
+const PUBLISH_MANAGE_STATUSES = new Set(['APPROVED', 'PUBLISHED', 'OFFLINE'])
+
+export function isValidVersion(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= INT32_MAX
+}
+
+/** 构造发布与下架列表查询参数（复用 GET /api/admin/articles）。 */
+export function buildPublishQuery({ keyword, status, current, size } = {}) {
+  const query = {}
+  const normalizedKeyword = typeof keyword === 'string' ? keyword.trim() : ''
+  if (normalizedKeyword) query.keyword = normalizedKeyword
+  if (typeof status === 'string' && PUBLISH_MANAGE_STATUSES.has(status)) {
+    query.status = status
+  }
+  query.current = normalizePageNumber(current, 1)
+  query.size = normalizePageSize(size)
+  return query
+}
+
+/** 校验并构造批量发布/下架请求体：1～100 条，ID 唯一且合法，version 为非负整数。 */
+export function buildBatchItemsPayload(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new TypeError('请至少选择一篇文章')
+  }
+  if (rows.length > MAX_BATCH_ITEMS) {
+    throw new RangeError(`单次批量操作最多选择 ${MAX_BATCH_ITEMS} 篇文章`)
+  }
+  const seen = new Set()
+  const items = rows.map((row) => {
+    const id = normalizeNumericId(row?.id)
+    if (!id) throw new TypeError('所选文章包含无效的文章 ID')
+    if (seen.has(id)) throw new TypeError(`批量请求包含重复的文章 ID：${id}`)
+    seen.add(id)
+    if (!isValidVersion(row?.version)) {
+      throw new TypeError(`文章 ${id} 的版本号无效`)
+    }
+    return { id, version: row.version }
+  })
+  return { items }
+}
+
+/** 校验并规范化独立标签绑定请求中的 tagIds：0～100 条不重复的合法字符串 ID。 */
+export function normalizeBindTagIds(tagIds) {
+  if (!Array.isArray(tagIds)) {
+    throw new TypeError('标签集合必须是数组')
+  }
+  if (tagIds.length > MAX_TAG_BINDINGS) {
+    throw new RangeError(`单篇文章最多绑定 ${MAX_TAG_BINDINGS} 个标签`)
+  }
+  const seen = new Set()
+  const normalized = []
+  for (const raw of tagIds) {
+    const id = normalizeNumericId(raw)
+    if (!id) throw new TypeError('标签集合包含无效的标签 ID')
+    if (seen.has(id)) throw new TypeError(`标签集合包含重复的标签 ID：${id}`)
+    seen.add(id)
+    normalized.push(id)
+  }
+  return normalized
+}
+
+export async function listPublishableArticles(query, config = {}) {
+  const api = await apiClient()
+  return api.get('/admin/articles', { ...config, params: query })
+}
+
+export async function publishArticle(articleId, { version } = {}, config = {}) {
+  const id = normalizeNumericId(articleId)
+  if (!id) throw new TypeError('无效的文章 ID')
+  if (!isValidVersion(version)) throw new TypeError('无效的文章版本号')
+  const api = await apiClient()
+  return api.post(`/admin/articles/${encodeURIComponent(id)}/publish`, { version }, config)
+}
+
+export async function offlineArticle(articleId, { version } = {}, config = {}) {
+  const id = normalizeNumericId(articleId)
+  if (!id) throw new TypeError('无效的文章 ID')
+  if (!isValidVersion(version)) throw new TypeError('无效的文章版本号')
+  const api = await apiClient()
+  return api.post(`/admin/articles/${encodeURIComponent(id)}/offline`, { version }, config)
+}
+
+export async function batchPublishArticles(rows, config = {}) {
+  const payload = buildBatchItemsPayload(rows)
+  const api = await apiClient()
+  return api.post('/admin/articles/batch/publish', payload, config)
+}
+
+export async function batchOfflineArticles(rows, config = {}) {
+  const payload = buildBatchItemsPayload(rows)
+  const api = await apiClient()
+  return api.post('/admin/articles/batch/offline', payload, config)
+}
+
+export async function replaceArticleTags(articleId, { version, tagIds } = {}, config = {}) {
+  const id = normalizeNumericId(articleId)
+  if (!id) throw new TypeError('无效的文章 ID')
+  if (!isValidVersion(version)) throw new TypeError('无效的文章版本号')
+  const normalizedTagIds = normalizeBindTagIds(tagIds)
+  const api = await apiClient()
+  return api.put(`/admin/articles/${encodeURIComponent(id)}/tags`, {
+    version, tagIds: normalizedTagIds,
+  }, config)
+}

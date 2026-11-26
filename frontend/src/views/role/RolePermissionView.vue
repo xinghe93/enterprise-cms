@@ -28,7 +28,6 @@ import {
   ElTabs,
   ElTag,
 } from 'element-plus'
-import 'element-plus/dist/index.css'
 import { api } from '../../api/index.js'
 import { createPermissionApi, fetchMyPermissions } from '../../api/permission.js'
 import { useSessionStore } from '../../stores/session.js'
@@ -880,12 +879,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="module-page role-permission-page">
-    <div class="page-heading">
-      <p class="eyebrow">ACCESS CONTROL</p>
-      <h1>角色与权限</h1>
-      <p>维护角色与权限项，为角色分配接口权限；变更提交后立即影响相关账号的有效权限。</p>
-    </div>
+  <section class="cms-page role-permission-page">
+    <header class="cms-page-header">
+      <div class="page-heading">
+        <p class="eyebrow">ACCESS CONTROL</p>
+        <h1>角色与权限</h1>
+        <p>维护角色与权限项，为角色分配接口权限；变更提交后立即影响相关账号的有效权限。</p>
+      </div>
+    </header>
 
     <ElAlert
       v-if="permissionStatus === 'loading' || permissionStatus === 'idle'"
@@ -1310,121 +1311,40 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.page-heading {
-  margin-bottom: 18px;
-}
-
-.eyebrow {
-  margin: 0 0 4px;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--muted, #6b7280);
-}
-
-.page-heading h1 {
-  margin: 0 0 6px;
-  font-size: 22px;
-}
-
-.page-heading > p:last-child {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted, #6b7280);
-}
-
-.role-perm-tabs {
-  margin-top: 6px;
-}
-
+.role-perm-tabs { margin-top: 2px; }
 .filter-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 14px;
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px 16px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+  padding: 16px 20px; margin-bottom: 16px; box-shadow: var(--shadow-xs);
 }
-
 .filter-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
-  margin-bottom: 12px;
+  display: grid; flex: 1 1 480px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px 14px;
 }
-
-.filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--muted, #6b7280);
-}
-
-.filter-field > span {
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.filter-actions {
-  display: flex;
-  gap: 10px;
-}
-
+.filter-field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--ink-secondary); }
+.filter-field :deep(.el-select), .filter-field :deep(.el-input) { width: 100%; }
+.filter-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.filter-actions .el-button + .el-button { margin-left: 0; }
 .table-card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 16px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs); overflow: hidden;
 }
-
 .table-meta {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 2px 10px;
-  font-size: 13px;
-  color: var(--muted, #6b7280);
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid #ebf0e6; font-size: 12.5px; color: var(--muted);
 }
-
-.table-wrap {
-  min-height: 180px;
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-  font-size: 12.5px;
-}
-
+.table-wrap { min-height: 180px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace; font-size: 12.5px; color: var(--ink-secondary); }
 .pagination-wrap {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 14px;
+  display: flex; justify-content: flex-end; padding: 14px 20px;
+  border-top: 1px solid #ebf0e6; background: var(--surface);
 }
-
-.assign-alert {
-  margin-bottom: 12px;
-}
-
-.assign-wrap {
-  min-height: 160px;
-}
-
-.dialog-note {
-  margin: 6px 0 0;
-  font-size: 12.5px;
-  color: var(--muted, #9ca3af);
-}
-
-.muted-text {
-  color: var(--muted, #9ca3af);
-  font-size: 12.5px;
-}
-
+.assign-alert { margin-bottom: 12px; }
+.assign-wrap { min-height: 160px; }
+.dialog-note { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.muted-text { color: var(--muted); font-size: 12.5px; }
 @media (max-width: 640px) {
-  .filter-card {
-    padding: 14px;
-  }
-
-  .pagination-wrap {
-    justify-content: center;
-  }
+  .filter-card { padding: 14px; }
+  .pagination-wrap { justify-content: center; padding: 12px 14px; }
 }
 </style>

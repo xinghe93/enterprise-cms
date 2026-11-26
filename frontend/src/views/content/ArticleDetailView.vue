@@ -72,15 +72,31 @@ async function mutate(action) {
 </template>
 
 <style scoped>
-.detail-paper { max-width: 920px; margin-inline: auto; overflow: hidden; }
-.paper-header { background: #eef2e7; border-bottom: 1px solid var(--line); padding: clamp(20px, 5vw, 43px); }
+.detail-paper { max-width: 920px; width: 100%; margin-inline: auto; overflow: hidden; box-shadow: var(--shadow-sm); }
+.paper-header {
+  background: linear-gradient(135deg, #eef3e7 0%, #f7f9f2 100%);
+  border-bottom: 1px solid var(--line); padding: clamp(22px, 4vw, 38px);
+}
 .article-byline, .paper-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.paper-header h1 { margin: 12px 0 16px; font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; font-size: clamp(25px, 4vw, 42px); line-height: 1.4; overflow-wrap: anywhere; }
-.article-byline { color: #526755; font-size: 12px; }
+.paper-header h1 {
+  margin: 12px 0 14px; font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-size: clamp(24px, 3.4vw, 36px); line-height: 1.4; color: var(--green); overflow-wrap: anywhere;
+}
+.article-byline { color: var(--ink-secondary); font-size: 12.5px; }
 .article-byline span { display: inline-flex; align-items: center; gap: 6px; }
-.paper-summary { margin-top: 19px; padding-inline-start: 12px; border-inline-start: 2px solid #98ae8d; color: #526755; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
-.paper-tags { margin-top: 18px; gap: 7px; }
-.article-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.85; padding: clamp(20px, 5vw, 43px); font-size: 15px; min-height: 150px; }
-.paper-actions { padding: 16px clamp(20px, 5vw, 43px); border-top: 1px solid var(--line); display: flex; gap: 8px; flex-wrap: wrap; }
+.paper-summary {
+  margin-top: 18px; padding: 10px 14px; border-inline-start: 3px solid var(--brand);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: rgba(255, 255, 255, 0.6);
+  color: var(--ink-secondary); line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px;
+}
+.paper-tags { margin-top: 16px; gap: 7px; }
+.article-body {
+  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9;
+  padding: clamp(22px, 4vw, 38px); font-size: 15px; color: var(--ink); min-height: 180px;
+}
+.paper-actions {
+  padding: 16px clamp(22px, 4vw, 38px); border-top: 1px solid #ebf0e6;
+  background: var(--surface-subtle); display: flex; gap: 10px; flex-wrap: wrap;
+}
 .paper-actions .el-button { margin: 0; }
 </style>

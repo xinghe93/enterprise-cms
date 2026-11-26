@@ -118,13 +118,17 @@ async function mutate(article, action) {
 </script>
 
 <template>
-  <section class="content-page" :class="{ 'portal-page': portal }">
+  <section class="cms-page content-page" :class="{ 'portal-page': portal }">
     <header class="content-heading" :class="{ 'portal-heading': portal }">
       <div class="page-heading">
+        <p class="eyebrow">{{ portal ? 'KNOWLEDGE PORTAL' : 'CONTENT MANAGEMENT' }}</p>
         <h1>{{ portal ? '知识门户' : '文章管理' }}</h1>
+        <p>{{ portal ? '按关键词、分类与标签检索并阅读团队已发布的内部知识文档。' : '创建文章草稿、维护分类与标签绑定、提交审核并跟踪内容状态。' }}</p>
       </div>
-      <AppIcon v-if="portal" class="portal-stamp" name="book" :size="52" />
-      <ElButton v-else-if="can('article:create')" type="primary" @click="router.push({ name: 'article-new', query: route.query })">新建草稿</ElButton>
+      <AppIcon v-if="portal" class="portal-stamp" name="book" :size="48" />
+      <div v-else-if="can('article:create')" class="cms-page-header-actions">
+        <ElButton type="primary" @click="router.push({ name: 'article-new', query: route.query })">新建草稿</ElButton>
+      </div>
     </header>
 
     <form v-if="allowed" class="content-filters" @submit.prevent="search">
@@ -183,7 +187,12 @@ async function mutate(article, action) {
             </div>
           </article>
         </template>
-        <ElTable v-else :data="data.records" row-key="id">
+        <template v-else>
+          <div class="cms-card-meta">
+            <span>共 {{ data.total }} 篇文章</span>
+            <span>第 {{ criteria.current }} 页</span>
+          </div>
+          <ElTable :data="data.records" row-key="id" stripe>
           <ElTableColumn label="文章" min-width="180">
             <template #default="{ row }">
               <RouterLink v-if="canRead" class="text-link" :to="{ name: detailName, params: { id: row.id }, query: route.query }">{{ row.title }}</RouterLink>
@@ -216,11 +225,14 @@ async function mutate(article, action) {
             </template>
           </ElTableColumn>
         </ElTable>
-        <ElPagination
-          v-if="data.total > pageSize" class="content-pagination" small layout="total, prev, pager, next"
-          :total="data.total" :current-page="criteria.current" :page-size="pageSize" :pager-count="5"
-          @update:current-page="navigate(criteria, $event)"
-        />
+        </template>
+        <div v-if="data.total > pageSize" class="content-pagination">
+          <ElPagination
+            background layout="total, prev, pager, next"
+            :total="data.total" :current-page="criteria.current" :page-size="pageSize" :pager-count="5"
+            @update:current-page="navigate(criteria, $event)"
+          />
+        </div>
       </div>
     </ContentState>
   </section>
@@ -228,28 +240,27 @@ async function mutate(article, action) {
 
 <style scoped>
 .portal-heading {
-  position: relative;
-  overflow: hidden;
-  align-items: center;
-  background: #edf1e5;
-  border: 1px solid #e1e7d9;
-  border-radius: 10px;
-  padding: clamp(20px, 4vw, 39px);
+  position: relative; overflow: hidden; align-items: center;
+  background: linear-gradient(135deg, #ecf2e4 0%, #f5f8ef 60%, #e7f0eb 100%);
+  border: 1px solid #d9e3cf; border-radius: 16px;
+  padding: clamp(22px, 3.2vw, 34px) clamp(22px, 3.6vw, 38px);
+  box-shadow: var(--shadow-xs);
 }
-.portal-heading h1 { font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; font-size: clamp(31px, 4vw, 46px); }
-.portal-stamp { color: #789379; flex: 0 0 auto; margin-inline-end: 12px; }
-.result-count { padding: 15px 24px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
-.library-item { padding: 20px 24px; border-bottom: 1px solid var(--line); }
+.portal-heading h1 { font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; font-size: clamp(26px, 3vw, 36px); color: var(--green); }
+.portal-stamp { color: #719283; opacity: 0.7; flex: 0 0 auto; margin-inline-end: 8px; }
+.result-count { padding: 13px 22px; border-bottom: 1px solid #ebf0e6; color: var(--muted); font-size: 12.5px; background: var(--surface-subtle); }
+.library-item { padding: 20px 24px; border-bottom: 1px solid #ebf0e6; transition: background .15s ease; }
+.library-item:hover { background: var(--surface-hover); }
 .library-item:last-child { border-bottom: 0; }
-.library-item h2 { font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; font-size: 23px; margin: 7px 0; overflow-wrap: anywhere; }
-.library-item h2 a:hover { color: var(--el-color-primary); text-decoration: underline; text-underline-offset: 5px; }
-.library-meta, .library-byline { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; font-size: 12px; color: #56705c; }
-.library-meta span:first-child { font-weight: 600; }
-.library-byline { margin-top: 11px; }
-.library-summary { max-width: 78ch; color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; font-size: 14px; }
-.row-summary { font-size: 12px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.library-item h2 { font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; font-size: 21px; font-weight: 600; margin: 7px 0; color: var(--ink); overflow-wrap: anywhere; }
+.library-item h2 a:hover { color: var(--brand); text-decoration: underline; text-underline-offset: 4px; }
+.library-meta, .library-byline { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-secondary); }
+.library-meta span:first-child { font-weight: 600; color: var(--brand); }
+.library-byline { margin-top: 12px; }
+.library-summary { max-width: 78ch; color: var(--muted); line-height: 1.75; overflow-wrap: anywhere; font-size: 13.5px; }
+.row-summary { font-size: 12px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; margin-top: 2px; }
 .filter-error { flex-basis: 100%; font-size: 12px; color: var(--el-color-danger); }
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .portal-stamp { display: none; }
   .library-item, .result-count { padding-inline: 16px; }
   .row-actions { gap: 6px; }

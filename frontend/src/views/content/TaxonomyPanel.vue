@@ -165,8 +165,12 @@ async function mutate(row, deleting) {
 
   <ContentState :allowed="true" :loading="loading" :error="error" @retry="load">
     <div v-if="data" class="content-panel table-wrap">
+      <div class="cms-card-meta">
+        <span>共 {{ isCategory ? rows.length : data.total }} 个{{ isCategory ? '根分类节点' : label }}</span>
+        <span>{{ isCategory ? '支持层级展开与排序维护' : `第 ${filters.current} 页` }}</span>
+      </div>
       <ElEmpty v-if="!rows.length" :description="`没有符合条件的${label}`" />
-      <ElTable v-else :data="rows" row-key="id">
+      <ElTable v-else :data="rows" row-key="id" stripe>
         <ElTableColumn :prop="nameKey" :label="`${label}名称`" min-width="155" />
         <ElTableColumn v-if="isCategory" prop="sortOrder" label="排序" width="86" />
         <ElTableColumn label="状态" width="85">
@@ -187,10 +191,12 @@ async function mutate(row, deleting) {
           </template>
         </ElTableColumn>
       </ElTable>
-      <ElPagination
-        v-if="!isCategory && data.total > pageSize" class="content-pagination" small layout="total, prev, pager, next"
-        :total="data.total" :current-page="filters.current" :page-size="pageSize" :pager-count="5" @update:current-page="paginate"
-      />
+      <div v-if="!isCategory && data.total > pageSize" class="content-pagination">
+        <ElPagination
+          background layout="total, prev, pager, next"
+          :total="data.total" :current-page="filters.current" :page-size="pageSize" :pager-count="5" @update:current-page="paginate"
+        />
+      </div>
     </div>
   </ContentState>
 
