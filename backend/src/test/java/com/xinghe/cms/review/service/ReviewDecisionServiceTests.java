@@ -23,6 +23,8 @@ import com.xinghe.cms.security.CurrentUserProvider;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -90,28 +92,30 @@ class ReviewDecisionServiceTests {
                 .isEqualTo(LocalDateTime.of(2026, 11, 13, 10, 0, 0, 120_000_000));
     }
 
-    @Test
-    void approveStoresBlankCommentAsNull() {
-        service.approve(ARTICLE_ID, new ReviewDecisionRequest(VERSION, "   "));
+    @ParameterizedTest
+    @ValueSource(strings = {"   ", "\u3000", "\u00A0\u202F", "\uFEFF\t"})
+    void approveStoresBlankCommentAsNull(String comment) {
+        service.approve(ARTICLE_ID, new ReviewDecisionRequest(VERSION, comment));
 
         assertThat(mapper.inserted.get().getComment()).isNull();
     }
 
     @Test
     void rejectWritesTrimmedRejectedReview() {
-        service.reject(ARTICLE_ID, new ReviewDecisionRequest(VERSION, "  内容不完整  "));
+        service.reject(ARTICLE_ID, new ReviewDecisionRequest(VERSION, "\u3000\u00A0内容\u3000不完整\uFEFF "));
 
         assertThat(workflow.calls).containsExactly("transition:" + ARTICLE_ID + ":" + VERSION + ":REJECT");
         ReviewRecord record = mapper.inserted.get();
         assertThat(record.getResult()).isEqualTo(ReviewRecord.RESULT_REJECTED);
-        assertThat(record.getComment()).isEqualTo("内容不完整");
+        assertThat(record.getComment()).isEqualTo("内容\u3000不完整");
     }
 
     @Test
     void rejectRequiresNonBlankCommentAndSkipsWorkflow() {
         List<ReviewDecisionRequest> requests = List.of(
                 new ReviewDecisionRequest(VERSION, null),
-                new ReviewDecisionRequest(VERSION, "  "));
+                new ReviewDecisionRequest(VERSION, "  "),
+                new ReviewDecisionRequest(VERSION, "\u3000\u00A0\uFEFF"));
 
         for (ReviewDecisionRequest request : requests) {
             assertThatThrownBy(() -> service.reject(ARTICLE_ID, request))

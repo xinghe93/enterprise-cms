@@ -1,12 +1,15 @@
 package com.xinghe.cms.user.controller;
 
+import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.security.CurrentUserProvider;
 import com.xinghe.cms.user.dto.LoginRequest;
 import com.xinghe.cms.user.service.AuthService;
 import com.xinghe.cms.user.vo.LoginResultVO;
 import com.xinghe.cms.user.vo.UserVO;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import java.util.Set;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -32,18 +35,21 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ApiResponse<LoginResultVO> login(@Valid @RequestBody LoginRequest request) {
-        return ApiResponse.success(authService.login(request));
+    public ApiResponse<LoginResultVO> login(@Valid @RequestBody LoginRequest body, HttpServletRequest request) {
+        QueryParams.requireAllowedKeys(request.getParameterMap(), Set.of());
+        return ApiResponse.success(authService.login(body));
     }
 
     @PostMapping("/logout")
-    public ApiResponse<Void> logout() {
+    public ApiResponse<Void> logout(HttpServletRequest request) {
+        QueryParams.requireAllowedKeys(request.getParameterMap(), Set.of());
         authService.logout(currentUserProvider.requireCurrentToken());
         return ApiResponse.success();
     }
 
     @GetMapping("/me")
-    public ApiResponse<UserVO> me() {
+    public ApiResponse<UserVO> me(HttpServletRequest request) {
+        QueryParams.requireAllowedKeys(request.getParameterMap(), Set.of());
         return ApiResponse.success(authService.currentUser(currentUserProvider.requireCurrentUser().userId()));
     }
 }

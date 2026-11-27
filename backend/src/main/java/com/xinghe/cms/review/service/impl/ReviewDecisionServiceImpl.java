@@ -3,6 +3,7 @@ package com.xinghe.cms.review.service.impl;
 import com.xinghe.cms.common.contract.ArticleState;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.permission.support.ContractWhitespace;
 import com.xinghe.cms.review.audit.ReviewAuditRecorder;
 import com.xinghe.cms.review.dto.ReviewDecisionRequest;
 import com.xinghe.cms.review.service.ReviewDecisionService;
@@ -80,7 +81,7 @@ public class ReviewDecisionServiceImpl implements ReviewDecisionService {
         if (comment == null) {
             return null;
         }
-        String trimmed = comment.trim();
+        String trimmed = ContractWhitespace.strip(comment);
         return trimmed.isEmpty() ? null : trimmed;
     }
 }

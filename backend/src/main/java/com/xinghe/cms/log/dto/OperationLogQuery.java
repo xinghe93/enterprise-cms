@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.permission.support.ContractWhitespace;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -53,7 +54,7 @@ public class OperationLogQuery extends PageQuery {
         if (operation == null) {
             return null;
         }
-        String trimmed = operation.trim();
+        String trimmed = ContractWhitespace.strip(operation);
         return trimmed.isEmpty() ? null : trimmed;
     }
 
