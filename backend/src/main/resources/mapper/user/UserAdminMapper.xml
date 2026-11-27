@@ -23,6 +23,13 @@
         FOR UPDATE
     </select>
 
+    <select id="findUserForShare" resultType="java.lang.Long">
+        SELECT id
+        FROM sys_user
+        WHERE id = #{userId}
+        FOR SHARE
+    </select>
+
     <!-- 更新状态后在同一事务内回读版本；此时行锁仍持有，读到的 status_version
          即本次变更（+1 后）的撤销版本。 -->
     <select id="findStatusVersion" resultMap="statusSnapshotMap">
@@ -178,9 +185,9 @@
         ORDER BY role_id ASC
     </select>
 
-    <delete id="deleteUserRoles">
+    <delete id="deleteUserRole">
         DELETE FROM sys_user_role
-        WHERE user_id = #{userId}
+        WHERE user_id = #{userId} AND role_id = #{roleId}
     </delete>
 
     <insert id="insertUserRoles">

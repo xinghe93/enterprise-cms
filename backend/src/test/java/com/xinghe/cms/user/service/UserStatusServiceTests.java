@@ -15,9 +15,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.security.AuthSessionService;
+import com.xinghe.cms.security.CurrentUserProvider;
 import com.xinghe.cms.user.mapper.UserAdminMapper;
 import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
 import org.junit.jupiter.api.BeforeEach;
@@ -58,6 +60,8 @@ class UserStatusServiceTests {
     private UserAdminMapper userMapper;
     @Mock
     private AuthSessionService sessions;
+    @Mock
+    private CurrentUserProvider currentUserProvider;
 
     private UserStatusService service;
     private SimpleTransactionStatus txStatus;
@@ -68,12 +72,13 @@ class UserStatusServiceTests {
         lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
                 .thenReturn(txStatus);
         service = new UserStatusService(transactionManager, userMapper, sessions,
-                new UserAuditedActions());
+                new UserAuditedActions(), new UserWriteLocks(userMapper, currentUserProvider));
     }
 
     /** 停用：提交前绝不触碰 Redis，提交后才按新版本撤销。 */
     @Test
     void disableCommitsDatabaseBeforeRevokingSessionsByVersion() {
+        when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(9L, "admin", null));
         when(userMapper.findStatusForUpdate(USER_ID)).thenReturn(new UserStatusSnapshot(1, V1));
         when(userMapper.updateStatus(USER_ID, 0)).thenReturn(1);
         // 撤销版本唯一来源：updateStatus 后同事务回读的 status_version（+1 后的 V2），
@@ -90,6 +95,7 @@ class UserStatusServiceTests {
         InOrder order = inOrder(transactionManager, userMapper, sessions);
         order.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
         order.verify(userMapper).findStatusForUpdate(USER_ID);
+        order.verify(userMapper).findUserForShare(9L);
         order.verify(userMapper).updateStatus(USER_ID, 0);
         order.verify(userMapper).findStatusVersion(USER_ID);
         order.verify(transactionManager).commit(txStatus);

@@ -5,22 +5,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.permission.entity.SysRole;
+import com.xinghe.cms.permission.mapper.OperatorRowLockMapper;
 import com.xinghe.cms.permission.mapper.SysRoleMapper;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
 import com.xinghe.cms.permission.request.RoleStatusRequest;
 import com.xinghe.cms.permission.request.RoleUpdateRequest;
 import com.xinghe.cms.permission.response.RoleView;
+import com.xinghe.cms.security.CurrentUserProvider;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -42,8 +47,26 @@ class RoleAdminServiceImplTests {
     @Mock
     private RoleWriteAuditMarker roleWriteAuditMarker;
 
+    @Mock
+    private CurrentUserProvider currentUserProvider;
+
+    @Mock
+    private OperatorRowLockMapper operatorRowLockMapper;
+
     @InjectMocks
     private RoleAdminServiceImpl service;
+
+    @Test
+    void updateSharesOperatorLockBeforeWritingRole() {
+        when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(9L, "admin", null));
+        when(sysRoleMapper.selectById(77L)).thenReturn(savedRole(77L, "EDITOR", "编辑"));
+
+        service.update(77L, new RoleUpdateRequest("新名称"));
+
+        InOrder order = inOrder(operatorRowLockMapper, sysRoleMapper);
+        order.verify(operatorRowLockMapper).selectOperatorForShare(9L);
+        order.verify(sysRoleMapper).updateById(any(SysRole.class));
+    }
 
     private static SysRole savedRole(long id, String code, String name) {
         SysRole entity = new SysRole();
@@ -407,6 +430,7 @@ class RoleAdminServiceImplTests {
     /** 启停成功：条件更新只写 status，编码与名称不动，不删除关联。 */
     @Test
     void setStatusChangesOnlyStatus() {
+        when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(9L, "admin", null));
         SysRole existing = savedRole(37L, "EDITOR", "编辑");
         when(sysRoleMapper.selectById(37L)).thenReturn(existing);
         // mock 默认 update 返回 0（幂等分支），必须 stub 为命中 1 行以走实际变更路径
@@ -418,7 +442,9 @@ class RoleAdminServiceImplTests {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Wrapper<SysRole>> wrapperCaptor =
                 ArgumentCaptor.forClass((Class<Wrapper<SysRole>>) (Class<?>) Wrapper.class);
-        verify(sysRoleMapper).update(captor.capture(), wrapperCaptor.capture());
+        InOrder order = inOrder(operatorRowLockMapper, sysRoleMapper, roleWriteAuditMarker);
+        order.verify(operatorRowLockMapper).selectOperatorForShare(9L);
+        order.verify(sysRoleMapper).update(captor.capture(), wrapperCaptor.capture());
         // 评审 P1：最小更新实体——SET 子句仅 status，不回写并发读到的旧编码/名称
         assertThat(captor.getValue().getId()).isNull();
         assertThat(captor.getValue().getStatus()).isEqualTo(0);
@@ -428,7 +454,7 @@ class RoleAdminServiceImplTests {
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
         assertThat(sqlSegment).contains("id =").contains("status <>");
         // 评审 P2：状态实际变更才进入审计锚点
-        verify(roleWriteAuditMarker).roleStatusChanged();
+        order.verify(roleWriteAuditMarker).roleStatusChanged();
     }
 
     /** 契约：重复设置同一状态幂等返回 200，不重复写库、不记录审计（无状态变更）。 */
@@ -440,6 +466,7 @@ class RoleAdminServiceImplTests {
 
         verify(sysRoleMapper, never()).updateById(any(SysRole.class));
         verify(sysRoleMapper, never()).update(any(SysRole.class), any(Wrapper.class));
+        verify(operatorRowLockMapper, never()).selectOperatorForShare(any());
         // 评审 P2：无状态变更路径不进入审计——审计失败不应拖垮本应 200 的幂等请求
         verify(roleWriteAuditMarker, never()).roleStatusChanged();
     }

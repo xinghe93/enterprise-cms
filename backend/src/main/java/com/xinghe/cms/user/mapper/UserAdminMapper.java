@@ -26,6 +26,9 @@ public interface UserAdminMapper {
      */
     UserStatusSnapshot findStatusForUpdate(@Param("userId") Long userId);
 
+    /** 写事务内提前取得成功审计外键所需的操作人共享锁。 */
+    Long findUserForShare(@Param("userId") Long userId);
+
     /** 更新状态后在同一事务内回读 status_version，作为本次状态变更的撤销版本。 */
     UserStatusSnapshot findStatusVersion(@Param("userId") Long userId);
 
@@ -64,7 +67,7 @@ public interface UserAdminMapper {
 
     List<Long> findRoleIdsByUserId(@Param("userId") Long userId);
 
-    int deleteUserRoles(@Param("userId") Long userId);
+    int deleteUserRole(@Param("userId") Long userId, @Param("roleId") Long roleId);
 
     int insertUserRoles(@Param("userId") Long userId, @Param("roleIds") List<Long> roleIds);
 

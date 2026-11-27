@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -55,15 +56,17 @@ public class UserAdminService {
     private final PasswordHasher passwordHasher;
     private final RoleDirectoryService roleDirectory;
     private final UserAuditedActions auditedActions;
+    private final UserWriteLocks userWriteLocks;
 
     public UserAdminService(PlatformTransactionManager transactionManager, UserAdminMapper mapper,
             PasswordHasher passwordHasher, RoleDirectoryService roleDirectory,
-            UserAuditedActions auditedActions) {
+            UserAuditedActions auditedActions, UserWriteLocks userWriteLocks) {
         this.transactions = new TransactionTemplate(transactionManager);
         this.mapper = mapper;
         this.passwordHasher = passwordHasher;
         this.roleDirectory = roleDirectory;
         this.auditedActions = auditedActions;
+        this.userWriteLocks = userWriteLocks;
     }
 
     /**
@@ -117,6 +120,8 @@ public class UserAdminService {
             requireEnabledDepartmentChain(request.departmentId());
         }
         String passwordHash = passwordHasher.hash(request.password());
+        // INSERT 的部门外键会锁部门行，先取得成功审计所需的操作人共享锁。
+        userWriteLocks.lockOperatorForShare();
         try {
             mapper.insertUser(request.username(), passwordHash, request.realName(),
                     request.departmentId());
@@ -151,7 +156,8 @@ public class UserAdminService {
     }
 
     private UserVO doUpdateUser(long userId, UserUpdateRequest request) {
-        UserProfileRow current = mapper.findProfileForUpdate(userId);
+        UserProfileRow current = userWriteLocks.lockTargetAndOperator(userId,
+                () -> mapper.findProfileForUpdate(userId));
         if (current == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
         }
@@ -178,8 +184,8 @@ public class UserAdminService {
     }
 
     /**
-     * 全量替换角色：事务内先锁定并校验用户，再调用 B 的共享服务锁定启用角色，
-     * 最后整体替换 {@code sys_user_role}；集合相同不重复插关联（契约 8.1）。
+     * 全量替换角色：事务内先锁定用户行，再调用 B 的共享服务锁定启用角色，
+     * 最后按关联差集更新 {@code sys_user_role}，提交后的集合等于请求集合。
      */
     public void replaceRoles(long userId, UserRolesUpdateRequest request) {
         transactions.execute(transaction -> {
@@ -189,9 +195,8 @@ public class UserAdminService {
     }
 
     private void doReplaceRoles(long userId, UserRolesUpdateRequest request) {
-        // FOR UPDATE 锁定 sys_user 行直到事务结束：并发的角色全量替换会在这一行上串行化，
-        // 因此后续「读现有集合 → 删除 → 插入」基于同一最新快照，不会相互覆盖。
-        if (mapper.findStatusForUpdate(userId) == null) {
+        // 同一员工的角色分配通过目标员工行的排他锁串行化。
+        if (userWriteLocks.lockTargetAndOperator(userId, () -> mapper.findStatusForUpdate(userId)) == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
         }
         List<Long> target = request.roleIds().stream().distinct().sorted().toList();
@@ -200,13 +205,18 @@ public class UserAdminService {
         if (assignable.size() != target.size()) {
             throw new BusinessException(ResultCode.NOT_FOUND, "角色不存在");
         }
-        // findRoleIdsByUserId 按 role_id ASC 返回（见 Mapper XML），与 sorted target 同序。
         List<Long> current = mapper.findRoleIdsByUserId(userId);
-        if (!current.equals(target)) {
-            mapper.deleteUserRoles(userId);
-            if (!target.isEmpty()) {
-                mapper.insertUserRoles(userId, target);
+        Set<Long> targetIds = Set.copyOf(target);
+        Set<Long> currentIds = Set.copyOf(current);
+        // 仅删除现存的完整主键，避免范围删除锁住其他员工新增关联所需的间隙。
+        for (Long roleId : current) {
+            if (!targetIds.contains(roleId)) {
+                mapper.deleteUserRole(userId, roleId);
             }
+        }
+        List<Long> added = target.stream().filter(roleId -> !currentIds.contains(roleId)).toList();
+        if (!added.isEmpty()) {
+            mapper.insertUserRoles(userId, added);
         }
     }
 

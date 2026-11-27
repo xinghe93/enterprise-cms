@@ -7,16 +7,19 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.contract.RoleRef;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.permission.service.RoleDirectoryService;
+import com.xinghe.cms.security.CurrentUserProvider;
 import com.xinghe.cms.security.PasswordHasher;
 import com.xinghe.cms.user.dto.UserCreateRequest;
 import com.xinghe.cms.user.dto.UserListQuery;
@@ -34,6 +37,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -64,6 +68,8 @@ class UserAdminServiceTests {
     private PasswordHasher passwordHasher;
     @Mock
     private RoleDirectoryService roleDirectory;
+    @Mock
+    private CurrentUserProvider currentUserProvider;
 
     private UserAdminService service;
 
@@ -72,7 +78,7 @@ class UserAdminServiceTests {
         lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
                 .thenReturn(new SimpleTransactionStatus());
         service = new UserAdminService(transactionManager, mapper, passwordHasher, roleDirectory,
-                new UserAuditedActions());
+                new UserAuditedActions(), new UserWriteLocks(mapper, currentUserProvider));
     }
 
     private UserProfileRow profile(Long departmentId) {
@@ -82,16 +88,22 @@ class UserAdminServiceTests {
 
     @Test
     void createUserHashesPasswordAndReadsBackDatabaseTimestamps() {
+        when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(2L, "admin", null));
         when(passwordHasher.hash("12345678")).thenReturn("pbkdf2$hash");
-        when(mapper.insertUser("editor_demo", "pbkdf2$hash", "演示编辑", null)).thenReturn(1);
-        when(mapper.findProfileByUsername("editor_demo")).thenReturn(profile(null));
+        when(mapper.findDepartmentChainStatuses(3L)).thenReturn(List.of(1, 1));
+        when(mapper.insertUser("editor_demo", "pbkdf2$hash", "演示编辑", 3L)).thenReturn(1);
+        when(mapper.findProfileByUsername("editor_demo")).thenReturn(profile(3L));
 
         UserVO result = service.createUser(
-                new UserCreateRequest("editor_demo", "12345678", "演示编辑", null));
+                new UserCreateRequest("editor_demo", "12345678", "演示编辑", 3L));
 
         assertEquals("7", result.id());
         assertEquals(List.of(), result.roles());
         assertEquals("2026-11-02T16:00:00.000", result.createdAt());
+        InOrder order = inOrder(passwordHasher, mapper);
+        order.verify(passwordHasher).hash("12345678");
+        order.verify(mapper).findUserForShare(2L);
+        order.verify(mapper).insertUser("editor_demo", "pbkdf2$hash", "演示编辑", 3L);
         verify(transactionManager).commit(any());
         verify(mapper, never()).insertUserRoles(eq(USER_ID), anyList());
     }
@@ -188,21 +200,40 @@ class UserAdminServiceTests {
 
     @Test
     void replaceRolesValidatesThenReplacesInOneTransaction() {
+        when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(2L, "admin", null));
         when(mapper.findStatusForUpdate(USER_ID)).thenReturn(ACTIVE);
         when(roleDirectory.lockAssignableRoles(List.of(2L, 3L))).thenReturn(List.of(
                 new RoleRef(2L, "EDITOR", "内容编辑"), new RoleRef(3L, "REVIEWER", "审核员")));
-        when(mapper.findRoleIdsByUserId(USER_ID)).thenReturn(List.of(1L));
+        when(mapper.findRoleIdsByUserId(USER_ID)).thenReturn(List.of(1L, 2L));
 
         service.replaceRoles(USER_ID, new UserRolesUpdateRequest(List.of(3L, 2L)));
 
-        verify(roleDirectory).lockAssignableRoles(List.of(2L, 3L));
-        verify(mapper).deleteUserRoles(USER_ID);
-        verify(mapper).insertUserRoles(USER_ID, List.of(2L, 3L));
-        verify(transactionManager).commit(any());
+        InOrder order = inOrder(mapper, roleDirectory, transactionManager);
+        order.verify(mapper).findUserForShare(2L);
+        order.verify(mapper).findStatusForUpdate(USER_ID);
+        order.verify(roleDirectory).lockAssignableRoles(List.of(2L, 3L));
+        order.verify(mapper).deleteUserRole(USER_ID, 1L);
+        order.verify(mapper).insertUserRoles(USER_ID, List.of(3L));
+        verify(mapper, never()).deleteUserRole(USER_ID, 2L);
+        order.verify(transactionManager).commit(any());
+    }
+
+    @Test
+    void replaceRolesForNewUserInsertsWithoutRangeDelete() {
+        when(mapper.findStatusForUpdate(USER_ID)).thenReturn(ACTIVE);
+        when(roleDirectory.lockAssignableRoles(List.of(2L)))
+                .thenReturn(List.of(new RoleRef(2L, "EDITOR", "内容编辑")));
+        when(mapper.findRoleIdsByUserId(USER_ID)).thenReturn(List.of());
+
+        service.replaceRoles(USER_ID, new UserRolesUpdateRequest(List.of(2L)));
+
+        verify(mapper, never()).deleteUserRole(any(), any());
+        verify(mapper).insertUserRoles(USER_ID, List.of(2L));
     }
 
     @Test
     void replaceRolesSameSetStillValidatesButDoesNotRewrite() {
+        when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(USER_ID, "admin", null));
         when(mapper.findStatusForUpdate(USER_ID)).thenReturn(ACTIVE);
         when(roleDirectory.lockAssignableRoles(List.of(2L)))
                 .thenReturn(List.of(new RoleRef(2L, "EDITOR", "内容编辑")));
@@ -211,7 +242,8 @@ class UserAdminServiceTests {
         service.replaceRoles(USER_ID, new UserRolesUpdateRequest(List.of(2L)));
 
         verify(roleDirectory).lockAssignableRoles(List.of(2L));
-        verify(mapper, never()).deleteUserRoles(any());
+        verify(mapper, never()).findUserForShare(any());
+        verify(mapper, never()).deleteUserRole(any(), any());
         verify(mapper, never()).insertUserRoles(any(), anyList());
     }
 
@@ -225,7 +257,7 @@ class UserAdminServiceTests {
                 () -> service.replaceRoles(USER_ID, new UserRolesUpdateRequest(List.of(2L))));
 
         assertEquals(ResultCode.CONFLICT, exception.getResultCode());
-        verify(mapper, never()).deleteUserRoles(any());
+        verify(mapper, never()).deleteUserRole(any(), any());
         verify(transactionManager).rollback(any());
     }
 
@@ -290,7 +322,7 @@ class UserAdminServiceTests {
 
         service.replaceRoles(USER_ID, new UserRolesUpdateRequest(List.of()));
 
-        verify(mapper).deleteUserRoles(USER_ID);
+        verify(mapper).deleteUserRole(USER_ID, 2L);
         verify(mapper, never()).insertUserRoles(any(), anyList());
         verify(transactionManager).commit(any());
     }

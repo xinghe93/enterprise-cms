@@ -6,16 +6,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.security.CurrentUserProvider;
 import com.xinghe.cms.user.dto.DepartmentCreateRequest;
 import com.xinghe.cms.user.dto.DepartmentUpdateRequest;
 import com.xinghe.cms.user.mapper.DepartmentAdminMapper;
+import com.xinghe.cms.user.mapper.UserAdminMapper;
 import com.xinghe.cms.user.mapper.row.DepartmentRow;
 import com.xinghe.cms.user.vo.DepartmentVO;
 import java.time.LocalDateTime;
@@ -23,6 +27,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -41,6 +46,10 @@ class DepartmentAdminServiceTests {
     private PlatformTransactionManager transactionManager;
     @Mock
     private DepartmentAdminMapper mapper;
+    @Mock
+    private UserAdminMapper userMapper;
+    @Mock
+    private CurrentUserProvider currentUserProvider;
 
     private DepartmentAdminService service;
 
@@ -49,7 +58,7 @@ class DepartmentAdminServiceTests {
         lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
                 .thenReturn(new SimpleTransactionStatus());
         service = new DepartmentAdminService(transactionManager, mapper,
-                new DepartmentAuditedActions());
+                new DepartmentAuditedActions(), new UserWriteLocks(userMapper, currentUserProvider));
     }
 
     private DepartmentRow row(long id, Long parentId, int sort, int status) {
@@ -170,11 +179,15 @@ class DepartmentAdminServiceTests {
         // 校验与写入必须基于 findAllForUpdate 的受保护快照，不能退回归普通快照读；
         // 只约束「不落回 findAll/findById」而不断言精确调用次数，避免锁死实现细节
         // （DeepSeek 审查：update 断言锁定快照读取次数过于脆弱）。
+        when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(9L, "admin", null));
         when(mapper.findAllForUpdate()).thenAnswer(invocation -> tree());
         when(mapper.updateNode(2L, 1L, "研发部门", 5)).thenReturn(1);
 
         service.update(2L, new DepartmentUpdateRequest(1L, "研发部门", 5));
 
+        InOrder order = inOrder(userMapper, mapper);
+        order.verify(userMapper).findUserForShare(9L);
+        order.verify(mapper, org.mockito.Mockito.atLeastOnce()).findAllForUpdate();
         verify(mapper, org.mockito.Mockito.atLeast(2)).findAllForUpdate();
         verify(mapper, never()).findAll();
         verify(mapper, never()).findById(any());
