@@ -1,9 +1,12 @@
 package com.xinghe.cms.review.dto;
 
+import com.xinghe.cms.common.json.StrictIntegerDeserializer;
+import com.xinghe.cms.common.json.StrictStringDeserializer;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import tools.jackson.databind.annotation.JsonDeserialize;
 
 /**
  * 批量文章命令中的单一项，对应 OpenAPI 的 BatchArticleItem。
@@ -14,9 +17,11 @@ import jakarta.validation.constraints.Pattern;
 public record BatchArticleItemRequest(
         @NotBlank(message = "文章 ID 不能为空")
         @Pattern(regexp = "^[1-9][0-9]{0,18}$", message = "文章 ID 必须是十进制正整数")
+        @JsonDeserialize(using = StrictStringDeserializer.class)
         String id,
 
         @NotNull(message = "文章版本不能为空")
         @Min(value = 0, message = "文章版本不能为负数")
+        @JsonDeserialize(using = StrictIntegerDeserializer.class)
         Integer version) {
 }
