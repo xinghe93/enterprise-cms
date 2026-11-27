@@ -9,9 +9,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class TagWriteService {
 
     private final TagAuditOperations operations;
+    private final PortalContentCache portalCache;
 
-    public TagWriteService(TagAuditOperations operations) {
+    public TagWriteService(TagAuditOperations operations, PortalContentCache portalCache) {
         this.operations = operations;
+        this.portalCache = portalCache;
     }
 
     public TagVO create(String name) {
@@ -19,11 +21,14 @@ public class TagWriteService {
     }
 
     public TagVO update(long id, String name) {
-        return operations.update(id, name);
+        TagVO updated = operations.update(id, name);
+        portalCache.invalidateArticleDetails();
+        return updated;
     }
 
     public void setStatus(long id, int status) {
         operations.setStatus(id, status);
+        portalCache.invalidateArticleDetails();
     }
 
     public void delete(long id) {

@@ -17,6 +17,7 @@ import com.xinghe.cms.common.request.PageQuery;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.service.CategoryService;
+import com.xinghe.cms.content.service.PortalContentCache;
 import com.xinghe.cms.content.service.TagService;
 import com.xinghe.cms.content.vo.CategoryVO;
 import com.xinghe.cms.content.vo.TagVO;
@@ -25,6 +26,7 @@ import com.xinghe.cms.security.CurrentUserProvider;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -54,6 +56,9 @@ class TaxonomyControllerHttpTests {
 
     @MockitoBean
     private CategoryService categoryService;
+
+    @MockitoBean
+    private PortalContentCache portalContentCache;
 
     @MockitoBean
     private TagService tagService;
@@ -108,6 +113,8 @@ class TaxonomyControllerHttpTests {
     void returnsPortalCategoryOptionsWithPortalPermissionOnly() throws Exception {
         grant("portal:category:tree");
         when(categoryService.portalTree()).thenReturn(List.of());
+        when(portalContentCache.categoryTree(any())).thenAnswer(invocation ->
+                invocation.<Supplier<List<CategoryVO>>>getArgument(0).get());
 
         mvc.perform(get("/api/portal/categories"))
                 .andExpect(status().isOk())

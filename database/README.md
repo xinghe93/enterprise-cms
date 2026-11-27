@@ -14,10 +14,11 @@
 | 2 | `002_seed_permission_baseline.sql` | 权限基线种子（B） | 可重复（缺则补） | 初始化 4 个角色、53 个 API 权限项及 95 条默认角色权限关联 |
 | 3 | `003_seed_user_baseline.sql` | 用户组织种子（A） | 可重复（指纹保护） | 初始化 2 个演示部门与 4 个本地测试账号（仅限本地/课程开发环境） |
 | 4 | `004_seed_review_log_demo.sql` | 演示种子（D，可选） | 可重复（固定 ID 守卫） | 初始化课程演示分类 1、标签 2、文章 5、审核历史 2、标签关联 2 |
+| 5 | `005_portal_cache_revision.sql` | 门户缓存迁移（启用缓存时必需） | 可重复（重跑更新缓存版本） | 创建门户文章详情与分类树的缓存版本表 |
 
 > **重要注意事项**：
 > - `001_init.sql` 不包含 `DROP DATABASE`，以兼容后端 3 个真实 MySQL 集成测试（`ReviewQueryServiceMysqlIT`、`PendingReviewServiceMysqlIT`、`ArticleTagServiceMysqlIT`）。
-> - `001`～`004` 均统一包含 `USE enterprise_cms;`；如需导入到隔离测试库（如 `enterprise_cms_bench`），请在导入副本中替换所有 `USE` 的目标库名，以及 `001` 的 `CREATE DATABASE` 目标库名。
+> - `001`～`005` 均统一包含 `USE enterprise_cms;`；如需导入到隔离测试库（如 `enterprise_cms_bench`），请在导入副本中替换所有 `USE` 的目标库名，以及 `001` 的 `CREATE DATABASE` 目标库名。
 > - `004_seed_review_log_demo.sql` 使用固定大主键（`990101`、`990301`–`990305`、`990601`–`990602`），导入后对应表的 `AUTO_INCREMENT` 会顺延至 `990xxx` 起步，属预期行为。
 > - `003` 与 `004` 仅限本地/课程开发环境，禁止用于生产或公网可达环境。
 

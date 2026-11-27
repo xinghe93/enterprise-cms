@@ -1,3 +1,7 @@
+cms:
+  content-cache:
+    enabled: ${CMS_CONTENT_CACHE_ENABLED:false}
+
 spring:
   application:
     name: backend

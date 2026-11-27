@@ -10,26 +10,34 @@ import org.springframework.transaction.annotation.Transactional;
 public class CategoryWriteService {
 
     private final CategoryAuditOperations operations;
+    private final PortalContentCache portalCache;
 
-    public CategoryWriteService(CategoryAuditOperations operations) {
+    public CategoryWriteService(CategoryAuditOperations operations, PortalContentCache portalCache) {
         this.operations = operations;
+        this.portalCache = portalCache;
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public CategoryVO create(Long parentId, String name, Integer sortOrder) {
-        return operations.create(parentId, name, sortOrder);
+        CategoryVO created = operations.create(parentId, name, sortOrder);
+        portalCache.invalidateCategoryMetadata();
+        return created;
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public CategoryVO update(long id, Long parentId, String name, int sortOrder) {
-        return operations.update(id, parentId, name, sortOrder);
+        CategoryVO updated = operations.update(id, parentId, name, sortOrder);
+        portalCache.invalidateCategoryMetadata();
+        return updated;
     }
 
     public void setStatus(long id, int status) {
         operations.setStatus(id, status);
+        portalCache.invalidateCategoryMetadata();
     }
 
     public void delete(long id) {
         operations.delete(id);
+        portalCache.invalidateCategoryMetadata();
     }
 }

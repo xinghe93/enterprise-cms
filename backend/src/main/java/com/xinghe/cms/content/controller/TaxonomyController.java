@@ -5,6 +5,7 @@ import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.PageResult;
 import com.xinghe.cms.content.service.CategoryService;
+import com.xinghe.cms.content.service.PortalContentCache;
 import com.xinghe.cms.content.service.TagService;
 import com.xinghe.cms.content.vo.CategoryVO;
 import com.xinghe.cms.content.vo.TagVO;
@@ -28,10 +29,12 @@ public class TaxonomyController {
 
     private final CategoryService categoryService;
     private final TagService tagService;
+    private final PortalContentCache portalCache;
 
-    public TaxonomyController(CategoryService categoryService, TagService tagService) {
+    public TaxonomyController(CategoryService categoryService, TagService tagService, PortalContentCache portalCache) {
         this.categoryService = categoryService;
         this.tagService = tagService;
+        this.portalCache = portalCache;
     }
 
     @GetMapping("/admin/categories")
@@ -45,7 +48,7 @@ public class TaxonomyController {
     @RequirePermission("portal:category:tree")
     public ApiResponse<List<CategoryVO>> portalCategories(HttpServletRequest request) {
         checkedParams(request, Set.of());
-        return ApiResponse.success(categoryService.portalTree());
+        return ApiResponse.success(portalCache.categoryTree(categoryService::portalTree));
     }
 
     @GetMapping("/admin/tags")
