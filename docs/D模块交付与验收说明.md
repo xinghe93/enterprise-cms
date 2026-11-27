@@ -45,7 +45,7 @@
 ## 3. 关键设计说明
 
 1. **审计接入位置**：`@AuditLog` 只能标在事务边界内、经 Spring 代理被调用的方法（Controller → `@Transactional` Service → 独立审计 bean，或审计 bean 方法标 `@Transactional(MANDATORY)`）；禁止标在 Controller（事务尚未开启，会走无事务分支，业务提交后写 SUCCESS 失败也不回滚）。审核/发布均抽为 `ReviewAuditRecorder`/`PublishAuditRecorder`，被审计方法内部覆盖"状态流转 + 审核记录写入"，流转异常也落在切面内记 FAILURE。
-2. **事务语义**：有外层事务时成功日志在 `beforeCommit` 随业务事务写入、回滚一起撤销；业务回滚或方法抛异常时在 `afterCompletion` 用 `REQUIRES_NEW` 独立写 FAILURE。
+2. **事务语义**：有外层事务时成功日志在 `beforeCommit` 随业务事务写入、回滚一起撤销；业务回滚或方法抛异常时在 `afterCompletion` 登记失败日志，归还 JDBC 连接后再用 `REQUIRES_NEW` 写入。
 3. **操作人**：从 A 的 `CurrentUserProvider.requireCurrentUser()` 取，不接受请求参数 `userId`（伪造参数测试证明无效）。
 4. **ID 契约**：JSON 响应中业务 ID 一律字符串；路径/查询 ID 只接受 1–19 位正十进制、无前导零、≤ `Long.MAX_VALUE`（溢出 400「请求参数错误」/「资源 ID 格式不正确」）。
 5. **分页与 LIMIT**：统一由 `MybatisPlusConfig` 的 `PaginationInnerInterceptor`（`maxLimit=PageQuery.MAX_SIZE=100`、`overflow=false`）追加，XML 不手写 LIMIT；service 层再做参数校验。
