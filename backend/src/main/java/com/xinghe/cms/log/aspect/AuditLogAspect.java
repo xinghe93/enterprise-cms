@@ -34,8 +34,8 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  *   <li>调用方存在事务时只注册一个事务同步器：方法正常返回时，在
  *       {@code beforeCommit} 用业务事务写入 SUCCESS，跟随业务一起提交或回滚——
  *       若这条写入失败，业务事务同样回滚，绝不出现"业务生效但审计缺失"；
- *       失败结果（事务回滚或方法抛过异常）在 {@code afterCompletion} 用独立新事务
- *       记 FAILURE，不随业务回滚丢失；</li>
+ *       失败结果（事务回滚或方法抛过异常）在 {@code afterCompletion} 登记，
+ *       等 JDBC 连接归还后用独立事务记 FAILURE；</li>
  *   <li>调用方没有事务时，方法返回后直接写 SUCCESS、抛出后直接写 FAILURE。</li>
  * </ul>
  *
@@ -100,7 +100,7 @@ public class AuditLogAspect {
      *
      * <ul>
      *   <li>{@code beforeCommit}：方法正常返回时用业务事务写入 SUCCESS（参与提交/回滚）；</li>
-     *   <li>{@code afterCompletion}：事务未提交或方法抛过异常时，用独立新事务补记 FAILURE。</li>
+     *   <li>{@code afterCompletion}：事务未提交或方法抛过异常时，登记归还连接后要写的 FAILURE。</li>
      * </ul>
      */
     private void registerCompletion(OperationLog entry, boolean[] thrown) {
@@ -119,9 +119,9 @@ public class AuditLogAspect {
             public void afterCompletion(int status) {
                 boolean committed = status == TransactionSynchronization.STATUS_COMMITTED;
                 if (!committed || thrown[0]) {
-                    // 业务回滚或方法抛过异常：成功日志已撤销（或未写），用独立事务补记 FAILURE。
+                    // Spring 此时尚未归还 JDBC 连接，不能在回调里再借一条连接。
                     entry.setResult(FAILURE);
-                    safeWriteInNewTransaction(entry);
+                    AuditJdbcTransactionManager.afterConnectionReleased(() -> safeWriteInNewTransaction(entry));
                 }
             }
         });
@@ -148,8 +148,9 @@ public class AuditLogAspect {
     private void safeWriteInNewTransaction(OperationLog entry) {
         try {
             auditLogWriter.writeInNewTransaction(entry);
-        } catch (Exception exception) {
-            log.error("事务完成后写入操作审计日志失败：operation={}", entry.getOperation(), exception);
+        } catch (Throwable failure) {
+            // Keep Spring's afterCompletion failure isolation after moving the write past connection cleanup.
+            log.error("事务完成后写入操作审计日志失败：operation={}", entry.getOperation(), failure);
         }
     }
 
