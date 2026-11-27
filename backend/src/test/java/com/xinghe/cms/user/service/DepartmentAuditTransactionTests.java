@@ -17,6 +17,7 @@ import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.security.CurrentUserProvider;
 import com.xinghe.cms.user.dto.DepartmentCreateRequest;
 import com.xinghe.cms.user.mapper.DepartmentAdminMapper;
+import com.xinghe.cms.user.mapper.UserAdminMapper;
 import com.xinghe.cms.user.mapper.row.DepartmentRow;
 import com.xinghe.cms.user.vo.DepartmentVO;
 import java.time.LocalDateTime;
@@ -163,8 +164,9 @@ class DepartmentAuditTransactionTests {
 
         @Bean
         DepartmentAdminService departmentService(PlatformTransactionManager manager,
-                DepartmentAdminMapper mapper, DepartmentAuditedActions actions) {
-            return new DepartmentAdminService(manager, mapper, actions);
+                DepartmentAdminMapper mapper, DepartmentAuditedActions actions, CurrentUserProvider currentUserProvider) {
+            return new DepartmentAdminService(manager, mapper, actions,
+                    new UserWriteLocks(mock(UserAdminMapper.class), currentUserProvider));
         }
     }
 

@@ -62,14 +62,16 @@ public class UserStatusService {
     private final UserAdminMapper userMapper;
     private final AuthSessionService sessions;
     private final UserAuditedActions auditedActions;
+    private final UserWriteLocks userWriteLocks;
 
     public UserStatusService(PlatformTransactionManager transactionManager,
             UserAdminMapper userMapper, AuthSessionService sessions,
-            UserAuditedActions auditedActions) {
+            UserAuditedActions auditedActions, UserWriteLocks userWriteLocks) {
         this.transactions = new TransactionTemplate(transactionManager);
         this.userMapper = userMapper;
         this.sessions = sessions;
         this.auditedActions = auditedActions;
+        this.userWriteLocks = userWriteLocks;
     }
 
     /**
@@ -104,7 +106,8 @@ public class UserStatusService {
      * 启用方向在返回前（提交前）按新版本完成撤销。
      */
     private StatusTransition doChangeStatus(long userId, int status) {
-        UserStatusSnapshot current = userMapper.findStatusForUpdate(userId);
+        UserStatusSnapshot current = userWriteLocks.lockTargetAndOperator(userId,
+                () -> userMapper.findStatusForUpdate(userId));
         if (current == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "员工不存在");
         }

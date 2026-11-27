@@ -1,10 +1,12 @@
 package com.xinghe.cms.permission.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.xinghe.cms.common.contract.CurrentUser;
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.permission.entity.SysRole;
+import com.xinghe.cms.permission.mapper.OperatorRowLockMapper;
 import com.xinghe.cms.permission.mapper.SysRoleMapper;
 import com.xinghe.cms.permission.request.RoleCreateRequest;
 import com.xinghe.cms.permission.request.RoleStatusRequest;
@@ -12,6 +14,7 @@ import com.xinghe.cms.permission.request.RoleUpdateRequest;
 import com.xinghe.cms.permission.response.RoleView;
 import com.xinghe.cms.permission.service.RoleAdminService;
 import com.xinghe.cms.permission.support.ContractWhitespace;
+import com.xinghe.cms.security.CurrentUserProvider;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -65,13 +68,18 @@ public class RoleAdminServiceImpl implements RoleAdminService {
     private static final int MAX_ROLE_NAME_LENGTH = 100;
 
     private final SysRoleMapper sysRoleMapper;
+    private final OperatorRowLockMapper operatorRowLockMapper;
+    private final CurrentUserProvider currentUserProvider;
 
     /** 启停审计锚点（评审 P2）：仅在状态实际变更时经代理调用以记录审计。 */
     private final RoleWriteAuditMarker roleWriteAuditMarker;
 
-    public RoleAdminServiceImpl(SysRoleMapper sysRoleMapper, RoleWriteAuditMarker roleWriteAuditMarker) {
+    public RoleAdminServiceImpl(SysRoleMapper sysRoleMapper, RoleWriteAuditMarker roleWriteAuditMarker,
+            OperatorRowLockMapper operatorRowLockMapper, CurrentUserProvider currentUserProvider) {
         this.sysRoleMapper = sysRoleMapper;
         this.roleWriteAuditMarker = roleWriteAuditMarker;
+        this.operatorRowLockMapper = operatorRowLockMapper;
+        this.currentUserProvider = currentUserProvider;
     }
 
     @Override
@@ -105,6 +113,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         role.setRoleCode(roleCode);
         role.setRoleName(roleName);
         role.setStatus(1);
+        lockOperatorFirst();
         try {
             sysRoleMapper.insert(role);
         } catch (DuplicateKeyException e) {
@@ -147,6 +156,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         SysRole change = new SysRole();
         change.setId(role.getId());
         change.setRoleName(roleName);
+        lockOperatorFirst();
         sysRoleMapper.updateById(change);
 
         // updatedAt 由数据库 ON UPDATE 维护，重新查询取回真实时间
@@ -187,6 +197,7 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         // 本迭代无删除角色入口，select 与 update 之间行消失的窗口不存在。
         SysRole change = new SysRole();
         change.setStatus(status);
+        lockOperatorFirst();
         int updated = sysRoleMapper.update(change,
                 new UpdateWrapper<SysRole>().eq("id", role.getId()).ne("status", status));
 
@@ -201,5 +212,20 @@ public class RoleAdminServiceImpl implements RoleAdminService {
         // （此时状态确实变了，回滚 + 报错符合"业务生效但审计缺失"的禁止约束）。
         // 两条无状态变更路径在上面已提前返回，不会产生任何审计记录。
         roleWriteAuditMarker.roleStatusChanged();
+    }
+
+    private void lockOperatorFirst() {
+        CurrentUser operator;
+        try {
+            operator = currentUserProvider.requireCurrentUser();
+        } catch (BusinessException exception) {
+            if (exception.getResultCode() == ResultCode.UNAUTHORIZED) {
+                return;
+            }
+            throw exception;
+        }
+        if (operator != null && operator.userId() != null) {
+            operatorRowLockMapper.selectOperatorForShare(operator.userId());
+        }
     }
 }

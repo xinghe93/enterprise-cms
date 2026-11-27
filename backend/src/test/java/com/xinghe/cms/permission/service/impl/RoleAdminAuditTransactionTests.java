@@ -14,6 +14,7 @@ import com.xinghe.cms.log.aspect.AuditLogAspect;
 import com.xinghe.cms.log.entity.OperationLog;
 import com.xinghe.cms.log.service.AuditLogWriter;
 import com.xinghe.cms.permission.entity.SysRole;
+import com.xinghe.cms.permission.mapper.OperatorRowLockMapper;
 import com.xinghe.cms.permission.mapper.SysRoleMapper;
 import com.xinghe.cms.permission.request.RoleStatusRequest;
 import com.xinghe.cms.permission.request.RoleUpdateRequest;
@@ -282,8 +283,15 @@ class RoleAdminAuditTransactionTests {
         }
 
         @Bean
-        RoleAdminServiceImpl roleAdminService(SysRoleMapper sysRoleMapper, RoleWriteAuditMarker roleWriteAuditMarker) {
-            return new RoleAdminServiceImpl(sysRoleMapper, roleWriteAuditMarker);
+        OperatorRowLockMapper operatorRowLockMapper() {
+            return mock(OperatorRowLockMapper.class);
+        }
+
+        @Bean
+        RoleAdminServiceImpl roleAdminService(SysRoleMapper sysRoleMapper, RoleWriteAuditMarker roleWriteAuditMarker,
+                OperatorRowLockMapper operatorRowLockMapper, CurrentUserProvider currentUserProvider) {
+            return new RoleAdminServiceImpl(sysRoleMapper, roleWriteAuditMarker, operatorRowLockMapper,
+                    currentUserProvider);
         }
 
         @Bean

@@ -59,12 +59,14 @@ public class DepartmentAdminService {
     private final TransactionTemplate transactions;
     private final DepartmentAdminMapper mapper;
     private final DepartmentAuditedActions auditedActions;
+    private final UserWriteLocks userWriteLocks;
 
     public DepartmentAdminService(PlatformTransactionManager transactionManager,
-            DepartmentAdminMapper mapper, DepartmentAuditedActions auditedActions) {
+            DepartmentAdminMapper mapper, DepartmentAuditedActions auditedActions, UserWriteLocks userWriteLocks) {
         this.transactions = new TransactionTemplate(transactionManager);
         this.mapper = mapper;
         this.auditedActions = auditedActions;
+        this.userWriteLocks = userWriteLocks;
     }
 
     /** status 为 null 时返回全部状态；否则返回匹配节点 + 必要祖先（祖先保持真实 status）。 */
@@ -85,6 +87,7 @@ public class DepartmentAdminService {
 
     /** 实际创建动作：在事务内、审计切面内执行。 */
     private DepartmentVO doCreate(DepartmentCreateRequest request) {
+        userWriteLocks.lockOperatorForShare();
         // 父链校验必须基于加锁的当前读，避免并发删除/停用父部门后仍按旧快照写入。
         // 根节点无父链可校验，不必锁树。
         if (request.parentId() != null) {
@@ -115,6 +118,7 @@ public class DepartmentAdminService {
 
     /** 实际修改动作：在事务内、审计切面内执行。 */
     private DepartmentVO doUpdate(long id, DepartmentUpdateRequest request) {
+        userWriteLocks.lockOperatorForShare();
         // 先按 id 升序锁住整棵树，后续的防环/父链校验与 updateNode 都基于同一份受保护快照。
         // 只锁当前节点会让两个根互换父节点的并发移动各自通过校验，提交后形成环。
         List<DepartmentRow> all = mapper.findAllForUpdate();
@@ -167,6 +171,7 @@ public class DepartmentAdminService {
 
     /** 实际删除动作：在事务内、审计切面内执行。 */
     private void doDelete(long id) {
+        userWriteLocks.lockOperatorForShare();
         if (mapper.findByIdForUpdate(id) == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
         }
@@ -189,6 +194,7 @@ public class DepartmentAdminService {
 
     /** 实际启停动作：在事务内、审计切面内执行。 */
     private void doChangeStatus(long id, int status) {
+        userWriteLocks.lockOperatorForShare();
         DepartmentRow locked = mapper.findByIdForUpdate(id);
         if (locked == null) {
             throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
