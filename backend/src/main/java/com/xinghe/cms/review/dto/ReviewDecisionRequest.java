@@ -1,8 +1,11 @@
 package com.xinghe.cms.review.dto;
 
+import com.xinghe.cms.common.json.StrictIntegerDeserializer;
+import com.xinghe.cms.common.json.StrictStringDeserializer;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import tools.jackson.databind.annotation.JsonDeserialize;
 
 /**
  * 审核裁决请求体，对应 OpenAPI 的 ArticleReview（通过）与 ArticleReject（驳回）。
@@ -14,8 +17,10 @@ import jakarta.validation.constraints.Size;
 public record ReviewDecisionRequest(
         @NotNull(message = "文章版本不能为空")
         @Min(value = 0, message = "文章版本不能为负数")
+        @JsonDeserialize(using = StrictIntegerDeserializer.class)
         Integer version,
 
         @Size(max = 1000, message = "审核意见不能超过 1000 字")
+        @JsonDeserialize(using = StrictStringDeserializer.class)
         String comment) {
 }

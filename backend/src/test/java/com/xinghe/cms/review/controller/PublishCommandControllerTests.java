@@ -10,6 +10,8 @@ import com.xinghe.cms.review.vo.ArticleStateVO;
 import com.xinghe.cms.security.annotation.RequirePermission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.context.support.StaticApplicationContext;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -140,6 +142,18 @@ class PublishCommandControllerTests {
         assertThat(stubService.singleCalls).isEmpty();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"\"0\"", "-0.9", "0.0", "1e0", "true", "2147483648"})
+    void rejectsInvalidJsonVersionsForSingleCommands(String version) throws Exception {
+        String request = "{\"version\":" + version + "}";
+
+        for (String action : List.of("publish", "offline")) {
+            assertError(postJson("/api/admin/articles/" + ARTICLE_ID + "/" + action, request),
+                    400, "请求参数错误");
+        }
+        assertThat(stubService.singleCalls).isEmpty();
+    }
+
     @Test
     void rejectsEmptyBatch() throws Exception {
         MvcResult result = postJson("/api/admin/articles/batch/publish", "{\"items\": []}");
@@ -166,6 +180,23 @@ class PublishCommandControllerTests {
                 batchBody(itemJson("001", 0)));
 
         assertError(result, 400, "文章 ID 必须是十进制正整数");
+        assertThat(stubService.batchCalls).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"id\":9,\"version\":1}",
+            "{\"id\":true,\"version\":1}",
+            "{\"id\":\"9\",\"version\":\"1\"}",
+            "{\"id\":\"9\",\"version\":1.5}",
+            "{\"id\":\"9\",\"version\":2147483648}"
+    })
+    void rejectsInvalidJsonTypesInBatchBeforeCallingService(String invalidItem) throws Exception {
+        String request = batchBody(itemJson("12", 0), invalidItem);
+
+        for (String action : List.of("publish", "offline")) {
+            assertError(postJson("/api/admin/articles/batch/" + action, request), 400, "请求参数错误");
+        }
         assertThat(stubService.batchCalls).isEmpty();
     }
 

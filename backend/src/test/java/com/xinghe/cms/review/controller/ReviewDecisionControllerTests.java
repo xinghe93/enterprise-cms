@@ -2,6 +2,7 @@ package com.xinghe.cms.review.controller;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import com.xinghe.cms.common.enums.ArticleStatus;
 import com.xinghe.cms.common.exception.GlobalExceptionHandler;
@@ -12,6 +13,8 @@ import com.xinghe.cms.review.vo.ArticleStateVO;
 import com.xinghe.cms.security.annotation.RequirePermission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.context.support.StaticApplicationContext;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -107,6 +110,34 @@ class ReviewDecisionControllerTests {
 
         assertError(result, 400, "文章版本不能为负数");
         assertThat(stubService.approvedArticleId).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"version\":\"0\",\"comment\":\"审核意见\"}",
+            "{\"version\":-0.9,\"comment\":\"审核意见\"}",
+            "{\"version\":0.0,\"comment\":\"审核意见\"}",
+            "{\"version\":2147483648,\"comment\":\"审核意见\"}",
+            "{\"version\":0,\"comment\":123}",
+            "{\"version\":0,\"comment\":true}"
+    })
+    void rejectsInvalidJsonTypesBeforeCallingDecisionService(String request) throws Exception {
+        for (String action : List.of("approve", "reject")) {
+            assertError(postDecision("/api/admin/articles/" + ARTICLE_ID + "/" + action, request),
+                    400, "请求参数错误");
+        }
+        assertThat(stubService.approvedArticleId).isNull();
+        assertThat(stubService.rejectedArticleId).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{\"version\":0}", "{\"version\":0,\"comment\":null}"})
+    void approveAcceptsAnOmittedOrNullComment(String request) throws Exception {
+        MvcResult result = postDecision("/api/admin/articles/" + ARTICLE_ID + "/approve", request);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.approvedRequest.version()).isZero();
+        assertThat(stubService.approvedRequest.comment()).isNull();
     }
 
     @Test
