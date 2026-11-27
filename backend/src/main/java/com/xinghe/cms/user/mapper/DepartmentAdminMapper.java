@@ -8,9 +8,8 @@ import org.apache.ibatis.annotations.Param;
 /**
  * 部门管理（A 模块）的读写映射。
  *
- * <p>只写 {@code sys_department}；子部门 / 员工引用检查用只读 COUNT，不级联删除。
- * 树与祖先链在 Service 中基于 {@link #findAll()} 一次性构建，避免 N+1 查询，
- * 也不依赖数据库特定的递归语法。</p>
+ * <p>写入范围为 {@code sys_department}，子部门和员工引用通过 COUNT 检查。
+ * 管理端树查询批量读取节点，员工部门分配通过递归查询定位候选祖先后加共享锁。</p>
  */
 @Mapper
 public interface DepartmentAdminMapper {
@@ -23,6 +22,12 @@ public interface DepartmentAdminMapper {
      * 固定排序使并发移动以相同顺序加锁，避免两个根互换父节点时各自基于过期快照通过校验而成环。
      */
     List<DepartmentRow> findAllForUpdate();
+
+    /** 查找目标部门及其祖先的候选 ID，供后续锁定读重新校验。 */
+    List<Long> findAncestorIds(@Param("id") Long id);
+
+    /** 在员工写事务内按主键顺序共享锁定候选节点，并读取当前层级和状态。 */
+    List<DepartmentRow> findByIdsForShare(@Param("ids") List<Long> ids);
 
     DepartmentRow findById(@Param("id") Long id);
 

@@ -72,12 +72,6 @@ public interface UserAdminMapper {
     int insertUserRoles(@Param("userId") Long userId, @Param("roleIds") List<Long> roleIds);
 
     /**
-     * 目标部门及其全部祖先的状态链（自身 → 根），用于「新分配部门或祖先必须启用」。
-     * 不存在返回空列表；链上任一停用返回 0。
-     */
-    List<Integer> findDepartmentChainStatuses(@Param("departmentId") Long departmentId);
-
-    /**
      * 本部门及全部后代 ID（含停用节点），用于员工分页的 departmentId 过滤。
      * ID 合法但不存在时返回空列表，契约要求此时是 200 空分页而不是 404。
      */
