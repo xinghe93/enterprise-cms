@@ -5,17 +5,18 @@
 // 只有权限加载成功后才显示审核入口，按 article:review-list / article:approve /
 // article:reject / review:list 严格门控；加载失败时隐藏操作并提供重试，不按身份猜测。
 // 正文：标题与审核对话框提供到 /admin/articles/:id 的正文入口（C 的文章详情页，article:read）。
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert, ElButton, ElDialog, ElDrawer, ElEmpty, ElInput, ElLoading, ElMessage,
-  ElPagination, ElTable, ElTableColumn, ElTag,
+  ElPagination, ElTable, ElTableColumn, ElTabPane, ElTabs, ElTag,
 } from 'element-plus'
 import {
-  approveArticle, buildPendingQuery, buildReviewQuery, fetchMyPermissions, getArticleDetail,
+  approveArticle, buildPendingQuery, buildReviewQuery, canChangePublication, fetchMyPermissions, getArticleDetail,
   formatLocalDateTime, formatReviewTime, isValidArticleId, listPendingReviews,
   listReviewHistory, rejectArticle, validatePendingFilters,
 } from '../api/review.js'
 import { useSessionStore } from '../stores/session.js'
+import PublishPanel from './review/PublishPanel.vue'
 
 const session = useSessionStore()
 // idle / loading / loaded / unavailable：区分"权限加载中"与"已加载但为空"。
@@ -27,6 +28,16 @@ const canListReviews = computed(() => permissionsKnown.value && session.hasPermi
 const canApprove = computed(() => permissionsKnown.value && session.hasPermission('article:approve'))
 const canReject = computed(() => permissionsKnown.value && session.hasPermission('article:reject'))
 const canReadHistory = computed(() => permissionsKnown.value && session.hasPermission('review:list'))
+const showReview = computed(() =>
+  canListReviews.value || canApprove.value || canReject.value || canReadHistory.value)
+const showPublish = computed(() => permissionsKnown.value && [false, true].some((batch) =>
+  canChangePublication('publish', 'APPROVED', batch, session.hasPermission)
+  || canChangePublication('offline', 'PUBLISHED', batch, session.hasPermission)))
+const activeTab = ref('review')
+watch([showReview, showPublish], ([review, publish]) => {
+  if (activeTab.value === 'review' && !review && publish) activeTab.value = 'publish'
+  if (activeTab.value === 'publish' && !publish && review) activeTab.value = 'review'
+})
 // 正文入口按 article:read 控制：自定义角色可能只有待审列表权限，没有 article:read。
 const canReadArticle = computed(() => permissionsKnown.value && session.hasPermission('article:read'))
 const vLoading = ElLoading.directive
@@ -71,7 +82,7 @@ onUnmounted(() => {
 // 权限加载失败后重试：成功后立即按已通过校验的筛选条件刷新待审核列表。
 async function retryPermissions() {
   await loadPermissions()
-  if (permissionsKnown.value) void fetchPending()
+  if (canListReviews.value) void fetchPending()
 }
 
 const STATUS_LABELS = {
@@ -393,7 +404,7 @@ function handleHistoryCurrentChange(nextPage) {
 
 onMounted(async () => {
   await loadPermissions()
-  void fetchPending()
+  if (canListReviews.value) void fetchPending()
 })
 </script>
 
@@ -402,96 +413,107 @@ onMounted(async () => {
     <header class="cms-page-header">
       <div class="page-heading">
         <p class="eyebrow">REVIEW &amp; PUBLISH</p>
-        <h1>审核工作台</h1>
-        <p>待审核队列：审核通过或驳回员工提交的内容，并查看每一次审核历史。</p>
+        <h1>审核与发布</h1>
       </div>
     </header>
 
-    <section class="cms-filter-bar" aria-label="待审核筛选">
-      <div class="cms-filter-fields">
-        <label class="cms-filter-field">
-          <span>标题关键词</span>
-          <ElInput v-model="filters.keyword" clearable maxlength="255" placeholder="输入文章标题关键词" @keyup.enter="handleSearch" />
-        </label>
-        <label class="cms-filter-field">
-          <span>分类 ID</span>
-          <ElInput v-model="filters.categoryId" clearable maxlength="64" placeholder="分类 ID（提交时校验）" @keyup.enter="handleSearch" />
-        </label>
-        <label class="cms-filter-field">
-          <span>作者 ID</span>
-          <ElInput v-model="filters.authorId" clearable maxlength="64" placeholder="作者 ID（提交时校验）" @keyup.enter="handleSearch" />
-        </label>
-      </div>
-      <div class="cms-filter-actions">
-        <ElButton type="primary" :loading="loading" @click="handleSearch">查询</ElButton>
-        <ElButton :disabled="loading" @click="handleReset">重置</ElButton>
-      </div>
-    </section>
-
-    <section v-if="canReadHistory" class="review-history-bar" aria-label="按文章 ID 核对审核历史">
-      <span class="history-bar-label">按文章 ID 核对历史记录</span>
-      <ElInput v-model="historyForm.articleId" class="history-id-input" clearable maxlength="64" placeholder="输入文章 ID（提交时校验）" @keyup.enter="openHistoryById" />
-      <ElButton @click="openHistoryById">查看审核历史</ElButton>
-    </section>
-
-    <ElAlert v-if="permissionStatus === 'loading'" type="info" :closable="false" show-icon
-      title="正在加载当前账号权限…" />
+    <ElAlert v-if="permissionStatus === 'idle' || permissionStatus === 'loading'"
+      type="info" :closable="false" show-icon title="正在加载当前账号权限…" />
     <ElAlert v-else-if="permissionStatus === 'unavailable'" type="warning" :closable="false" show-icon
-      title="权限列表加载失败，审核入口已隐藏；请重试加载权限。">
+      title="权限列表加载失败，请重试。">
       <ElButton size="small" @click="retryPermissions">重试加载权限</ElButton>
     </ElAlert>
-    <ElAlert v-if="permissionsKnown && !canListReviews" type="warning" :closable="false" show-icon
-      title="当前账号缺少 article:review-list 权限，无法查看待审核队列。" />
-    <ElAlert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon>
-      <ElButton size="small" @click="fetchPending">重新加载</ElButton>
-    </ElAlert>
+    <ElAlert v-else-if="!showReview && !showPublish" type="warning" :closable="false" show-icon
+      title="当前账号没有审核或发布权限。" />
 
-    <section v-loading="loading" class="cms-surface-card" aria-label="待审核队列">
-      <div class="cms-card-meta">
-        <span>共 {{ total }} 篇待审核文章</span>
-        <span v-if="lastLoadedAt">最近查询：{{ lastLoadedAt }}</span>
-      </div>
-      <ElTable :data="rows" stripe empty-text="暂无待审核内容">
-        <ElTableColumn label="文章 ID" width="120">
-          <template #default="{ row }"><span class="cms-mono">{{ row.id }}</span></template>
-        </ElTableColumn>
-        <ElTableColumn label="标题" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">
-            <RouterLink v-if="canReadArticle" class="cms-inline-link" :to="{ name: 'article-detail', params: { id: row.id } }">{{ row.title }}</RouterLink>
-            <span v-else>{{ row.title }}</span>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn prop="categoryName" label="分类" width="140" show-overflow-tooltip />
-        <ElTableColumn prop="authorName" label="作者" width="120" />
-        <ElTableColumn label="状态" width="110">
-          <template #default="{ row }">
-            <ElTag :type="statusTagType(row.status)" effect="plain" size="small">{{ statusLabel(row.status) }}</ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn prop="version" label="版本" width="80" />
-        <ElTableColumn label="更新时间" width="170">
-          <template #default="{ row }"><span class="cms-mono">{{ formatLocalDateTime(row.updatedAt) }}</span></template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="210" fixed="right">
-          <template #default="{ row }">
-            <div class="cms-row-actions">
-              <ElButton v-if="canApprove" link type="success" @click="openDecision(row, 'approve')">通过</ElButton>
-              <ElButton v-if="canReject" link type="danger" @click="openDecision(row, 'reject')">驳回</ElButton>
-              <ElButton v-if="canReadHistory" link type="primary" @click="openHistory(row)">历史</ElButton>
+    <ElTabs v-if="showReview || showPublish" v-model="activeTab">
+      <ElTabPane v-if="showReview" label="待审核" name="review">
+        <div class="cms-page">
+          <section class="cms-filter-bar" aria-label="待审核筛选">
+            <div class="cms-filter-fields">
+              <label class="cms-filter-field">
+                <span>标题关键词</span>
+                <ElInput v-model="filters.keyword" clearable maxlength="255" placeholder="输入文章标题关键词" @keyup.enter="handleSearch" />
+              </label>
+              <label class="cms-filter-field">
+                <span>分类 ID</span>
+                <ElInput v-model="filters.categoryId" clearable maxlength="64" placeholder="分类 ID（提交时校验）" @keyup.enter="handleSearch" />
+              </label>
+              <label class="cms-filter-field">
+                <span>作者 ID</span>
+                <ElInput v-model="filters.authorId" clearable maxlength="64" placeholder="作者 ID（提交时校验）" @keyup.enter="handleSearch" />
+              </label>
             </div>
-          </template>
-        </ElTableColumn>
-      </ElTable>
-      <div class="cms-pagination">
-        <ElPagination
-          background
-          :current-page="current" :page-size="size" :page-sizes="[10, 20, 50]" :total="total"
-          :disabled="loading"
-          layout="total, sizes, prev, pager, next, jumper"
-          @size-change="handleSizeChange" @current-change="handleCurrentChange"
-        />
-      </div>
-    </section>
+            <div class="cms-filter-actions">
+              <ElButton type="primary" :loading="loading" :disabled="!canListReviews" @click="handleSearch">查询</ElButton>
+              <ElButton :disabled="loading || !canListReviews" @click="handleReset">重置</ElButton>
+            </div>
+          </section>
+
+          <section v-if="canReadHistory" class="review-history-bar" aria-label="按文章 ID 核对审核历史">
+            <span class="history-bar-label">按文章 ID 核对历史记录</span>
+            <ElInput v-model="historyForm.articleId" class="history-id-input" clearable maxlength="64" placeholder="输入文章 ID（提交时校验）" @keyup.enter="openHistoryById" />
+            <ElButton @click="openHistoryById">查看审核历史</ElButton>
+          </section>
+
+          <ElAlert v-if="permissionsKnown && !canListReviews" type="warning" :closable="false" show-icon
+            title="当前账号缺少 article:review-list 权限，无法查看待审核队列。" />
+          <ElAlert v-if="loadError" :title="loadError" type="error" :closable="false" show-icon>
+            <ElButton size="small" @click="fetchPending">重新加载</ElButton>
+          </ElAlert>
+
+          <section v-loading="loading" class="cms-surface-card" aria-label="待审核队列">
+            <div class="cms-card-meta">
+              <span>共 {{ total }} 篇待审核文章</span>
+              <span v-if="lastLoadedAt">最近查询：{{ lastLoadedAt }}</span>
+            </div>
+            <ElTable :data="rows" stripe empty-text="暂无待审核内容">
+              <ElTableColumn label="文章 ID" width="120">
+                <template #default="{ row }"><span class="cms-mono">{{ row.id }}</span></template>
+              </ElTableColumn>
+              <ElTableColumn label="标题" min-width="200" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <RouterLink v-if="canReadArticle" class="cms-inline-link" :to="{ name: 'article-detail', params: { id: row.id } }">{{ row.title }}</RouterLink>
+                  <span v-else>{{ row.title }}</span>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn prop="categoryName" label="分类" width="140" show-overflow-tooltip />
+              <ElTableColumn prop="authorName" label="作者" width="120" />
+              <ElTableColumn label="状态" width="110">
+                <template #default="{ row }">
+                  <ElTag :type="statusTagType(row.status)" effect="plain" size="small">{{ statusLabel(row.status) }}</ElTag>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn prop="version" label="版本" width="80" />
+              <ElTableColumn label="更新时间" width="170">
+                <template #default="{ row }"><span class="cms-mono">{{ formatLocalDateTime(row.updatedAt) }}</span></template>
+              </ElTableColumn>
+              <ElTableColumn label="操作" width="210" fixed="right">
+                <template #default="{ row }">
+                  <div class="cms-row-actions">
+                    <ElButton v-if="canApprove" link type="success" @click="openDecision(row, 'approve')">通过</ElButton>
+                    <ElButton v-if="canReject" link type="danger" @click="openDecision(row, 'reject')">驳回</ElButton>
+                    <ElButton v-if="canReadHistory" link type="primary" @click="openHistory(row)">历史</ElButton>
+                  </div>
+                </template>
+              </ElTableColumn>
+            </ElTable>
+            <div class="cms-pagination">
+              <ElPagination
+                background
+                :current-page="current" :page-size="size" :page-sizes="[10, 20, 50]" :total="total"
+                :disabled="loading"
+                layout="total, sizes, prev, pager, next, jumper"
+                @size-change="handleSizeChange" @current-change="handleCurrentChange"
+              />
+            </div>
+          </section>
+        </div>
+      </ElTabPane>
+      <ElTabPane v-if="showPublish" label="发布与下架" name="publish" lazy>
+        <PublishPanel :active="activeTab === 'publish'" />
+      </ElTabPane>
+    </ElTabs>
 
     <ElDialog
       :key="decisionDialog.instanceKey"
