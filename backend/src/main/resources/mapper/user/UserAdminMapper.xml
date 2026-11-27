@@ -198,21 +198,6 @@
         </foreach>
     </insert>
 
-    <!-- MySQL 8.4 递归 CTE；UNION DISTINCT 让脏数据里的环自然终止，不会无限递归。
-         返回「目标 → 根」的整条祖先链状态：空列表即部门不存在。 -->
-    <select id="findDepartmentChainStatuses" resultType="java.lang.Integer">
-        WITH RECURSIVE chain (id, parent_id, status) AS (
-            SELECT id, parent_id, status
-            FROM sys_department
-            WHERE id = #{departmentId}
-            UNION DISTINCT
-            SELECT d.id, d.parent_id, d.status
-            FROM sys_department d
-            JOIN chain c ON d.id = c.parent_id
-        )
-        SELECT status FROM chain
-    </select>
-
     <select id="findDescendantDepartmentIds" resultType="java.lang.Long">
         WITH RECURSIVE subtree (id) AS (
             SELECT id

@@ -49,7 +49,6 @@ public class UserAdminService {
 
     private static final DateTimeFormatter BUSINESS_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS");
-    private static final int ENABLED = 1;
 
     private final TransactionTemplate transactions;
     private final UserAdminMapper mapper;
@@ -57,16 +56,19 @@ public class UserAdminService {
     private final RoleDirectoryService roleDirectory;
     private final UserAuditedActions auditedActions;
     private final UserWriteLocks userWriteLocks;
+    private final DepartmentAdminService departmentAdminService;
 
     public UserAdminService(PlatformTransactionManager transactionManager, UserAdminMapper mapper,
             PasswordHasher passwordHasher, RoleDirectoryService roleDirectory,
-            UserAuditedActions auditedActions, UserWriteLocks userWriteLocks) {
+            UserAuditedActions auditedActions, UserWriteLocks userWriteLocks,
+            DepartmentAdminService departmentAdminService) {
         this.transactions = new TransactionTemplate(transactionManager);
         this.mapper = mapper;
         this.passwordHasher = passwordHasher;
         this.roleDirectory = roleDirectory;
         this.auditedActions = auditedActions;
         this.userWriteLocks = userWriteLocks;
+        this.departmentAdminService = departmentAdminService;
     }
 
     /**
@@ -116,12 +118,11 @@ public class UserAdminService {
     }
 
     private UserVO doCreateUser(UserCreateRequest request) {
-        if (request.departmentId() != null) {
-            requireEnabledDepartmentChain(request.departmentId());
-        }
         String passwordHash = passwordHasher.hash(request.password());
-        // INSERT 的部门外键会锁部门行，先取得成功审计所需的操作人共享锁。
         userWriteLocks.lockOperatorForShare();
+        if (request.departmentId() != null) {
+            departmentAdminService.lockAssignableDepartment(request.departmentId());
+        }
         try {
             mapper.insertUser(request.username(), passwordHash, request.realName(),
                     request.departmentId());
@@ -129,9 +130,7 @@ public class UserAdminService {
             // 契约 8.1：唯一键冲突转 409，不能被兜底异常处理器变成 500。
             throw new BusinessException(ResultCode.CONFLICT, "登录账号已存在");
         } catch (DataIntegrityViolationException exception) {
-            // 已知外键引用冲突（并发删除部门）转 409；不把所有 SQL 异常一概当冲突。
-            // sys_user 只有 fk_user_department 一个外键，其余完整性约束（长度/非空/
-            // CHECK status）都已在前置严格校验中排除，因此能到这里的基本是并发部门变更。
+            // 部门外键拒绝写入时按契约返回 409。
             throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
         }
         // 时间由数据库生成后回读，不接受客户端伪造时间；新建账号 roles 恒为 []。
@@ -163,14 +162,13 @@ public class UserAdminService {
         }
         if (request.departmentId() != null
                 && !Objects.equals(request.departmentId(), current.departmentId())) {
-            requireEnabledDepartmentChain(request.departmentId());
+            departmentAdminService.lockAssignableDepartment(request.departmentId());
         }
         int rows;
         try {
             rows = mapper.updateProfile(userId, request.realName(), request.departmentId());
         } catch (DataIntegrityViolationException exception) {
-            // 校验通过后目标部门仍可能被并发删除：与创建入口一样转 409，
-            // 不能落到通用 500。sys_user 只有 fk_user_department 一个外键。
+            // 部门外键拒绝写入时，与创建入口一样转 409。
             throw new BusinessException(ResultCode.CONFLICT, "部门已变更，请重试");
         }
         // rows == 0 是 MySQL 的正常语义：值未变化时 affected rows 为 0，按幂等成功处理。
@@ -217,16 +215,6 @@ public class UserAdminService {
         List<Long> added = target.stream().filter(roleId -> !currentIds.contains(roleId)).toList();
         if (!added.isEmpty()) {
             mapper.insertUserRoles(userId, added);
-        }
-    }
-
-    private void requireEnabledDepartmentChain(Long departmentId) {
-        List<Integer> chain = mapper.findDepartmentChainStatuses(departmentId);
-        if (chain == null || chain.isEmpty()) {
-            throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
-        }
-        if (chain.stream().anyMatch(status -> status == null || status != ENABLED)) {
-            throw new BusinessException(ResultCode.CONFLICT, "部门或上级部门已停用");
         }
     }
 

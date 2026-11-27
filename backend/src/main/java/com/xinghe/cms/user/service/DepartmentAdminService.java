@@ -23,6 +23,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -33,8 +35,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 删除前检查子部门与全部员工引用（含停用员工）；移动到自身或后代父节点返回 409；
  * 原父节点不变时可保留停用引用，换父节点才检查目标及整条祖先链。</p>
  *
- * <p>树、祖先链、后代集合都基于一次 {@code findAll()} 在内存中构建：避免 N+1 查询，
- * 也避免依赖特定数据库的递归 CTE 语法。写操作使用编程式事务，返回时已提交或回滚。</p>
+ * <p>树、层级编辑的祖先链及后代集合基于批量加载的部门行在内存中构建。
+ * 部门写操作使用编程式事务，返回时已提交或回滚。</p>
  *
  * <p><strong>层级写的并发一致性</strong>：create/update 在写事务内先调用
  * {@code findAllForUpdate()} 按 id 升序锁定整棵部门树，防环/父链校验与写入基于同一份
@@ -77,6 +79,17 @@ public class DepartmentAdminService {
         }
         Set<Long> keepIds = status == null ? null : selectWithAncestors(all, status);
         return buildForest(all, keepIds, null);
+    }
+
+    /** 校验并共享锁定新分配的部门及其祖先，直到员工写事务结束。 */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void lockAssignableDepartment(long departmentId) {
+        List<Long> candidateIds = mapper.findAncestorIds(departmentId);
+        if (candidateIds.isEmpty()) {
+            throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
+        }
+        // 候选路径可能已被并发修改，校验以锁定读得到的父节点和状态为准。
+        requireEnabledChain(mapper.findByIdsForShare(candidateIds), departmentId);
     }
 
     /** 创建默认启用、children=[]；新父部门及祖先必须启用；deptCode 重复 409。 */
@@ -316,7 +329,10 @@ public class DepartmentAdminService {
             }
             DepartmentRow row = byId.get(current);
             if (row == null) {
-                throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
+                if (current.equals(parentId)) {
+                    throw new BusinessException(ResultCode.NOT_FOUND, "部门不存在");
+                }
+                throw new BusinessException(ResultCode.CONFLICT, "部门层级已变更，请重试");
             }
             if (row.status() == null || row.status() != ENABLED) {
                 throw new BusinessException(ResultCode.CONFLICT, "部门或上级部门已停用");

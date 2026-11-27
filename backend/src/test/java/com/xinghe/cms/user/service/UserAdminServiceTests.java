@@ -25,7 +25,9 @@ import com.xinghe.cms.user.dto.UserCreateRequest;
 import com.xinghe.cms.user.dto.UserListQuery;
 import com.xinghe.cms.user.dto.UserRolesUpdateRequest;
 import com.xinghe.cms.user.dto.UserUpdateRequest;
+import com.xinghe.cms.user.mapper.DepartmentAdminMapper;
 import com.xinghe.cms.user.mapper.UserAdminMapper;
+import com.xinghe.cms.user.mapper.row.DepartmentRow;
 import com.xinghe.cms.user.mapper.row.UserProfileRow;
 import com.xinghe.cms.user.mapper.row.UserRoleRow;
 import com.xinghe.cms.user.mapper.row.UserStatusSnapshot;
@@ -65,6 +67,8 @@ class UserAdminServiceTests {
     @Mock
     private UserAdminMapper mapper;
     @Mock
+    private DepartmentAdminMapper departmentMapper;
+    @Mock
     private PasswordHasher passwordHasher;
     @Mock
     private RoleDirectoryService roleDirectory;
@@ -77,8 +81,11 @@ class UserAdminServiceTests {
     void setUp() {
         lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
                 .thenReturn(new SimpleTransactionStatus());
+        UserWriteLocks userWriteLocks = new UserWriteLocks(mapper, currentUserProvider);
+        DepartmentAdminService departments = new DepartmentAdminService(
+                transactionManager, departmentMapper, new DepartmentAuditedActions(), userWriteLocks);
         service = new UserAdminService(transactionManager, mapper, passwordHasher, roleDirectory,
-                new UserAuditedActions(), new UserWriteLocks(mapper, currentUserProvider));
+                new UserAuditedActions(), userWriteLocks, departments);
     }
 
     private UserProfileRow profile(Long departmentId) {
@@ -86,11 +93,17 @@ class UserAdminServiceTests {
                 departmentId == null ? null : "研发部门", 1, TIME, TIME);
     }
 
+    private DepartmentRow department(long id, Long parentId, int status) {
+        return new DepartmentRow(id, parentId, "DEPT" + id, "部门" + id, 0, status, TIME, TIME);
+    }
+
     @Test
     void createUserHashesPasswordAndReadsBackDatabaseTimestamps() {
         when(currentUserProvider.requireCurrentUser()).thenReturn(new CurrentUser(2L, "admin", null));
         when(passwordHasher.hash("12345678")).thenReturn("pbkdf2$hash");
-        when(mapper.findDepartmentChainStatuses(3L)).thenReturn(List.of(1, 1));
+        when(departmentMapper.findAncestorIds(3L)).thenReturn(List.of(3L, 1L));
+        when(departmentMapper.findByIdsForShare(List.of(3L, 1L))).thenReturn(List.of(
+                department(1L, null, 1), department(3L, 1L, 1)));
         when(mapper.insertUser("editor_demo", "pbkdf2$hash", "演示编辑", 3L)).thenReturn(1);
         when(mapper.findProfileByUsername("editor_demo")).thenReturn(profile(3L));
 
@@ -100,17 +113,20 @@ class UserAdminServiceTests {
         assertEquals("7", result.id());
         assertEquals(List.of(), result.roles());
         assertEquals("2026-11-02T16:00:00.000", result.createdAt());
-        InOrder order = inOrder(passwordHasher, mapper);
+        InOrder order = inOrder(passwordHasher, mapper, departmentMapper, transactionManager);
         order.verify(passwordHasher).hash("12345678");
         order.verify(mapper).findUserForShare(2L);
+        order.verify(departmentMapper).findByIdsForShare(List.of(3L, 1L));
         order.verify(mapper).insertUser("editor_demo", "pbkdf2$hash", "演示编辑", 3L);
-        verify(transactionManager).commit(any());
+        order.verify(transactionManager).commit(any());
         verify(mapper, never()).insertUserRoles(eq(USER_ID), anyList());
     }
 
     @Test
     void createUserChecksWholeDepartmentChain() {
-        when(mapper.findDepartmentChainStatuses(3L)).thenReturn(List.of(1, 0, 1));
+        when(departmentMapper.findAncestorIds(3L)).thenReturn(List.of(3L, 2L, 1L));
+        when(departmentMapper.findByIdsForShare(List.of(3L, 2L, 1L))).thenReturn(List.of(
+                department(1L, null, 1), department(2L, 1L, 0), department(3L, 2L, 1)));
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.createUser(new UserCreateRequest("u", "12345678", "姓名", 3L)));
@@ -122,12 +138,13 @@ class UserAdminServiceTests {
 
     @Test
     void createUserMissingDepartmentReturns404() {
-        when(mapper.findDepartmentChainStatuses(9L)).thenReturn(List.of());
+        when(departmentMapper.findAncestorIds(9L)).thenReturn(List.of());
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.createUser(new UserCreateRequest("u", "12345678", "姓名", 9L)));
 
         assertEquals(ResultCode.NOT_FOUND, exception.getResultCode());
+        verify(departmentMapper, never()).findByIdsForShare(anyList());
         verify(mapper, never()).insertUser(any(), any(), any(), any());
     }
 
@@ -156,14 +173,16 @@ class UserAdminServiceTests {
         assertEquals("新姓名", result.realName());
         assertEquals("3", result.departmentId());
         // 原引用不变：不检查祖先链，允许保留已停用部门。
-        verify(mapper, never()).findDepartmentChainStatuses(any());
+        verifyNoInteractions(departmentMapper);
         verify(mapper).updateProfile(USER_ID, "新姓名", 3L);
     }
 
     @Test
     void updateUserNewDepartmentRequiresEnabledAncestors() {
         when(mapper.findProfileForUpdate(USER_ID)).thenReturn(profile(1L));
-        when(mapper.findDepartmentChainStatuses(2L)).thenReturn(List.of(1, 0));
+        when(departmentMapper.findAncestorIds(2L)).thenReturn(List.of(2L, 3L));
+        when(departmentMapper.findByIdsForShare(List.of(2L, 3L))).thenReturn(List.of(
+                department(2L, 3L, 1), department(3L, null, 0)));
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.updateUser(USER_ID, new UserUpdateRequest("新姓名", 2L)));
@@ -172,11 +191,27 @@ class UserAdminServiceTests {
         verify(mapper, never()).updateProfile(any(), any(), any());
     }
 
-    /** PR #39 审查 P2：换部门时目标被并发删除，外键冲突必须按契约转 409 而非 500。 */
+    @Test
+    void updateUserRejectsDepartmentMovedOutsideCandidateChain() {
+        when(mapper.findProfileForUpdate(USER_ID)).thenReturn(profile(null));
+        when(departmentMapper.findAncestorIds(2L)).thenReturn(List.of(2L, 3L));
+        when(departmentMapper.findByIdsForShare(List.of(2L, 3L))).thenReturn(List.of(
+                department(2L, 4L, 1), department(3L, null, 1)));
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.updateUser(USER_ID, new UserUpdateRequest("新姓名", 2L)));
+
+        assertEquals(ResultCode.CONFLICT, exception.getResultCode());
+        verify(mapper, never()).updateProfile(any(), any(), any());
+        verify(transactionManager).rollback(any());
+    }
+
+    /** 数据库外键冲突仍按契约转 409。 */
     @Test
     void updateUserForeignKeyConflictMapsTo409() {
         when(mapper.findProfileForUpdate(USER_ID)).thenReturn(profile(1L));
-        when(mapper.findDepartmentChainStatuses(2L)).thenReturn(List.of(1));
+        when(departmentMapper.findAncestorIds(2L)).thenReturn(List.of(2L));
+        when(departmentMapper.findByIdsForShare(List.of(2L))).thenReturn(List.of(department(2L, null, 1)));
         doThrow(new DataIntegrityViolationException("fk_user_department"))
                 .when(mapper).updateProfile(USER_ID, "新姓名", 2L);
 
