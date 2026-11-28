@@ -15,6 +15,8 @@ import com.xinghe.cms.log.vo.OperationLogVO;
 import com.xinghe.cms.permission.service.AuthorizationQueryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -194,12 +196,68 @@ class OperationLogControllerTests {
         assertThat(stubService.pageCalled).isFalse();
     }
 
+    @ParameterizedTest
+    @CsvSource({"createdFrom, ''", "createdTo, ''", "createdFrom, '  '", "createdTo, '  '"})
+    void rejectsExplicitlyEmptyTimeFiltersBeforeServiceIsCalled(String name, String value) throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs").param(name, value)).andReturn();
+
+        assertError(result, 400, "请求参数错误");
+        assertThat(stubService.pageCalled).isFalse();
+    }
+
     @Test
     void rejectsNonDecimalNumericParameter() throws Exception {
         MvcResult result = mockMvc.perform(get("/api/admin/logs").param("userId", "0x1")).andReturn();
 
         assertError(result, 400, "请求参数错误");
         assertThat(stubService.pageCalled).isFalse();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"userId, 01", "current, 01", "size, 01", "userId, 9223372036854775808"})
+    void rejectsNoncanonicalOrOutOfRangeDecimalParameter(String name, String value) throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs").param(name, value)).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertUnifiedErrorBody(body(result), 400);
+        assertThat(stubService.pageCalled).isFalse();
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "userId, 1, 2", "current, 1, 2", "size, 10, 20",
+            "operation, article.approve, article.reject", "result, SUCCESS, FAILURE",
+            "createdFrom, 2026-11-08T10:00:00, 2026-11-08T11:00:00",
+            "createdTo, 2026-11-08T10:00:00, 2026-11-08T11:00:00"
+    })
+    void rejectsRepeatedScalarQueryParameters(String name, String first, String second) throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs").param(name, first, second)).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertUnifiedErrorBody(body(result), 400);
+        assertThat(stubService.pageCalled).isFalse();
+    }
+
+    @Test
+    void acceptsMaxLongUserIdForExactFiltering() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs")
+                .param("userId", Long.toString(Long.MAX_VALUE))).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.lastPageQuery.getUserId()).isEqualTo(Long.MAX_VALUE);
+    }
+
+    @Test
+    void listDoesNotBindQueryFieldsFromHttpHeaders() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api/admin/logs")
+                .header("current", "2")
+                .header("userId", "01")
+                .header("operation", "article.approve")).andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(stubService.lastPageQuery.getCurrent()).isEqualTo(1L);
+        assertThat(stubService.lastPageQuery.getUserId()).isNull();
+        assertThat(stubService.lastPageQuery.getOperation()).isNull();
     }
 
     @Test
@@ -319,10 +377,12 @@ class OperationLogControllerTests {
         private RuntimeException pageError;
         private RuntimeException detailError;
         private boolean pageCalled;
+        private OperationLogQuery lastPageQuery;
 
         @Override
         public PageResult<OperationLogVO> page(OperationLogQuery query) {
             pageCalled = true;
+            lastPageQuery = query;
             if (pageError != null) {
                 throw pageError;
             }
@@ -343,6 +403,7 @@ class OperationLogControllerTests {
             pageError = null;
             detailError = null;
             pageCalled = false;
+            lastPageQuery = null;
         }
     }
 }

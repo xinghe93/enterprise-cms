@@ -7,21 +7,29 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.security.BearerTokenAuthenticationFilter;
 import com.xinghe.cms.user.dto.LoginRequest;
+import com.xinghe.cms.user.mapper.UserAuthMapper;
+import com.xinghe.cms.user.mapper.row.CurrentUserStatusRow;
 import com.xinghe.cms.user.service.AuthService;
 import com.xinghe.cms.user.vo.LoginResultVO;
 import com.xinghe.cms.user.vo.UserVO;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -32,7 +40,7 @@ import org.springframework.web.context.WebApplicationContext;
  * 登录接口的 HTTP 层回归：走真实 DispatcherServlet + Boot 配置的 Jackson 转换器 +
  * 公共异常处理器，不用 standaloneSetup，否则测不到实际 MVC 的反序列化配置。
  *
- * <p>覆盖契约 8.1：未知字段、非法字段类型返回 400 且不进入登录服务；
+ * <p>覆盖契约 8.1：未知字段、未知查询参数、非法字段类型返回 400 且不进入登录服务；
  * 合法字符串仍可登录，密码按契约不 trim。</p>
  */
 @SpringBootTest
@@ -43,6 +51,12 @@ class AuthControllerHttpTests {
 
     @MockitoBean
     private AuthService authService;
+
+    @MockitoBean
+    private AuthSessionService sessions;
+
+    @MockitoBean
+    private UserAuthMapper userAuthMapper;
 
     private MockMvc mockMvc;
 
@@ -64,6 +78,60 @@ class AuthControllerHttpTests {
                 .andExpect(jsonPath("$.data").value(nullValue()));
 
         verifyNoInteractions(authService);
+    }
+
+    @Test
+    void unknownQueryParamReturns400WithoutEnteringLoginService() throws Exception {
+        mockMvc.perform(post("/api/auth/login?unexpected=1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"editor_demo\",\"password\":\"pw\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("未知查询参数: unexpected"))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        verifyNoInteractions(authService);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"GET, /api/auth/me", "POST, /api/auth/logout"})
+    void protectedAuthRoutesRejectUnknownQueryParamsBeforeCallingService(String method, String path) throws Exception {
+        stubActiveSession();
+
+        mockMvc.perform(request(HttpMethod.valueOf(method), path)
+                        .servletPath(path)
+                        .header("Authorization", "Bearer opaque-token")
+                        .param("unexpected", "1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("未知查询参数: unexpected"));
+
+        verifyNoInteractions(authService);
+    }
+
+    @Test
+    void protectedAuthRoutesStillUseTheAuthenticatedIdentityAndToken() throws Exception {
+        stubActiveSession();
+        when(authService.currentUser(7L)).thenReturn(new UserVO("7", "editor_demo", "演示编辑",
+                null, null, 1, List.of(), null, null));
+
+        mockMvc.perform(get("/api/auth/me").servletPath("/api/auth/me")
+                        .header("Authorization", "Bearer opaque-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value("7"));
+        mockMvc.perform(post("/api/auth/logout").servletPath("/api/auth/logout")
+                        .header("Authorization", "Bearer opaque-token"))
+                .andExpect(status().isOk());
+
+        verify(authService).currentUser(7L);
+        verify(authService).logout("opaque-token");
+    }
+
+    private void stubActiveSession() {
+        when(sessions.resolveIdentity("opaque-token"))
+                .thenReturn(new AuthSessionService.SessionIdentity(7L, "epoch"));
+        when(userAuthMapper.findStatusById(7L))
+                .thenReturn(new CurrentUserStatusRow("editor_demo", null, 1));
     }
 
     /** 复审③：数字 / 布尔 / null / 数组 / 对象 / 缺字段一律 400，登录服务不得被调用。 */

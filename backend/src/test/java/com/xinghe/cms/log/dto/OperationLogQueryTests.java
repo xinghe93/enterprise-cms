@@ -30,7 +30,10 @@ class OperationLogQueryTests {
         query.setOperation("   ");
         assertThat(query.normalizedOperation()).isNull();
 
-        query.setOperation("  article.approve  ");
+        query.setOperation("\u3000\u00A0\uFEFF");
+        assertThat(query.normalizedOperation()).isNull();
+
+        query.setOperation("\u3000\u00A0article.approve\uFEFF ");
         assertThat(query.normalizedOperation()).isEqualTo("article.approve");
     }
 

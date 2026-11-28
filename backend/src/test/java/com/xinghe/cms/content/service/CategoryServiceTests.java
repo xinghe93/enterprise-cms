@@ -2,9 +2,11 @@ package com.xinghe.cms.content.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.xinghe.cms.common.exception.BusinessException;
@@ -15,11 +17,46 @@ import com.xinghe.cms.content.vo.CategoryVO;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class CategoryServiceTests {
 
     private final CategoryMapper mapper = mock(CategoryMapper.class);
     private final CategoryService service = new CategoryService(mapper);
+
+    @ParameterizedTest
+    @ValueSource(strings = {"\u00A0", "\u3000", "\uFEFF\u202F\t"})
+    void createAndUpdateRejectNamesMadeOnlyOfContractWhitespace(String name) {
+        Category existing = category(1, null, 0, 1);
+        when(mapper.insert(any(Category.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, Category.class).setId(1L);
+            return 1;
+        });
+        when(mapper.selectAllForUpdate()).thenReturn(List.of(existing));
+        when(mapper.selectById(1L)).thenReturn(existing);
+
+        assertThatExceptionOfType(BusinessException.class)
+                .isThrownBy(() -> service.create(null, name, 0))
+                .satisfies(error -> assertThat(error.getResultCode()).isEqualTo(ResultCode.BAD_REQUEST));
+        assertThatExceptionOfType(BusinessException.class)
+                .isThrownBy(() -> service.update(1L, null, name, 0))
+                .satisfies(error -> assertThat(error.getResultCode()).isEqualTo(ResultCode.BAD_REQUEST));
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void createTrimsContractWhitespaceAroundNameAndPreservesInterior() {
+        when(mapper.insert(any(Category.class))).thenAnswer(invocation -> {
+            Category inserted = invocation.getArgument(0);
+            assertThat(inserted.getCategoryName()).isEqualTo("技术\u3000文档");
+            inserted.setId(1L);
+            return 1;
+        });
+        when(mapper.selectById(1L)).thenReturn(category(1, null, 0, 1));
+
+        service.create(null, "\u00A0\uFEFF技术\u3000文档\u202F ", 0);
+    }
 
     @Test
     void adminFilterIncludesDisabledAncestorAndOrdersMatchingSiblings() {

@@ -6,6 +6,7 @@ import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.content.entity.Category;
 import com.xinghe.cms.content.mapper.CategoryMapper;
 import com.xinghe.cms.content.vo.CategoryVO;
+import com.xinghe.cms.permission.support.ContractWhitespace;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -263,9 +264,10 @@ public class CategoryService {
     }
 
     private static String normalizeName(String categoryName) {
-        if (categoryName == null || categoryName.isBlank() || categoryName.codePointCount(0, categoryName.length()) > 100) {
+        if (ContractWhitespace.isBlank(categoryName)
+                || categoryName.codePointCount(0, categoryName.length()) > 100) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "分类名称不能为空且长度不能超过 100");
         }
-        return categoryName.strip();
+        return ContractWhitespace.strip(categoryName);
     }
 }
