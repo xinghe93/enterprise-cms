@@ -5,7 +5,6 @@ import com.mysql.cj.conf.DefaultPropertySet;
 import com.mysql.cj.conf.PropertyKey;
 import com.zaxxer.hikari.HikariDataSource;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.Properties;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
@@ -21,17 +20,15 @@ class DataSourceTimezoneConfigTests {
     private DataSource dataSource;
 
     @Test
-    void hikariDataSourceEnforcesUtcPlus8SessionTimeZone() {
+    void hikariDataSourceEnforcesAsiaShanghaiSessionTimeZone() {
         assertThat(dataSource).isInstanceOf(HikariDataSource.class);
         HikariDataSource hikari = (HikariDataSource) dataSource;
         Properties props = hikari.getDataSourceProperties();
 
-        assertThat(props.getProperty("connectionTimeZone")).isEqualTo("+08:00");
+        assertThat(props.getProperty("connectionTimeZone")).isEqualTo("Asia/Shanghai");
         assertThat(props.getProperty("forceConnectionTimeZoneToSession")).isEqualTo("true");
-        // Verify +08:00 normalizes to ZoneOffset so Connector/J sends SET SESSION time_zone='+08:00'
-        // without depending on mysql.time_zone_name tables.
-        assertThat(ZoneId.of(props.getProperty("connectionTimeZone")).normalized())
-                .isEqualTo(ZoneOffset.of("+08:00"));
+        assertThat(ZoneId.of(props.getProperty("connectionTimeZone")))
+                .isEqualTo(ZoneId.of("Asia/Shanghai"));
     }
 
     @Test
@@ -45,7 +42,7 @@ class DataSourceTimezoneConfigTests {
         plainSet.initializeProperties(plainUrl.getMainHost().exposeAsProperties());
 
         assertThat(plainSet.getStringProperty(PropertyKey.connectionTimeZone).getValue())
-                .isEqualTo("+08:00");
+                .isEqualTo("Asia/Shanghai");
         assertThat(plainSet.getBooleanProperty(PropertyKey.forceConnectionTimeZoneToSession).getValue())
                 .isTrue();
     }
@@ -61,7 +58,7 @@ class DataSourceTimezoneConfigTests {
         legacySet.initializeProperties(legacyUrl.getMainHost().exposeAsProperties());
 
         assertThat(legacySet.getStringProperty(PropertyKey.connectionTimeZone).getValue())
-                .isEqualTo("+08:00");
+                .isEqualTo("Asia/Shanghai");
         assertThat(legacySet.getBooleanProperty(PropertyKey.forceConnectionTimeZoneToSession).getValue())
                 .isTrue();
     }
