@@ -1,6 +1,7 @@
 package com.xinghe.cms.log.aspect;
 
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.log.annotation.AuditLog;
@@ -55,6 +56,13 @@ public class AuditLogAspect {
     private static final String SUCCESS = "SUCCESS";
     private static final String FAILURE = "FAILURE";
     private static final String UNKNOWN = "";
+
+    private static final int MAX_OPERATION_LENGTH = 100;
+    private static final int MAX_REQUEST_URI_LENGTH = 255;
+    private static final int MAX_HTTP_METHOD_LENGTH = 16;
+
+    /** 剥离路径段中的矩阵参数（如 ;jsessionid=... 或 ;pad=...），避免超长路径触发列宽截断异常。 */
+    private static final Pattern MATRIX_PARAM_SEGMENT = Pattern.compile(";[^/]*");
 
     private final AuditLogWriter auditLogWriter;
 
@@ -131,10 +139,34 @@ public class AuditLogAspect {
         HttpServletRequest request = currentRequest();
         OperationLog entry = new OperationLog();
         entry.setUserId(resolveUserId());
-        entry.setOperation(operation);
-        entry.setRequestUri(request == null ? UNKNOWN : request.getRequestURI());
-        entry.setHttpMethod(request == null ? UNKNOWN : request.getMethod());
+        entry.setOperation(truncateCodePoints(operation, MAX_OPERATION_LENGTH));
+        entry.setRequestUri(request == null ? UNKNOWN : normalizeRequestUri(request));
+        entry.setHttpMethod(request == null
+                ? UNKNOWN
+                : truncateCodePoints(request.getMethod(), MAX_HTTP_METHOD_LENGTH));
         return entry;
+    }
+
+    private String normalizeRequestUri(HttpServletRequest request) {
+        String rawUri = request.getRequestURI();
+        if (rawUri == null || rawUri.isEmpty()) {
+            return UNKNOWN;
+        }
+        String sanitized = rawUri.indexOf(';') >= 0
+                ? MATRIX_PARAM_SEGMENT.matcher(rawUri).replaceAll("")
+                : rawUri;
+        return truncateCodePoints(sanitized, MAX_REQUEST_URI_LENGTH);
+    }
+
+    private String truncateCodePoints(String value, int maxCodePoints) {
+        if (value == null || value.isEmpty()) {
+            return UNKNOWN;
+        }
+        if (value.length() <= maxCodePoints
+                || value.codePointCount(0, value.length()) <= maxCodePoints) {
+            return value;
+        }
+        return value.substring(0, value.offsetByCodePoints(0, maxCodePoints));
     }
 
     private void safeWrite(OperationLog entry) {

@@ -1,6 +1,7 @@
 package com.xinghe.cms.user.controller;
 
 import com.xinghe.cms.common.exception.BusinessException;
+import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.security.annotation.RequirePermission;
@@ -9,6 +10,7 @@ import com.xinghe.cms.user.dto.DepartmentStatusUpdateRequest;
 import com.xinghe.cms.user.dto.DepartmentUpdateRequest;
 import com.xinghe.cms.user.service.DepartmentAdminService;
 import com.xinghe.cms.user.vo.DepartmentVO;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +23,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -59,16 +60,17 @@ public class DepartmentAdminController {
     /** 部门树：默认全部状态；status 筛选时由 Service 保留必要祖先的真实状态。 */
     @GetMapping
     @RequirePermission("department:tree")
-    public ApiResponse<List<DepartmentVO>> getDepartmentTree(
-            @RequestParam Map<String, String> params) {
-        return ApiResponse.success(departmentService.getTree(parseTreeQuery(params)));
+    public ApiResponse<List<DepartmentVO>> getDepartmentTree(HttpServletRequest httpRequest) {
+        return ApiResponse.success(departmentService.getTree(parseTreeQuery(httpRequest.getParameterMap())));
     }
 
     /** 创建部门：默认启用、children=[]；parentId 省略/null 为根。 */
     @PostMapping
     @RequirePermission("department:create")
     public ApiResponse<DepartmentVO> createDepartment(
-            @Valid @RequestBody DepartmentCreateRequest request) {
+            @Valid @RequestBody DepartmentCreateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         return ApiResponse.success(departmentService.create(request));
     }
 
@@ -76,14 +78,18 @@ public class DepartmentAdminController {
     @PutMapping("/{id}")
     @RequirePermission("department:update")
     public ApiResponse<DepartmentVO> updateDepartment(@PathVariable("id") String id,
-            @Valid @RequestBody DepartmentUpdateRequest request) {
+            @Valid @RequestBody DepartmentUpdateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         return ApiResponse.success(departmentService.update(parseId(id), request));
     }
 
     /** 删除空部门：存在子部门或任何员工引用返回 409。 */
     @DeleteMapping("/{id}")
     @RequirePermission("department:delete")
-    public ApiResponse<Void> deleteDepartment(@PathVariable("id") String id) {
+    public ApiResponse<Void> deleteDepartment(@PathVariable("id") String id,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         departmentService.delete(parseId(id));
         return ApiResponse.success();
     }
@@ -92,22 +98,22 @@ public class DepartmentAdminController {
     @PutMapping("/{id}/status")
     @RequirePermission("department:status")
     public ApiResponse<Void> setDepartmentStatus(@PathVariable("id") String id,
-            @Valid @RequestBody DepartmentStatusUpdateRequest request) {
+            @Valid @RequestBody DepartmentStatusUpdateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         departmentService.changeStatus(parseId(id), request.status());
         return ApiResponse.success();
     }
 
-    /** 契约 8.1：未知查询参数返回 400，不能静默忽略。 */
-    private Integer parseTreeQuery(Map<String, String> params) {
-        for (String key : params.keySet()) {
-            if (!TREE_QUERY_PARAMS.contains(key)) {
-                throw new BusinessException(ResultCode.BAD_REQUEST, "不支持的查询参数");
-            }
-        }
-        String raw = params.get("status");
-        if (raw == null) {
+    /** 契约 8.1：未知查询参数与重复查询参数均返回 400，不能静默忽略。 */
+    private Integer parseTreeQuery(Map<String, String[]> params) {
+        QueryParams.requireAllowedKeys(params, TREE_QUERY_PARAMS);
+        QueryParams.requireSingleValueForEachPresentKey(params);
+        String[] values = params.get("status");
+        if (values == null) {
             return null;
         }
+        String raw = values[0];
         if (!"0".equals(raw) && !"1".equals(raw)) {
             throw new BusinessException(ResultCode.BAD_REQUEST, "status 只能是 0 或 1");
         }

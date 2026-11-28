@@ -326,4 +326,34 @@ class DepartmentAdminControllerHttpTests {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(409));
     }
+
+    @Test
+    void treeRejectsDuplicateQueryParamAndWriteEndpointsRejectUnknownQueryParams() throws Exception {
+        perform(get(DEPARTMENTS).param("status", "1", "0"), DEPARTMENTS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(post(DEPARTMENTS).param("unexpected", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deptCode\":\"DEV\",\"deptName\":\"研发部门\"}"),
+                DEPARTMENTS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(put(DEPARTMENTS + "/5").param("unexpected", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"parentId\":null,\"deptName\":\"研发部门\",\"sortOrder\":0}"),
+                DEPARTMENTS + "/5")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(delete(DEPARTMENTS + "/5").param("unexpected", "1"), DEPARTMENTS + "/5")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(put(DEPARTMENTS + "/5/status").param("unexpected", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":0}"),
+                DEPARTMENTS + "/5/status")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(departmentService);
+    }
 }
