@@ -227,6 +227,59 @@ class AuditLogAspectTests {
         assertThat(target.value()).containsExactly(ElementType.METHOD);
     }
 
+    @Test
+    void stripsMatrixParametersFromRequestUri() throws Throwable {
+        String padded = "/api/admin/articles/123;pad=" + "a".repeat(300) + "/approve;jsessionid=SECRET";
+        bindRequest("POST", padded, "token=secret");
+
+        aspect.record(StubProceedingJoinPoint.returning("ok"), auditLog);
+
+        OperationLog entry = writer.written.get(0);
+        assertThat(entry.getRequestUri()).isEqualTo("/api/admin/articles/123/approve");
+        assertThat(entry.getRequestUri()).doesNotContain("pad=").doesNotContain("SECRET");
+    }
+
+    @Test
+    void truncatesOversizedRequestUriByCodePointsWithoutSplittingSurrogatePairs() throws Throwable {
+        String longAscii = "/api/admin/tags/" + "x".repeat(300);
+        bindRequest("POST", longAscii, null);
+
+        aspect.record(StubProceedingJoinPoint.returning("ok"), auditLog);
+
+        OperationLog asciiEntry = writer.written.get(0);
+        assertThat(asciiEntry.getRequestUri().codePointCount(0, asciiEntry.getRequestUri().length()))
+                .isEqualTo(255);
+        assertThat(asciiEntry.getRequestUri()).startsWith("/api/admin/tags/");
+
+        String emojiUri = "/" + "😀".repeat(260);
+        bindRequest("POST", emojiUri, null);
+
+        aspect.record(StubProceedingJoinPoint.returning("ok"), auditLog);
+
+        OperationLog emojiEntry = writer.written.get(1);
+        String truncated = emojiEntry.getRequestUri();
+        assertThat(truncated.codePointCount(0, truncated.length())).isEqualTo(255);
+        assertThat(Character.isHighSurrogate(truncated.charAt(truncated.length() - 1))).isFalse();
+    }
+
+    @Test
+    void handlesNullAndOversizedHttpMethodAndOperationSafely() throws Throwable {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRequestURI(null);
+        request.setMethod("CUSTOM_SUPER_LONG_HTTP_METHOD");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request, new MockHttpServletResponse()));
+
+        Method longOpMethod = AnnotatedSample.class.getDeclaredMethod("longOperation");
+        AuditLog longOpAnnotation = longOpMethod.getAnnotation(AuditLog.class);
+
+        aspect.record(StubProceedingJoinPoint.returning("ok"), longOpAnnotation);
+
+        OperationLog entry = writer.written.get(0);
+        assertThat(entry.getRequestUri()).isEmpty();
+        assertThat(entry.getHttpMethod()).hasSize(16);
+        assertThat(entry.getOperation()).hasSize(100);
+    }
+
     private void beginTransactionSync() {
         TransactionSynchronizationManager.initSynchronization();
     }
@@ -370,6 +423,12 @@ class AuditLogAspectTests {
         @AuditLog(operation = "article.approve")
         void approve() {
             // 仅用于反射读取注解
+        }
+
+        @AuditLog(operation = "op.01234567890123456789012345678901234567890123456789"
+                + "012345678901234567890123456789012345678901234567890123456789")
+        void longOperation() {
+            // 仅用于反射读取超长 operation 注解
         }
     }
 }

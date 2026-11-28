@@ -2,6 +2,7 @@ package com.xinghe.cms.user.service;
 
 import com.xinghe.cms.common.exception.BusinessException;
 import com.xinghe.cms.common.response.ResultCode;
+import com.xinghe.cms.log.annotation.AuditLog;
 import com.xinghe.cms.security.AuthSessionService;
 import com.xinghe.cms.security.PasswordHasher;
 import com.xinghe.cms.user.dto.LoginRequest;
@@ -102,7 +103,8 @@ public class AuthService {
         return new LoginResultVO(token, "Bearer", AuthSessionService.TTL_SECONDS, user);
     }
 
-    /** 只撤销当前会话；其他登录保持有效。 */
+    /** 只撤销当前会话；其他登录保持有效。按 OpenAPI x-audit-operation 记录 auth.logout 元数据。 */
+    @AuditLog(operation = "auth.logout")
     public void logout(String token) {
         sessions.revoke(token);
     }

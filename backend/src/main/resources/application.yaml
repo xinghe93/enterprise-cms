@@ -15,6 +15,13 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/enterprise_cms}
     username: ${SPRING_DATASOURCE_USERNAME:root}
     password: ${SPRING_DATASOURCE_PASSWORD:}
+    hikari:
+      data-source-properties:
+        # 契约要求业务 DATETIME(3) 统一采用 Asia/Shanghai（固定 UTC+8，无夏令时）本地时间。
+        # 通过连接属性统一注入，即使通过 SPRING_DATASOURCE_URL 覆盖连接串也能强制生效；
+        # 使用 +08:00 使驱动发送 SET SESSION time_zone='+08:00'，兼容未导入时区表的 MySQL 实例。
+        connectionTimeZone: "+08:00"
+        forceConnectionTimeZoneToSession: true
   sql:
     init:
       mode: never

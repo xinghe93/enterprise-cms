@@ -448,4 +448,53 @@ class UserAdminEndpointsHttpTests {
 
         verify(userStatusService).changeStatus(7L, 0);
     }
+
+    @Test
+    void listUsersRejectsDuplicateQueryParams() throws Exception {
+        for (String[] pair : new String[][]{
+                {"status", "1", "0"},
+                {"departmentId", "1", "2"},
+                {"keyword", "a", "b"},
+                {"current", "1", "2"},
+                {"size", "10", "20"}
+        }) {
+            perform(get(USERS).param(pair[0], pair[1], pair[2]), USERS)
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value(400));
+        }
+        verifyNoInteractions(userAdminService);
+    }
+
+    @Test
+    void userDetailAndWriteEndpointsRejectUnknownQueryParams() throws Exception {
+        perform(post(USERS).param("unexpected", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"alice\",\"password\":\"12345678\",\"realName\":\"爱丽丝\"}"),
+                USERS)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(get(USERS + "/7").param("unexpected", "1"), USERS + "/7")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(put(USERS + "/7").param("unexpected", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"realName\":\"爱丽丝\",\"departmentId\":null}"),
+                USERS + "/7")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(put(USERS + "/7/roles").param("unexpected", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"roleIds\":[\"2\"]}"),
+                USERS + "/7/roles")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        perform(put(USERS + "/7/status").param("unexpected", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":0}"),
+                USERS + "/7/status")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        verifyNoInteractions(userAdminService, userStatusService);
+    }
 }

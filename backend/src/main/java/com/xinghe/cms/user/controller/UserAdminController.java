@@ -1,6 +1,7 @@
 package com.xinghe.cms.user.controller;
 
 import com.xinghe.cms.common.exception.BusinessException;
+import com.xinghe.cms.common.request.QueryParams;
 import com.xinghe.cms.common.response.ApiResponse;
 import com.xinghe.cms.common.response.ResultCode;
 import com.xinghe.cms.security.annotation.RequirePermission;
@@ -13,6 +14,7 @@ import com.xinghe.cms.user.service.UserAdminService;
 import com.xinghe.cms.user.service.UserStatusService;
 import com.xinghe.cms.user.vo.UserPageVO;
 import com.xinghe.cms.user.vo.UserVO;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.Map;
 import java.util.Set;
@@ -23,7 +25,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -78,21 +79,25 @@ public class UserAdminController {
     /** 员工分页（OpenAPI listUsers）：所有可选条件 AND，省略不筛选。 */
     @GetMapping
     @RequirePermission("user:list")
-    public ApiResponse<UserPageVO> listUsers(@RequestParam Map<String, String> params) {
-        return ApiResponse.success(userAdminService.listUsers(parseListQuery(params)));
+    public ApiResponse<UserPageVO> listUsers(HttpServletRequest httpRequest) {
+        return ApiResponse.success(userAdminService.listUsers(parseListQuery(httpRequest.getParameterMap())));
     }
 
     /** 创建员工（OpenAPI createUser）：默认启用、无角色。 */
     @PostMapping
     @RequirePermission("user:create")
-    public ApiResponse<UserVO> createUser(@Valid @RequestBody UserCreateRequest request) {
+    public ApiResponse<UserVO> createUser(@Valid @RequestBody UserCreateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         return ApiResponse.success(userAdminService.createUser(request));
     }
 
     /** 员工详情（OpenAPI getUser）：目标不存在返回 404。 */
     @GetMapping("/{id}")
     @RequirePermission("user:read")
-    public ApiResponse<UserVO> getUser(@PathVariable("id") String id) {
+    public ApiResponse<UserVO> getUser(@PathVariable("id") String id,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         return ApiResponse.success(userAdminService.getUser(parseId(id)));
     }
 
@@ -100,7 +105,9 @@ public class UserAdminController {
     @PutMapping("/{id}")
     @RequirePermission("user:update")
     public ApiResponse<UserVO> updateUser(@PathVariable("id") String id,
-            @Valid @RequestBody UserUpdateRequest request) {
+            @Valid @RequestBody UserUpdateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         return ApiResponse.success(userAdminService.updateUser(parseId(id), request));
     }
 
@@ -108,7 +115,9 @@ public class UserAdminController {
     @PutMapping("/{id}/roles")
     @RequirePermission("user:assign-role")
     public ApiResponse<Void> setUserRoles(@PathVariable("id") String id,
-            @Valid @RequestBody UserRolesUpdateRequest request) {
+            @Valid @RequestBody UserRolesUpdateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         userAdminService.replaceRoles(parseId(id), request);
         return ApiResponse.success();
     }
@@ -121,19 +130,18 @@ public class UserAdminController {
     @RequirePermission("user:status")
     public ApiResponse<Void> setUserStatus(
             @PathVariable("id") String id,
-            @Valid @RequestBody UserStatusUpdateRequest request) {
+            @Valid @RequestBody UserStatusUpdateRequest request,
+            HttpServletRequest httpRequest) {
+        QueryParams.requireAllowedKeys(httpRequest.getParameterMap(), Set.of());
         userStatusService.changeStatus(parseId(id), request.status());
         return ApiResponse.success();
     }
 
-    private UserListQuery parseListQuery(Map<String, String> params) {
-        for (String key : params.keySet()) {
-            if (!USER_QUERY_PARAMS.contains(key)) {
-                throw new BusinessException(ResultCode.BAD_REQUEST, "不支持的查询参数");
-            }
-        }
-        long current = parsePositiveLong(params.get("current"), 1L, Long.MAX_VALUE);
-        long size = parsePositiveLong(params.get("size"), 10L, 100L);
+    private UserListQuery parseListQuery(Map<String, String[]> params) {
+        QueryParams.requireAllowedKeys(params, USER_QUERY_PARAMS);
+        QueryParams.requireSingleValueForEachPresentKey(params);
+        long current = parsePositiveLong(singleValue(params, "current"), 1L, Long.MAX_VALUE);
+        long size = parsePositiveLong(singleValue(params, "size"), 10L, 100L);
         long offset;
         try {
             // LIMIT/OFFSET 不能溢出 Long；越界按 400 而不是让 SQL 报错变 500。
@@ -146,7 +154,7 @@ public class UserAdminController {
             // 管理端不可能合法翻到百万行以后，提前拒绝以消除深分页放大风险。
             throw new BusinessException(ResultCode.BAD_REQUEST, "分页页码过大");
         }
-        String keyword = params.get("keyword");
+        String keyword = singleValue(params, "keyword");
         if (keyword != null) {
             // 原始长度先按 schema 校验，再 trim；空串不筛选。
             // 长度按 Unicode 代码点计数（老师复审 P2）：创建接口允许保存 100 个增补
@@ -157,10 +165,15 @@ public class UserAdminController {
             }
             keyword = keyword.trim();
         }
-        Integer status = parseStatus(params.get("status"));
+        Integer status = parseStatus(singleValue(params, "status"));
         Long departmentId = params.containsKey("departmentId")
-                ? parseId(params.get("departmentId")) : null;
+                ? parseId(singleValue(params, "departmentId")) : null;
         return new UserListQuery(current, size, keyword, departmentId, status);
+    }
+
+    private static String singleValue(Map<String, String[]> params, String key) {
+        String[] values = params.get(key);
+        return values == null ? null : values[0];
     }
 
     private long parsePositiveLong(String raw, long defaultValue, long max) {
