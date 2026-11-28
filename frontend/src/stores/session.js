@@ -85,9 +85,10 @@ export const useSessionStore = defineStore('session', {
   },
   actions: {
     setToken(token) {
+      // 换令牌时同时清空旧用户信息与权限，防止切换账号残留上一账号资料。
+      if (this.accessToken !== token) this.user = null
       this.accessToken = token
       writeStoredToken(token)
-      // 换令牌必须重算权限：否则切换账号后会沿用上一账号的菜单可见性
       this.permissionCodes = []
       this.permissionStatus = 'idle'
     },

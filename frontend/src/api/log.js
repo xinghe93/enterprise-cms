@@ -95,20 +95,37 @@ export function formatLogTime(value) {
   return match ? `${match[1]} ${match[2]}` : value
 }
 
+/** 筛选条件校验：非法操作人 ID 或起止时间倒挂/相等时返回错误提示，避免静默丢弃误导查询。 */
+export function validateLogFilters({ userId, timeRange } = {}) {
+  const errors = []
+  const isBlank = (value) => value === undefined || value === null || String(value).trim() === ''
+  if (!isBlank(userId) && normalizeBusinessId(userId) === null) {
+    errors.push('操作人 ID 无效：请输入 1–19 位正整数，且不超过 Long 上限')
+  }
+  if (Array.isArray(timeRange) && timeRange.length === 2) {
+    const createdFrom = formatLocalDateTime(timeRange[0])
+    const createdTo = formatLocalDateTime(timeRange[1])
+    if (createdFrom && createdTo && createdFrom >= createdTo) {
+      errors.push('起始时间必须早于结束时间')
+    }
+  }
+  return errors
+}
+
 /** 分页查询日志；参数非法时前端先剔除，避免触发后端 400。 */
-export async function listLogs(query) {
+export async function listLogs(query, config = {}) {
   const api = await apiClient()
-  return api.get('/admin/logs', { params: buildLogQuery(query) })
+  return api.get('/admin/logs', { ...config, params: buildLogQuery(query) })
 }
 
 /** 查询单条日志详情。详情接口不接受任何查询参数；ID 非法时直接拒绝，避免请求 /admin/logs/undefined。 */
-export async function getLog(id) {
+export async function getLog(id, config = {}) {
   const logId = normalizeBusinessId(id)
   if (logId === null) {
     throw new TypeError('无效的日志 ID')
   }
   const api = await apiClient()
-  return api.get(`/admin/logs/${logId}`)
+  return api.get(`/admin/logs/${logId}`, config)
 }
 
 /**

@@ -1,9 +1,30 @@
 <script setup>
+import { computed, ref, watch } from 'vue'
 import { ElTag } from 'element-plus'
 import AppIcon from '../components/AppIcon.vue'
+import { navigation } from '../router/navigation.js'
 import { useSessionStore } from '../stores/session.js'
+import { canSeeMenuItem, filterWorkspaceAreas, resolvePagePermissionState } from '../utils/menuPermission.js'
 
 const session = useSessionStore()
+const navByPath = new Map(navigation.flatMap((group) => group.items).map((item) => [item.path, item]))
+const hasPermissionSnapshot = ref(session.permissionStatus === 'loaded')
+watch([() => session.accessToken, () => session.permissionStatus], ([token, status], previous) => {
+  if (!token || (previous && token !== previous[0])) {
+    hasPermissionSnapshot.value = status === 'loaded'
+  } else if (status === 'loaded') {
+    hasPermissionSnapshot.value = true
+  } else if (status === 'unavailable') {
+    hasPermissionSnapshot.value = false
+  }
+})
+const effectivePermissionStatus = computed(() => {
+  const state = resolvePagePermissionState({
+    permissionStatus: session.permissionStatus,
+    hasSnapshot: hasPermissionSnapshot.value,
+  })
+  return state === 'ready' ? 'loaded' : state
+})
 
 const areas = [
   {
@@ -37,6 +58,22 @@ const areas = [
     icon: 'shield',
   },
 ]
+
+function canAccessPath(path) {
+  const entry = navByPath.get(path)
+  if (!entry) return false
+  if (!session.isAuthenticated || effectivePermissionStatus.value === 'unavailable') return true
+  if (effectivePermissionStatus.value !== 'loaded') return false
+  return canSeeMenuItem(entry, session.hasPermission)
+}
+
+const canVisitPortal = computed(() => canAccessPath('/portal'))
+const canVisitArticles = computed(() => session.isAuthenticated && canAccessPath('/admin/articles'))
+const visibleAreas = computed(() => filterWorkspaceAreas(areas, navigation, {
+  isAuthenticated: session.isAuthenticated,
+  permissionStatus: effectivePermissionStatus.value,
+  hasPermission: session.hasPermission,
+}))
 </script>
 
 <template>
@@ -49,9 +86,9 @@ const areas = [
         在这里统一完成企业知识的创作、审核、发布与检索。
       </p>
       <div class="hero-actions">
-        <RouterLink to="/portal" class="hero-link">前往知识门户 <AppIcon name="arrow" :size="17" /></RouterLink>
+        <RouterLink v-if="canVisitPortal" to="/portal" class="hero-link">前往知识门户 <AppIcon name="arrow" :size="17" /></RouterLink>
         <RouterLink v-if="!session.isAuthenticated" to="/login" class="hero-link-ghost">登录企业账号</RouterLink>
-        <RouterLink v-else to="/admin/articles" class="hero-link-ghost">进入文章管理</RouterLink>
+        <RouterLink v-else-if="canVisitArticles" to="/admin/articles" class="hero-link-ghost">进入文章管理</RouterLink>
       </div>
     </div>
     <div class="knowledge-art" aria-hidden="true">
@@ -75,10 +112,12 @@ const areas = [
         <p class="eyebrow">EXPLORE YOUR WORKSPACE</p>
         <h2 id="workspace-entry-title">核心业务工作台</h2>
       </div>
-      <ElTag type="success" effect="plain" round>全模块已就绪</ElTag>
+      <ElTag type="success" effect="plain" round>
+        {{ session.isAuthenticated && effectivePermissionStatus === 'loaded' ? '已按账号权限展示' : '全模块已就绪' }}
+      </ElTag>
     </div>
-    <div class="area-grid">
-      <article v-for="area in areas" :key="area.number" class="area-card">
+    <div v-if="visibleAreas.length" class="area-grid">
+      <article v-for="area in visibleAreas" :key="area.number" class="area-card">
         <div class="area-top">
           <span class="area-icon"><AppIcon :name="area.icon" :size="22" /></span>
           <span class="area-number">{{ area.number }}</span>
@@ -91,6 +130,14 @@ const areas = [
           </RouterLink>
         </div>
       </article>
+    </div>
+    <div v-else class="workspace-note">
+      <AppIcon name="shield" :size="18" />
+      <p>
+        {{ session.isAuthenticated && effectivePermissionStatus !== 'loaded'
+          ? '正在加载当前账号的有效权限…'
+          : '当前账号暂未分配业务模块权限，请联系管理员配置角色权限。' }}
+      </p>
     </div>
   </section>
   <div class="workspace-note">

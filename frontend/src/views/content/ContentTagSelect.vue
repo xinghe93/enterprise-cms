@@ -2,7 +2,6 @@
 import { computed, ref, watch } from 'vue'
 import { ElOption, ElSelect } from 'element-plus'
 import { useContentQuery } from './useContentQuery.js'
-import 'element-plus/es/components/select/style/css.mjs'
 
 const props = defineProps({
   fetchTags: { type: Function, required: true },
@@ -20,9 +19,26 @@ const options = computed(() => {
   return [...new Map(tags.map((tag) => [tag.id, tag])).values()]
 })
 
+function selectedIds(ids) {
+  if (props.multiple) return Array.isArray(ids) ? ids.filter(Boolean) : []
+  return ids ? [ids] : []
+}
+
+function syncChosen(ids) {
+  const selected = selectedIds(ids)
+  chosen.value = options.value.filter((tag) => selected.includes(tag.id))
+}
+
 watch(model, (ids) => {
-  const selected = props.multiple ? ids : [ids]
-  chosen.value = options.value.filter((tag) => selected?.includes(tag.id))
+  syncChosen(ids)
+  // 带 ?tagId= 刷新或从详情返回时，已选 ID 尚未在 options 中：主动拉取一次标签目录回显名称，
+  // 避免下拉框直接显示裸数字 ID；无已选值或 initialTags 已包含时仍保持懒加载。
+  const missing = selectedIds(ids).some((id) => !options.value.some((tag) => tag.id === id))
+  if (missing && !data.value && !loading.value) void load()
+}, { immediate: true })
+
+watch(data, () => {
+  syncChosen(model.value)
 })
 
 function search(value = '') {

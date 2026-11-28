@@ -4,7 +4,6 @@ import { ElTabPane, ElTabs } from 'element-plus'
 import { useSessionStore } from '../../stores/session.js'
 import ContentState from './ContentState.vue'
 import TaxonomyPanel from './TaxonomyPanel.vue'
-import 'element-plus/es/components/tabs/style/css.mjs'
 import './content.css'
 
 const session = useSessionStore()

@@ -11,21 +11,49 @@
  *    必须重新 getUser 取最新 realName / departmentId，避免用列表旧快照覆盖他人修改；
  *  - 修改员工不提交 username / password / status，也不改角色；
  *  - 启停只改当前用户状态（服务端提交后撤销其会话），status 显式为 0 或 1；
- *  - 部门候选只取启用链；编辑时保留原部门引用（可能已停用），符合「原引用不变可保留」。
- * 权限由后端 AOP 校验，界面不做权限隐藏。
+ *  - 部门候选只取启用链；编辑时保留原部门引用（可能已停用），符合「原引用不变可保留」；
+ *  - 前端按会话有效权限控制请求与按钮显隐（后端仍独立强制 AOP 鉴权），无 department:tree
+ *    权限时不发部门树请求，也不阻塞创建无部门员工。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElButton, ElDialog, ElTag } from 'element-plus'
-// 弹窗样式不能依赖其他页面的懒加载组件顺带加载（老师审查 #4）。
-import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
+import { useSessionStore } from '../../stores/session.js'
+import { resolvePagePermissionState } from '../../utils/menuPermission.js'
 import { flattenDepartments, isValidId, parentOptions, sortDepartmentTree, treeFailureFilterPatch, validateAccountForm } from '../../utils/organization.js'
 import { syncClampedInput, trimOnBlur } from '../../utils/text.js'
 
 const router = useRouter()
+const session = useSessionStore()
 const userApi = createUserApi(api)
+
+const hasPermissionSnapshot = ref(session.permissionStatus === 'loaded')
+watch([() => session.accessToken, () => session.permissionStatus], ([token, status], previous) => {
+  if (!token || (previous && token !== previous[0])) {
+    hasPermissionSnapshot.value = status === 'loaded'
+  } else if (status === 'loaded') {
+    hasPermissionSnapshot.value = true
+  } else if (status === 'unavailable') {
+    hasPermissionSnapshot.value = false
+  }
+})
+const pagePermissionState = computed(() => resolvePagePermissionState({
+  permissionStatus: session.permissionStatus,
+  hasSnapshot: hasPermissionSnapshot.value,
+}))
+const permissionsReady = computed(() => pagePermissionState.value === 'ready')
+const permissionsLoading = computed(() => pagePermissionState.value === 'loading')
+const permissionsUnavailable = computed(() => pagePermissionState.value === 'unavailable')
+const can = (code) => permissionsReady.value && session.hasPermission(code)
+const canListUsers = computed(() => can('user:list'))
+const canCreateUser = computed(() => can('user:create'))
+const canEditUser = computed(() => can('user:read') && can('user:update'))
+const canSetUserStatus = computed(() => can('user:status'))
+const canListDepartments = computed(() => can('department:tree'))
+const canOpenAssignments = computed(() =>
+  can('user:read') && (can('user:update') || (can('user:assign-role') && can('role:list'))))
 
 const users = ref([])
 const total = ref(0)
@@ -62,6 +90,14 @@ const retainedDepartmentMissing = computed(() => {
 let usersRequestId = 0
 
 async function loadTree() {
+  if (!canListDepartments.value) {
+    fullTree.value = []
+    treeFailed.value = false
+    treeLoaded.value = true
+    const patch = treeFailureFilterPatch(filters.value)
+    if (patch) Object.assign(filters.value, patch)
+    return
+  }
   try {
     fullTree.value = await userApi.getDepartmentTree()
     treeFailed.value = false
@@ -84,18 +120,29 @@ async function loadTree() {
 
 /** 刷新同时重试部门树与员工列表：树加载失败后必须给用户就地恢复的入口（老师审查 #3）。 */
 function refresh() {
-  void loadTree()
-  void loadUsers()
+  if (canListDepartments.value) void loadTree()
+  if (canListUsers.value) void loadUsers()
+}
+
+async function retryPermissions() {
+  await session.refreshPermissions()
 }
 
 async function loadUsers() {
   const requestId = ++usersRequestId
+  if (!canListUsers.value) {
+    users.value = []
+    total.value = 0
+    loadFailed.value = false
+    loading.value = false
+    return
+  }
   loading.value = true
   loadFailed.value = false
   try {
     const page = await userApi.listUsers({
       keyword: filters.value.keyword,
-      departmentId: filters.value.departmentId,
+      departmentId: canListDepartments.value ? filters.value.departmentId : '',
       status: filters.value.status === '' ? '' : Number(filters.value.status),
       current: filters.value.current,
       size: filters.value.size,
@@ -134,13 +181,13 @@ function changeSize() {
 }
 
 function openCreate() {
-  if (submitting.value || loadingDetail.value || pendingStatus.value) return
+  if (!canCreateUser.value || submitting.value || loadingDetail.value || pendingStatus.value) return
   formError.value = ''
   dialog.value = { mode: 'create', form: { username: '', password: '', realName: '', departmentId: '' } }
 }
 
 async function openEdit(user) {
-  if (submitting.value || loadingDetail.value || pendingStatus.value) return
+  if (!canEditUser.value || submitting.value || loadingDetail.value || pendingStatus.value) return
   loadingDetail.value = true
   formError.value = ''
   try {
@@ -191,13 +238,13 @@ async function save() {
         password: form.password,
         realName: form.realName.trim(),
         departmentId,
-      })
+      }, { silent: true })
     } else {
       // 完整 PUT：只提交 realName 与 departmentId，不改 username / password / status / 角色。
       await userApi.updateUser(user.id, {
         realName: form.realName.trim(),
         departmentId,
-      })
+      }, { silent: true })
     }
     dialog.value = null
     await loadUsers()
@@ -211,7 +258,7 @@ async function save() {
 function askStatus(user) {
   // 确认弹窗打开期间不允许被其他行的启停覆盖，否则确认对象悄悄换成另一名员工
   // （DeepSeek 审查：启停确认弹窗可被并发覆盖）。
-  if (submitting.value || pendingStatus.value || loadingDetail.value) return
+  if (!canSetUserStatus.value || submitting.value || pendingStatus.value || loadingDetail.value) return
   if (user.status !== 0 && user.status !== 1) return
   pendingStatus.value = { user, next: user.status === 1 ? 0 : 1 }
 }
@@ -235,10 +282,24 @@ function goAssign(user) {
   void router.push({ name: 'assignments', query: user?.username ? { keyword: user.username } : {} })
 }
 
-onMounted(() => {
-  void loadTree()
+watch(canListDepartments, (allowed) => {
+  if (allowed) {
+    void loadTree()
+  } else {
+    fullTree.value = []
+    treeFailed.value = false
+    treeLoaded.value = true
+    const patch = treeFailureFilterPatch(filters.value)
+    if (patch) {
+      Object.assign(filters.value, patch)
+      if (canListUsers.value) void loadUsers()
+    }
+  }
+}, { immediate: true })
+
+watch(canListUsers, () => {
   void loadUsers()
-})
+}, { immediate: true })
 </script>
 
 <template>
@@ -250,19 +311,31 @@ onMounted(() => {
         <p>维护员工账号的新建、编辑与启停；部门与角色分配请前往「岗位分配」。</p>
       </div>
       <div class="cms-page-header-actions">
-        <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
-        <ElButton type="primary" :disabled="loading || !treeLoaded || treeFailed" @click="openCreate">新建员工</ElButton>
+        <ElButton :disabled="loading || !canListUsers" @click="refresh">刷新</ElButton>
+        <ElButton
+          v-if="canCreateUser"
+          type="primary"
+          :disabled="loading || (canListDepartments && !treeLoaded)"
+          @click="openCreate"
+        >新建员工</ElButton>
       </div>
     </header>
 
-    <div class="org-toolbar">
+    <p v-if="permissionsLoading" class="org-alert" role="status">正在加载当前账号权限…</p>
+    <p v-else-if="permissionsUnavailable" class="org-alert" role="alert">
+      权限列表加载失败，无法确认员工管理权限；
+      <ElButton link type="primary" @click="retryPermissions">点击重试</ElButton>
+    </p>
+    <p v-else-if="!canListUsers" class="org-alert" role="alert">当前账号缺少 user:list 权限，无法查询员工列表。</p>
+
+    <div v-if="canListUsers" class="org-toolbar">
       <label class="org-inline-field">
         <span>关键字</span>
         <!-- 原生 input 的 maxlength 按 UTF-16 代码单元截断，与后端代码点口径不一致；
              syncClampedInput 逐代码点截断并把结果同步回 DOM，显示值与提交值始终一致。 -->
         <input :value="filters.keyword" @input="filters.keyword = syncClampedInput($event, 100)" @blur="filters.keyword = trimOnBlur($event)" placeholder="登录账号 / 姓名" @keyup.enter="search" />
       </label>
-      <label class="org-inline-field">
+      <label v-if="canListDepartments" class="org-inline-field">
         <span>部门</span>
         <select v-model="filters.departmentId" :disabled="treeFailed" @change="search">
           <option value="">{{ treeFailed ? '部门树未加载' : '全部部门' }}</option>
@@ -280,13 +353,13 @@ onMounted(() => {
         </select>
       </label>
       <ElButton type="primary" :disabled="loading" @click="search">查询</ElButton>
-      <span class="org-toolbar-hint">部门筛选含本部门及全部后代</span>
+      <span v-if="canListDepartments" class="org-toolbar-hint">部门筛选含本部门及全部后代</span>
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
-    <p v-if="treeFailed" class="org-alert" role="alert">部门树未加载，已清除部门筛选并查询全部员工；点击「刷新」可重试。编辑时仍可保留员工详情返回的部门并只改姓名。</p>
+    <p v-if="canListDepartments && treeFailed" class="org-alert" role="alert">部门树未加载，已清除部门筛选并查询全部员工；点击「刷新」可重试。新建可先不选部门，编辑时仍可保留原部门并只改姓名。</p>
 
-    <div class="org-card">
+    <div v-if="canListUsers" class="org-card">
       <div class="cms-card-meta">
         <span>共 {{ total }} 名员工</span>
         <span>第 {{ filters.current }} / {{ totalPages }} 页</span>
@@ -316,11 +389,12 @@ onMounted(() => {
             </td>
             <td>
               <div class="org-actions">
-                <button type="button" :disabled="submitting || loadingDetail" @click="openEdit(user)">编辑</button>
-                <button type="button" :disabled="submitting || loadingDetail" @click="goAssign(user)">分配角色/部门</button>
-                <button type="button" :disabled="submitting || loadingDetail || Boolean(pendingStatus)" @click="askStatus(user)">
+                <button v-if="canEditUser" type="button" :disabled="submitting || loadingDetail" @click="openEdit(user)">编辑</button>
+                <button v-if="canOpenAssignments" type="button" :disabled="submitting || loadingDetail" @click="goAssign(user)">分配角色/部门</button>
+                <button v-if="canSetUserStatus" type="button" :disabled="submitting || loadingDetail || Boolean(pendingStatus)" @click="askStatus(user)">
                   {{ user.status === 1 ? '停用' : '启用' }}
                 </button>
+                <span v-if="!canEditUser && !canOpenAssignments && !canSetUserStatus" class="org-muted">无权限</span>
               </div>
             </td>
           </tr>
@@ -378,7 +452,11 @@ onMounted(() => {
             :value="dialog.retainedDepartmentId">保留原部门（ID: {{ dialog.retainedDepartmentId }}）</option>
           <option v-for="option in departmentOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
         </select>
-        <small>仅可选择启用部门；原部门停用时可保留不变。</small>
+        <small>
+          {{ !canListDepartments || treeFailed
+            ? '当前未加载部门树：新建可暂不分配部门，编辑可保留原部门或清空。'
+            : '仅可选择启用部门；原部门停用时可保留不变。' }}
+        </small>
       </label>
       <p v-if="dialog.mode === 'edit'" class="org-note">修改只更新姓名与所属部门，不影响账号、密码、状态与角色。</p>
       <p v-if="formError" class="org-form-error" role="alert">{{ formError }}</p>
@@ -394,7 +472,7 @@ onMounted(() => {
       :title="pendingStatus.next === 1 ? '启用员工' : '停用员工'"
       width="min(430px, calc(100vw - 32px))"
       :show-close="!submitting" :close-on-click-modal="false" :close-on-press-escape="!submitting"
-      @update:model-value="(open) => { if (!open) pendingStatus = null }"
+      @update:model-value="(open) => { if (!open && !submitting) pendingStatus = null }"
     >
       <p>确认将「{{ pendingStatus.user.realName }}」（{{ pendingStatus.user.username }}）设为{{ pendingStatus.next === 1 ? '启用' : '停用' }}？</p>
       <p class="org-note">启停只作用于该员工；停用后其全部登录会话会被服务端撤销。</p>

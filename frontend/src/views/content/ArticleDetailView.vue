@@ -1,11 +1,13 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElButton, ElTag } from 'element-plus'
-import { getArticle, getPortalArticle } from '../../api/content.js'
+import { ElButton, ElDialog, ElMessage, ElTag } from 'element-plus'
+import { getArticle, getPortalArticle, listTags } from '../../api/content.js'
+import { replaceArticleTags } from '../../api/review.js'
 import AppIcon from '../../components/AppIcon.vue'
 import { useSessionStore } from '../../stores/session.js'
 import ContentState from './ContentState.vue'
+import ContentTagSelect from './ContentTagSelect.vue'
 import { articleStatuses, displayTime, isContentId, isEditableArticle } from './contentModel.js'
 import { useArticleActions } from './useArticleActions.js'
 import { useContentQuery } from './useContentQuery.js'
@@ -19,17 +21,58 @@ const can = (code) => session.isAuthenticated && session.hasPermission(code)
 const allowed = computed(() => can(props.portal ? 'portal:article:read' : 'article:read'))
 const id = computed(() => route.params.id)
 const validId = computed(() => isContentId(id.value))
-const back = computed(() => ({ name: props.portal ? 'portal' : 'articles', query: route.query }))
+const fromReviews = computed(() => !props.portal && route.query.from === 'reviews')
+const back = computed(() => {
+  if (props.portal) return { name: 'portal', query: route.query }
+  if (fromReviews.value) return { name: 'reviews' }
+  return { name: 'articles', query: route.query }
+})
+const backLabel = computed(() => (props.portal ? '返回知识门户' : fromReviews.value ? '返回审核与发布' : '返回文章管理'))
 const { data: article, loading, error, load, clear } = useContentQuery((config) =>
   (props.portal ? getPortalArticle : getArticle)(id.value, config))
 const { busy, changeArticle } = useArticleActions()
 const editable = computed(() => !props.portal && isEditableArticle(article.value?.status))
+const canBindTags = computed(() => editable.value && can('article:bind-tag') && can('tag:list'))
 const status = computed(() => articleStatuses[article.value?.status])
 
+const tagDialogVisible = ref(false)
+const tagIds = ref([])
+const savingTags = ref(false)
+const fetchActiveTags = (params, config) => listTags({ ...params, status: 1 }, config)
+
 watch([allowed, id, () => props.portal], () => {
+  tagDialogVisible.value = false
   clear()
   if (allowed.value && validId.value) void load()
 }, { immediate: true })
+
+function openTagDialog() {
+  if (!article.value || !canBindTags.value || savingTags.value) return
+  tagIds.value = article.value.tags.map((tag) => tag.id)
+  tagDialogVisible.value = true
+}
+
+async function saveTags() {
+  if (!article.value || savingTags.value) return
+  const originalRoute = route.fullPath
+  savingTags.value = true
+  try {
+    await replaceArticleTags(article.value.id, {
+      version: article.value.version,
+      tagIds: tagIds.value,
+    })
+    ElMessage.success('文章标签已更新')
+    tagDialogVisible.value = false
+    if (route.fullPath === originalRoute) await load()
+  } catch (failure) {
+    if ((failure?.code === 409 || failure?.status === 409) && route.fullPath === originalRoute) {
+      tagDialogVisible.value = false
+      await load()
+    }
+  } finally {
+    savingTags.value = false
+  }
+}
 
 async function mutate(action) {
   const originalRoute = route.fullPath
@@ -41,7 +84,7 @@ async function mutate(action) {
 
 <template>
   <section class="content-page">
-    <RouterLink :to="back" class="content-back"><AppIcon name="arrow" :size="16" />{{ portal ? '返回知识门户' : '返回文章管理' }}</RouterLink>
+    <RouterLink :to="back" class="content-back"><AppIcon name="arrow" :size="16" />{{ backLabel }}</RouterLink>
     <ContentState :allowed="allowed" :loading="loading" :error="validId ? error : { message: '文章 ID 无效' }" :retry="validId" @retry="load">
       <article v-if="article" class="content-panel detail-paper">
         <header class="paper-header">
@@ -61,13 +104,40 @@ async function mutate(action) {
           </div>
         </header>
         <div class="article-body">{{ article.content }}</div>
-        <footer v-if="editable && (can('article:update') || can('article:submit') || can('article:delete'))" class="paper-actions">
-          <ElButton v-if="can('article:update') && can('article:read')" :disabled="busy" @click="router.push({ name: 'article-edit', params: { id }, query: route.query })">编辑</ElButton>
-          <ElButton v-if="can('article:submit')" type="primary" :disabled="busy" @click="mutate('submit')">提交审核</ElButton>
-          <ElButton v-if="can('article:delete')" type="danger" plain :disabled="busy" @click="mutate('delete')">删除</ElButton>
+        <footer v-if="editable && (can('article:update') || canBindTags || can('article:submit') || can('article:delete'))" class="paper-actions">
+          <ElButton v-if="can('article:update') && can('article:read')" :disabled="busy || savingTags" @click="router.push({ name: 'article-edit', params: { id }, query: route.query })">编辑</ElButton>
+          <ElButton v-if="canBindTags" :disabled="busy || savingTags" @click="openTagDialog">调整标签</ElButton>
+          <ElButton v-if="can('article:submit')" type="primary" :disabled="busy || savingTags" @click="mutate('submit')">提交审核</ElButton>
+          <ElButton v-if="can('article:delete')" type="danger" plain :disabled="busy || savingTags" @click="mutate('delete')">删除</ElButton>
         </footer>
       </article>
     </ContentState>
+
+    <ElDialog
+      v-model="tagDialogVisible"
+      title="调整文章标签"
+      width="min(480px, calc(100vw - 32px))"
+      :show-close="!savingTags"
+      :close-on-click-modal="false"
+      :close-on-press-escape="!savingTags"
+      destroy-on-close
+    >
+      <p class="field-help tag-dialog-tip">
+        全量替换当前文章标签（最多 100 项，清空表示移除全部标签）；已下架文章调整标签后将回到草稿状态。
+      </p>
+      <ContentTagSelect
+        v-model="tagIds"
+        class="tag-dialog-select"
+        :fetch-tags="fetchActiveTags"
+        :initial-tags="article?.tags ?? []"
+        :disabled="savingTags"
+        multiple
+      />
+      <template #footer>
+        <ElButton :disabled="savingTags" @click="tagDialogVisible = false">取消</ElButton>
+        <ElButton type="primary" :loading="savingTags" @click="saveTags">保存标签</ElButton>
+      </template>
+    </ElDialog>
   </section>
 </template>
 
@@ -99,4 +169,6 @@ async function mutate(action) {
   background: var(--surface-subtle); display: flex; gap: 10px; flex-wrap: wrap;
 }
 .paper-actions .el-button { margin: 0; }
+.tag-dialog-tip { margin-bottom: 12px; }
+.tag-dialog-select { width: 100%; }
 </style>

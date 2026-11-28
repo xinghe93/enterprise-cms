@@ -6,19 +6,44 @@
  *  - 树按 status 筛选时由后端保留必要祖先的真实状态，前端不把停用祖先伪装成启用；
  *  - 更新是完整 PUT，parentId / deptName / sortOrder 均必填，deptCode 不可改；
  *  - 禁止把节点移到自身或后代下；切换父节点时目标与全部祖先必须启用；
- *  - 存在子部门或任何员工引用（含停用员工）时删除返回 409，启停只改当前节点、不级联。
- * 权限由后端 AOP 校验，这里不做前端隐藏，避免用界面过滤替代鉴权。
+ *  - 存在子部门或任何员工引用（含停用员工）时删除返回 409，启停只改当前节点、不级联；
+ *  - 前端按会话有效权限控制请求与按钮显隐（后端仍独立强制 AOP 鉴权）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElButton, ElDialog, ElTag } from 'element-plus'
-// 弹窗样式不能依赖其他页面的懒加载组件顺带加载（老师审查 #4）。
-import 'element-plus/es/components/dialog/style/css.mjs'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
+import { useSessionStore } from '../../stores/session.js'
+import { resolvePagePermissionState } from '../../utils/menuPermission.js'
 import { findDepartment, flattenDepartments, isValidId, parentOptions, sortDepartmentTree } from '../../utils/organization.js'
 import { countCodePoints, syncClampedInput, trimOnBlur } from '../../utils/text.js'
 
+const session = useSessionStore()
 const userApi = createUserApi(api)
+
+const hasPermissionSnapshot = ref(session.permissionStatus === 'loaded')
+watch([() => session.accessToken, () => session.permissionStatus], ([token, status], previous) => {
+  if (!token || (previous && token !== previous[0])) {
+    hasPermissionSnapshot.value = status === 'loaded'
+  } else if (status === 'loaded') {
+    hasPermissionSnapshot.value = true
+  } else if (status === 'unavailable') {
+    hasPermissionSnapshot.value = false
+  }
+})
+const pagePermissionState = computed(() => resolvePagePermissionState({
+  permissionStatus: session.permissionStatus,
+  hasSnapshot: hasPermissionSnapshot.value,
+}))
+const permissionsReady = computed(() => pagePermissionState.value === 'ready')
+const permissionsLoading = computed(() => pagePermissionState.value === 'loading')
+const permissionsUnavailable = computed(() => pagePermissionState.value === 'unavailable')
+const can = (code) => permissionsReady.value && session.hasPermission(code)
+const canListDepartments = computed(() => can('department:tree'))
+const canCreateDepartment = computed(() => can('department:create'))
+const canUpdateDepartment = computed(() => can('department:update'))
+const canSetDepartmentStatus = computed(() => can('department:status'))
+const canDeleteDepartment = computed(() => can('department:delete'))
 const tree = ref([])
 // 上级候选必须基于完整树：表格被 statusFilter 筛选后，启用分支可能被隐藏，
 // 导致编辑停用部门时无法移动到合法启用分支。两棵树职责分离。
@@ -48,15 +73,41 @@ const candidates = computed(() => parentOptions(fullTree.value, {
 
 let treeRequestId = 0
 
+async function retryPermissions() {
+  await session.refreshPermissions()
+}
+
 async function loadTree() {
   const requestId = ++treeRequestId
+  if (!canListDepartments.value) {
+    tree.value = []
+    fullTree.value = []
+    loadFailed.value = false
+    loading.value = false
+    return
+  }
   loading.value = true
   loadFailed.value = false
   try {
+    if (statusFilter.value === '') {
+      // 默认「全部状态」下筛选树与完整树完全相同，只发一次请求即可复用。
+      try {
+        const full = await userApi.getDepartmentTree()
+        if (requestId !== treeRequestId) return
+        tree.value = full ?? []
+        fullTree.value = full ?? []
+      } catch {
+        if (requestId !== treeRequestId) return
+        tree.value = []
+        fullTree.value = []
+        loadFailed.value = true
+      }
+      return
+    }
     // 筛选后的树用于表格，完整树用于上级候选。两个请求相互独立：
     // 用 allSettled 分开兜底，一侧失败不清空另一侧已成功的数据（DeepSeek 审查 #8）。
     const [filteredResult, fullResult] = await Promise.allSettled([
-      userApi.getDepartmentTree({ status: statusFilter.value === '' ? '' : Number(statusFilter.value) }),
+      userApi.getDepartmentTree({ status: Number(statusFilter.value) }),
       userApi.getDepartmentTree(),
     ])
     if (requestId !== treeRequestId) return
@@ -76,7 +127,7 @@ async function loadTree() {
 }
 
 function openCreate(parentId = '') {
-  if (submitting.value) return
+  if (!canCreateDepartment.value || submitting.value) return
   formError.value = ''
   editor.value = {
     mode: 'create',
@@ -85,7 +136,7 @@ function openCreate(parentId = '') {
 }
 
 function openEdit(node) {
-  if (submitting.value) return
+  if (!canUpdateDepartment.value || submitting.value) return
   formError.value = ''
   editor.value = {
     mode: 'edit',
@@ -152,14 +203,14 @@ async function save() {
         deptCode: form.deptCode,
         deptName: form.deptName,
         sortOrder: Number(form.sortOrder),
-      })
+      }, { silent: true })
     } else {
       // 完整 PUT：即使未改动，三个字段也必须全部提交，不能靠省略保留旧值。
       await userApi.updateDepartment(node.id, {
         parentId,
         deptName: form.deptName,
         sortOrder: Number(form.sortOrder),
-      })
+      }, { silent: true })
     }
     editor.value = null
     await loadTree()
@@ -171,7 +222,7 @@ async function save() {
 }
 
 async function toggleStatus(node) {
-  if (submitting.value) return
+  if (!canSetDepartmentStatus.value || submitting.value) return
   // 列表行可能来自筛选前的快照；提交前按 ID 从最新完整树回读真实状态，
   // 避免基于过期 status 反向切换（DeepSeek 审查 #7）。
   const current = findDepartment(fullTree.value, node.id) ?? findDepartment(tree.value, node.id) ?? node
@@ -190,6 +241,7 @@ async function toggleStatus(node) {
 }
 
 function askDelete(node) {
+  if (!canDeleteDepartment.value || submitting.value || pendingDelete.value) return
   pendingDelete.value = node
 }
 
@@ -207,7 +259,9 @@ async function confirmDelete() {
   }
 }
 
-onMounted(loadTree)
+watch(canListDepartments, () => {
+  void loadTree()
+}, { immediate: true })
 </script>
 
 <template>
@@ -219,12 +273,19 @@ onMounted(loadTree)
         <p>维护部门层级、编码与排序；启停只影响当前节点，删除空部门需无子部门与员工引用。</p>
       </div>
       <div class="cms-page-header-actions">
-        <ElButton :disabled="loading" @click="loadTree">刷新</ElButton>
-        <ElButton type="primary" :disabled="loading" @click="openCreate()">新建根部门</ElButton>
+        <ElButton :disabled="loading || !canListDepartments" @click="loadTree">刷新</ElButton>
+        <ElButton v-if="canCreateDepartment" type="primary" :disabled="loading" @click="openCreate()">新建根部门</ElButton>
       </div>
     </header>
 
-    <div class="org-toolbar">
+    <p v-if="permissionsLoading" class="org-alert" role="status">正在加载当前账号权限…</p>
+    <p v-else-if="permissionsUnavailable" class="org-alert" role="alert">
+      权限列表加载失败，无法确认部门管理权限；
+      <ElButton link type="primary" @click="retryPermissions">点击重试</ElButton>
+    </p>
+    <p v-else-if="!canListDepartments" class="org-alert" role="alert">当前账号缺少 department:tree 权限，无法查看部门树。</p>
+
+    <div v-if="canListDepartments" class="org-toolbar">
       <label class="org-inline-field">
         <span>状态</span>
         <select v-model="statusFilter" @change="loadTree">
@@ -238,7 +299,7 @@ onMounted(loadTree)
 
     <p v-if="loadFailed" class="org-alert" role="alert">部门树未加载完成，请确认服务与登录态后重试。</p>
 
-    <div class="org-card">
+    <div v-if="canListDepartments" class="org-card">
       <div class="cms-card-meta">
         <span>共 {{ rows.length }} 个部门节点</span>
         <span>层级按排序值与 ID 升序排列</span>
@@ -265,18 +326,23 @@ onMounted(loadTree)
             </td>
             <td>
               <div class="org-actions">
-                <button type="button" :disabled="submitting" @click="openCreate(row.node.id)">新增子部门</button>
-                <button type="button" :disabled="submitting" @click="openEdit(row.node)">编辑</button>
-                <button type="button" :disabled="submitting" @click="toggleStatus(row.node)">
+                <button v-if="canCreateDepartment" type="button" :disabled="submitting" @click="openCreate(row.node.id)">新增子部门</button>
+                <button v-if="canUpdateDepartment" type="button" :disabled="submitting" @click="openEdit(row.node)">编辑</button>
+                <button v-if="canSetDepartmentStatus" type="button" :disabled="submitting" @click="toggleStatus(row.node)">
                   {{ row.node.status === 1 ? '停用' : '启用' }}
                 </button>
                 <button
+                  v-if="canDeleteDepartment"
                   type="button"
                   class="is-danger"
                   :disabled="submitting || hasChildren(row.node)"
                   :title="hasChildren(row.node) ? '存在子部门，不能删除' : '删除空部门'"
                   @click="askDelete(row.node)"
                 >删除</button>
+                <span
+                  v-if="!canCreateDepartment && !canUpdateDepartment && !canSetDepartmentStatus && !canDeleteDepartment"
+                  class="org-muted"
+                >无权限</span>
               </div>
             </td>
           </tr>

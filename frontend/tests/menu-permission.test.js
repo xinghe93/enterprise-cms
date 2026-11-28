@@ -3,8 +3,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   canSeeMenuItem,
+  filterWorkspaceAreas,
   requiredCodes,
   resolveMenuAccess,
+  resolvePagePermissionState,
+  safeRedirectPath,
   shouldRefreshOnNavigation,
   shouldRefreshOnSamePageClick,
   visibleNavigation,
@@ -197,6 +200,8 @@ test('接线：守卫支持失败重试与拒绝前复核；菜单区分「加�
   // 不再只在 forbidden 前刷新，否则会话内新增的子功能权限（tag:list）永远读不到。
   assert.match(routerSource, /shouldRefreshOnNavigation/)
   assert.match(routerSource, /if \(shouldRefreshOnNavigation\(\{[\s\S]{0,120}?\}\)\) \{\s*await session\.refreshPermissions\(\)/)
+  assert.match(routerSource, /if \(access === 'login'\) return loginTarget\(\)/,
+    '刷新权限期间触发 401 清空会话后，守卫必须重定向登录页而非放行受保护路由')
   assert.doesNotMatch(routerSource, /if \(session\.permissionStatus !== 'loaded'\) await session\.ensurePermissions\(\)/)
 
   // 会话：四态 + 强制刷新入口 + 同令牌复用 + 换令牌/切号丢弃旧结果
@@ -222,5 +227,78 @@ test('接线：守卫支持失败重试与拒绝前复核；菜单区分「加�
   assert.ok(declared.length >= 4, `路由应声明至少 4 个权限码，实际 ${declared.length}`)
   for (const code of declared) {
     assert.ok(catalog.has(code), `路由权限码 ${code} 不在 OpenAPI 权限目录中`)
+  }
+})
+
+test('业务页面权限就绪态：已有快照时后台刷新不闪白、不误清空筛选，首次加载与失败态严格隔离', () => {
+  // 首次进入（无快照）：idle / loading 均等待，unavailable 显式失败，loaded 才就绪
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'idle', hasSnapshot: false }), 'loading')
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'loading', hasSnapshot: false }), 'loading')
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'unavailable', hasSnapshot: false }), 'unavailable')
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'loaded', hasSnapshot: false }), 'ready')
+
+  // 已有快照后，导航离开或同页点击菜单触发 refreshPermissions 进入 loading：保持 ready
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'loading', hasSnapshot: true }), 'ready')
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'loaded', hasSnapshot: true }), 'ready')
+  // 刷新失败或切号清空后不再保持 ready
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'unavailable', hasSnapshot: true }), 'unavailable')
+  assert.equal(resolvePagePermissionState({ permissionStatus: 'idle', hasSnapshot: true }), 'loading')
+})
+
+test('resolveMenuAccess 支持 requireAll（编辑文章同时要求 article:update 与 article:read）', () => {
+  const perms = ['article:update', 'article:read']
+  assert.equal(resolveMenuAccess({
+    requiredPermissions: perms, requireAll: true, isAuthenticated: true, permissionStatus: 'loaded',
+    hasPermission: (c) => c === 'article:update',
+  }), 'forbidden')
+  assert.equal(resolveMenuAccess({
+    requiredPermissions: perms, requireAll: true, isAuthenticated: true, permissionStatus: 'loaded',
+    hasPermission: (c) => c === 'article:read',
+  }), 'forbidden')
+  assert.equal(resolveMenuAccess({
+    requiredPermissions: perms, requireAll: true, isAuthenticated: true, permissionStatus: 'loaded',
+    hasPermission: (c) => perms.includes(c),
+  }), 'allow')
+})
+
+test('filterWorkspaceAreas 按有效权限过滤工作空间卡片与链接', () => {
+  const sampleAreas = [
+    { number: '01', links: [{ label: '知识门户', path: '/portal' }, { label: '文章管理', path: '/admin/articles' }] },
+    { number: '02', links: [{ label: '操作日志', path: '/admin/logs' }] },
+  ]
+  // 普通员工仅有门户权限：只保留 01 的门户链接，02 整张卡片隐藏
+  const employee = filterWorkspaceAreas(sampleAreas, navigation, {
+    isAuthenticated: true, permissionStatus: 'loaded', hasPermission: (c) => c === 'portal:article:list',
+  })
+  assert.deepEqual(employee.map((a) => [a.number, a.links.map((l) => l.path)]), [['01', ['/portal']]])
+
+  // 无任何权限：返回空数组
+  const empty = filterWorkspaceAreas(sampleAreas, navigation, {
+    isAuthenticated: true, permissionStatus: 'loaded', hasPermission: () => false,
+  })
+  assert.deepEqual(empty, [])
+
+  // 未登录与权限不可用态：保留概览入口，由守卫或页面自身兜底
+  assert.equal(filterWorkspaceAreas(sampleAreas, navigation, {
+    isAuthenticated: false, permissionStatus: 'idle', hasPermission: () => false,
+  }).length, 2)
+  assert.equal(filterWorkspaceAreas(sampleAreas, navigation, {
+    isAuthenticated: true, permissionStatus: 'unavailable', hasPermission: () => false,
+  }).length, 2)
+
+  // 首次加载中：暂不展示受权限保护的链接，避免闪现无权入口
+  assert.deepEqual(filterWorkspaceAreas(sampleAreas, navigation, {
+    isAuthenticated: true, permissionStatus: 'loading', hasPermission: () => false,
+  }), [])
+})
+
+test('safeRedirectPath 只放行站内相对路径，拦截外链、协议相对地址及登录/403 循环', () => {
+  assert.equal(safeRedirectPath('/admin/articles/42?keyword=vue'), '/admin/articles/42?keyword=vue')
+  assert.equal(safeRedirectPath(['/portal', '/ignored']), '/portal')
+  for (const bad of [
+    '', null, undefined, 'https://evil.example', '//evil.example/path',
+    '/\\evil.example', 'admin/users', '/login', '/login?redirect=/portal', '/forbidden',
+  ]) {
+    assert.equal(safeRedirectPath(bad), '/workspace', `非法回跳 ${String(bad)} 应回落 /workspace`)
   }
 })

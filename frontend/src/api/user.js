@@ -16,22 +16,22 @@ export function createUserApi(client) {
   return {
     // 员工：契约 3.2 —— keyword 字面包含、departmentId 含后代、status 省略为全部
     listUsers: (params = {}) => client.get('/admin/users', { params: compactParams(params) }),
-    createUser: (payload) => client.post('/admin/users', payload),
-    getUser: (id) => client.get(`/admin/users/${pathId(id)}`),
+    createUser: (payload, config) => client.post('/admin/users', payload, config),
+    getUser: (id, config) => client.get(`/admin/users/${pathId(id)}`, config),
     // 完整 PUT：realName 与 departmentId 都必填，null 表示清除部门
-    updateUser: (id, payload) => client.put(`/admin/users/${pathId(id)}`, payload),
-    setUserStatus: (id, status) => client.put(`/admin/users/${pathId(id)}/status`, { status }),
+    updateUser: (id, payload, config) => client.put(`/admin/users/${pathId(id)}`, payload, config),
+    setUserStatus: (id, status, config) => client.put(`/admin/users/${pathId(id)}/status`, { status }, config),
     // 全量替换：空数组清空，停用项不应再次提交
-    setUserRoles: (id, roleIds) => client.put(`/admin/users/${pathId(id)}/roles`, {
+    setUserRoles: (id, roleIds, config) => client.put(`/admin/users/${pathId(id)}/roles`, {
       roleIds: normalizeRoleIds(roleIds),
-    }),
+    }, config),
 
     // 部门：status 筛选时由后端保留必要祖先的真实状态
     getDepartmentTree: (params = {}) => client.get('/admin/departments', { params: compactParams(params) }),
-    createDepartment: (payload) => client.post('/admin/departments', payload),
+    createDepartment: (payload, config) => client.post('/admin/departments', payload, config),
     // 完整 PUT：parentId / deptName / sortOrder 都必填，deptCode 创建后不可改
-    updateDepartment: (id, payload) => client.put(`/admin/departments/${pathId(id)}`, payload),
-    deleteDepartment: (id) => client.delete(`/admin/departments/${pathId(id)}`),
-    setDepartmentStatus: (id, status) => client.put(`/admin/departments/${pathId(id)}/status`, { status }),
+    updateDepartment: (id, payload, config) => client.put(`/admin/departments/${pathId(id)}`, payload, config),
+    deleteDepartment: (id, config) => client.delete(`/admin/departments/${pathId(id)}`, config),
+    setDepartmentStatus: (id, status, config) => client.put(`/admin/departments/${pathId(id)}/status`, { status }, config),
   }
 }
