@@ -30,7 +30,7 @@ export const router = createRouter({
         { path: 'portal/articles/:id', name: 'portal-article', component: articleDetail, props: { portal: true }, meta: { title: '知识文章', requiredPermissions: ['portal:article:read'] } },
         { path: 'admin/articles/new', name: 'article-new', component: articleEditor, meta: { title: '新建草稿', requiredPermissions: ['article:create'] } },
         { path: 'admin/articles/:id', name: 'article-detail', component: articleDetail, meta: { title: '文章详情', requiredPermissions: ['article:read'] } },
-        { path: 'admin/articles/:id/edit', name: 'article-edit', component: articleEditor, meta: { title: '编辑文章', requiredPermissions: ['article:update'] } },
+        { path: 'admin/articles/:id/edit', name: 'article-edit', component: articleEditor, meta: { title: '编辑文章', requiredPermissions: ['article:update', 'article:read'], requireAll: true } },
         { path: 'forbidden', name: 'forbidden', component: () => import('../views/ForbiddenView.vue'), meta: { title: '无访问权限' } },
         { path: 'login', name: 'login', component: () => import('../views/LoginView.vue'), meta: { title: '账号登录' } },
         { path: ':pathMatch(.*)*', name: 'not-found', component: () => import('../views/NotFoundView.vue'), meta: { title: '页面未找到' } },
@@ -57,19 +57,29 @@ router.beforeEach(async (to) => {
   const required = to.meta.requiredPermissions
   const decide = () => resolveMenuAccess({
     requiredPermissions: required,
+    requireAll: Boolean(to.meta.requireAll),
     isAuthenticated: session.isAuthenticated,
     permissionStatus: session.permissionStatus,
     hasPermission: session.hasPermission,
   })
 
-  if (!session.isAuthenticated) return decide() === 'login' ? { name: 'login' } : true
+  const loginTarget = () => ({
+    name: 'login',
+    ...(to.fullPath && to.name !== 'login' ? { query: { redirect: to.fullPath } } : {}),
+  })
+
+  if (!session.isAuthenticated) return decide() === 'login' ? loginTarget() : true
 
   // 进入任一需权限的页面都刷新（含已放行页面）：让本会话内新增的子功能权限即时生效，
   // 同时覆盖「首次加载 / unavailable 重试 / 403 前复核」三种旧逻辑。
   if (shouldRefreshOnNavigation({ requiredPermissions: required, isAuthenticated: true })) {
     await session.refreshPermissions()
   }
-  if (decide() === 'forbidden') return { name: 'forbidden' }
+  // 刷新期间若触发 401，api/index.js 已清空会话（从 /login 出发时不会触发 router.replace），
+  // 此处必须按最新登录态重新裁决，避免放行进入受保护页面。
+  const access = decide()
+  if (access === 'login') return loginTarget()
+  if (access === 'forbidden') return { name: 'forbidden' }
   return true
 })
 

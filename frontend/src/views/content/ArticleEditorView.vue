@@ -9,10 +9,6 @@ import ContentState from './ContentState.vue'
 import ContentTagSelect from './ContentTagSelect.vue'
 import { articlePayload, articleStatuses, categoryOptions, isContentId, isEditableArticle } from './contentModel.js'
 import { useContentQuery } from './useContentQuery.js'
-import 'element-plus/es/components/form/style/css.mjs'
-import 'element-plus/es/components/form-item/style/css.mjs'
-import 'element-plus/es/components/input/style/css.mjs'
-import 'element-plus/es/components/message-box/style/css.mjs'
 import './content.css'
 
 const route = useRoute()

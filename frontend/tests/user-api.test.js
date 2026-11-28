@@ -288,11 +288,28 @@ test('角色分配页保存门禁收敛到纯函数，部门保存重读详情�
   assert.match(source, /latest\.realName/)
 })
 
-test('main.js 样式入口按完整 import 语句断言，注释提及不算命中', () => {
+test('main.js 统一先引入 Element Plus 完整样式再引入自定义主题，且业务页不重复按需引入 CSS', () => {
   const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
-  assert.match(mainSource, /import 'element-plus\/theme-chalk\/el-dialog\.css'/)
-  assert.match(mainSource, /import 'element-plus\/theme-chalk\/el-overlay\.css'/)
-  // 去掉真实 import 后仅靠注释不应通过（防假阳性回归）。
-  const stripped = mainSource.replace(/^import 'element-plus\/theme-chalk\/el-(dialog|overlay)\.css'$/gm, '')
-  assert.doesNotMatch(stripped, /import 'element-plus\/theme-chalk\/el-dialog\.css'/)
+  const epIndex = mainSource.indexOf("import 'element-plus/dist/index.css'")
+  const mainCssIndex = mainSource.indexOf("import './styles/main.css'")
+  assert.ok(epIndex >= 0, 'main.js 应统一引入 element-plus/dist/index.css（含 Dialog/Overlay 样式）')
+  assert.ok(mainCssIndex > epIndex, 'main.css 必须在 element-plus/dist/index.css 之后引入以覆写主题')
+  assert.doesNotMatch(mainSource, /^import 'element-plus\/theme-chalk\//m, '不应重复引入 theme-chalk 单组件样式')
+
+  for (const rel of [
+    '../src/views/user/AccountView.vue',
+    '../src/views/user/DepartmentView.vue',
+    '../src/views/user/AssignmentView.vue',
+    '../src/views/content/ArticleListView.vue',
+    '../src/views/content/ArticleEditorView.vue',
+    '../src/views/content/TaxonomyView.vue',
+    '../src/views/content/TaxonomyPanel.vue',
+    '../src/views/content/ContentState.vue',
+    '../src/views/content/ContentTagSelect.vue',
+    '../src/views/content/useArticleActions.js',
+  ]) {
+    const viewSource = readFileSync(new URL(rel, import.meta.url), 'utf8')
+    assert.doesNotMatch(viewSource, /element-plus\/es\/components\/.*\/style\/css/,
+      `${rel} 不应按需重复引入 Element Plus CSS，否则懒加载后会覆盖 main.css 主题`)
+  }
 })

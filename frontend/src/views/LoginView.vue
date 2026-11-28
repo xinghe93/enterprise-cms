@@ -1,14 +1,16 @@
 <script setup>
 import { ref } from 'vue'
-import { ElButton, ElForm, ElFormItem, ElInput, ElTag } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { ElButton, ElForm, ElFormItem, ElInput, ElMessage, ElTag } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import AppIcon from '../components/AppIcon.vue'
 import { api } from '../api/index.js'
 import { createAuthApi } from '../api/auth.js'
+import { safeRedirectPath } from '../utils/menuPermission.js'
 import { countCodePoints } from '../utils/text.js'
 import { useSessionStore } from '../stores/session.js'
 
+const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const { isAuthenticated, user } = storeToRefs(session)
@@ -39,7 +41,7 @@ async function submit() {
     // 与 AppLayout 的令牌 watch 双保险；ensurePermissions 同令牌去重，不会重复请求。
     await session.ensurePermissions()
     form.value.password = ''
-    await router.push('/workspace')
+    await router.push(safeRedirectPath(route.query.redirect))
   } catch {
     // api/index.js 的 onError 已统一用 ElMessage 提示（含 401「用户名或密码错误」），
     // 组件只负责结束加载状态，不重复弹窗、不吞掉请求异常本身。
@@ -53,6 +55,7 @@ async function signOut() {
   submitting.value = true
   try {
     await authApi.logout()
+    ElMessage.success({ message: '已退出登录', grouping: true })
   } catch {
     // 401 时公共层会清空会话并跳转登录页；此处仍保证本地状态被清理。
   } finally {

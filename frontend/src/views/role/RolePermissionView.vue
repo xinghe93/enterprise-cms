@@ -64,6 +64,10 @@ const permissionStatus = ref('idle')
 let permissionRequestSeq = 0
 let permissionAbortController = null
 let disposed = false
+let initialized = false
+let loadingPermissionsLocally = false
+let syncedCanListRoles = false
+let syncedCanListPermissions = false
 
 const permissionsKnown = computed(() => permissionStatus.value === 'loaded')
 const can = (code) => permissionsKnown.value && session.hasPermission(code)
@@ -86,15 +90,20 @@ async function loadPermissions() {
   permissionAbortController = new AbortController()
   permissionStatus.value = 'loading'
   try {
+    loadingPermissionsLocally = true
     const codes = await fetchMyPermissions({ signal: permissionAbortController.signal })
     if (disposed || requestSeq !== permissionRequestSeq || tokenAtStart !== session.accessToken) return
     session.setPermissions(Array.isArray(codes) ? codes : [])
     permissionStatus.value = 'loaded'
+    syncedCanListRoles = canListRoles.value
+    syncedCanListPermissions = canListPermissions.value
   } catch {
     // 请求被取消（页面卸载/被新请求替代）不算加载失败；其余按「权限状态未知」处理。
     if (disposed || requestSeq !== permissionRequestSeq || tokenAtStart !== session.accessToken) return
     if (permissionAbortController?.signal.aborted) return
     permissionStatus.value = 'unavailable'
+  } finally {
+    loadingPermissionsLocally = false
   }
 }
 
@@ -141,6 +150,28 @@ let roleDialogSessionSeq = 0
 let permDialogSessionSeq = 0
 
 const activeTab = ref('roles')
+watch([canListRoles, canListPermissions], ([roles, perms]) => {
+  if (activeTab.value === 'roles' && !roles && perms) activeTab.value = 'permissions'
+  if (activeTab.value === 'permissions' && !perms && roles) activeTab.value = 'roles'
+}, { immediate: true })
+
+// 外部（侧栏同页点击菜单或侧栏重试）触发 session.refreshPermissions() 完成后，
+// 同步本页权限态；仅在状态由未就绪恢复或具体列表权限发生变化时重查对应列表，避免切走页面时重复请求。
+watch(() => session.permissionStatus, (status) => {
+  if (!initialized || loadingPermissionsLocally || status !== 'loaded') return
+  const wasReady = permissionStatus.value === 'loaded'
+  permissionStatus.value = 'loaded'
+  const nextRoles = canListRoles.value
+  const nextPerms = canListPermissions.value
+  if (!wasReady || nextRoles !== syncedCanListRoles) {
+    syncedCanListRoles = nextRoles
+    fetchRoles()
+  }
+  if (!wasReady || nextPerms !== syncedCanListPermissions) {
+    syncedCanListPermissions = nextPerms
+    fetchPermissions()
+  }
+})
 
 // ── 角色列表 ──
 const roleFilters = reactive({ keyword: '', status: '' })
@@ -370,6 +401,18 @@ const assignDialog = reactive({
 const assignTableRef = ref(null)
 const assignSelectedIds = ref([])
 const assignRemovedDisabled = ref([])
+const assignFilter = reactive({ keyword: '', permissionType: '' })
+
+const filteredAssignCatalog = computed(() => {
+  const kw = assignFilter.keyword.trim().toLowerCase()
+  const type = assignFilter.permissionType
+  return assignDialog.catalog.filter((item) => {
+    if (type && item.permissionType !== type) return false
+    if (!kw) return true
+    return String(item.permissionCode ?? '').toLowerCase().includes(kw)
+      || String(item.permissionName ?? '').toLowerCase().includes(kw)
+  })
+})
 
 // 评审 P2 会话竞态：弹窗从打开→关闭（含取消、X、保存成功）即递增会话序号，
 // 作废该会话所有在途保存请求。用 watch 统一拦截所有关闭路径，避免遗漏某个
@@ -409,6 +452,8 @@ async function openAssignDialog(row) {
   assignDialog.concurrencyError = ''
   assignRemovedDisabled.value = []
   assignSelectedIds.value = []
+  assignFilter.keyword = ''
+  assignFilter.permissionType = ''
   // 只读账号：有查看权、但缺 permission:list（目录接口会 403）或缺
   // role:assign-permission（不能保存）——只展示已分配，绝不请求编辑目录。
   // 评审 P2：把「查看已分配」与「加载编辑目录」解耦，目录 403 不再连累前者。
@@ -492,6 +537,7 @@ async function openAssignDialog(row) {
     .filter((item) => item.status !== 1 && assignedIds.has(String(item.id)))
   assignDialog.loading = false
   await nextTick()
+  assignTableRef.value?.clearSelection()
   catalog
     .filter((item) => item.status === 1 && assignedIds.has(String(item.id)))
     .forEach((item) => assignTableRef.value?.toggleRowSelection(item, true))
@@ -603,11 +649,12 @@ async function submitAssignDialog() {
   } catch (error) {
     // 会话已变的在途请求：静默结束，不把错误写到新会话的 UI 上。
     if (!stillCurrent()) return
-    // 409 有两种：请求中含停用权限（校验类）和并发基线冲突（写前校验）。两者都
-    // 阻止保存；并发冲突特化提示要求重新加载，并在弹窗展示重新加载按钮。
+    // 409 有两种：请求中含停用权限（校验类）和并发基线冲突（写前校验）。优先透传后端
+    // 具体原因，避免把「停用权限」误报成「并发冲突」。
     if (error?.status === 409 || error?.code === 409) {
-      assignDialog.concurrencyError =
-        '保存失败：该角色的权限已被其他管理员修改（并发冲突），已阻止覆盖；请重新加载后再分配。'
+      assignDialog.concurrencyError = error?.message
+        ? `保存失败：${error.message}；请重新加载后再分配。`
+        : '保存失败：该角色的权限已被其他管理员修改（并发冲突），已阻止覆盖；请重新加载后再分配。'
     }
     // 其余错误全局提示已弹出（404：权限/角色不存在；400：参数非法）。
   } finally {
@@ -863,11 +910,18 @@ async function togglePermStatus(row) {
   }
 }
 
-// 评审 P2：先完成本次权限加载，再按本次结果发起首屏查询——不用会话里的旧
-// 权限跳过查询（刚获授权的用户无需手动刷新），空权限也不会发出被拒绝的请求。
+// 进页时路由守卫刚通过 session.refreshPermissions() 拿到最新权限：若已 loaded 直接复用，
+// 避免重复打一次 /api/auth/permissions 并闪烁加载提示；未就绪时再主动拉取。
 onMounted(async () => {
-  await loadPermissions()
+  if (session.permissionStatus === 'loaded') {
+    permissionStatus.value = 'loaded'
+  } else {
+    await loadPermissions()
+  }
   if (disposed) return
+  syncedCanListRoles = canListRoles.value
+  syncedCanListPermissions = canListPermissions.value
+  initialized = true
   fetchRoles()
   fetchPermissions()
 })
@@ -1207,37 +1261,55 @@ onUnmounted(() => {
           </ElTableColumn>
           <template #empty><ElEmpty description="该角色暂未分配任何权限" /></template>
         </ElTable>
-        <!-- 编辑视图：可勾选目录（仅在目录加载完成后出现）。 -->
-        <ElTable
-          v-else
-          ref="assignTableRef"
-          :data="assignDialog.catalog"
-          row-key="id"
-          max-height="360"
-          border
-          @selection-change="onAssignSelectionChange"
-        >
-          <ElTableColumn type="selection" width="46" :selectable="(row) => row.status === 1" />
-          <ElTableColumn label="权限编码" min-width="180">
-            <template #default="{ row }"><span class="mono">{{ row.permissionCode }}</span></template>
-          </ElTableColumn>
-          <ElTableColumn prop="permissionName" label="权限名称" min-width="140" />
-          <ElTableColumn label="类型" width="90">
-            <template #default="{ row }">
-              <ElTag :type="typeTagOf(row.permissionType)" effect="plain">{{ row.permissionType }}</ElTag>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="状态" width="120">
-            <template #default="{ row }">
-              <ElTag v-if="row.status === 1" type="success" effect="plain">启用</ElTag>
-              <ElTag v-else-if="assignRemovedDisabled.some((item) => String(item.id) === String(row.id))" type="danger" effect="plain">
-                停用·保存后移除
-              </ElTag>
-              <ElTag v-else type="danger" effect="plain">停用</ElTag>
-            </template>
-          </ElTableColumn>
-          <template #empty><ElEmpty description="暂无权限项目录" /></template>
-        </ElTable>
+        <!-- 编辑视图：可勾选目录（仅在目录加载完成后出现；reserve-selection 保留筛选外已勾选行）。 -->
+        <template v-else>
+          <div class="assign-filter-bar">
+            <ElInput
+              v-model="assignFilter.keyword"
+              placeholder="按权限编码或名称筛选"
+              clearable
+              size="small"
+            />
+            <ElSelect
+              v-model="assignFilter.permissionType"
+              placeholder="全部类型"
+              clearable
+              size="small"
+              class="assign-filter-type"
+            >
+              <ElOption v-for="type in PERMISSION_TYPES" :key="type" :label="type" :value="type" />
+            </ElSelect>
+          </div>
+          <ElTable
+            ref="assignTableRef"
+            :data="filteredAssignCatalog"
+            row-key="id"
+            max-height="340"
+            border
+            @selection-change="onAssignSelectionChange"
+          >
+            <ElTableColumn type="selection" width="46" :reserve-selection="true" :selectable="(row) => row.status === 1" />
+            <ElTableColumn label="权限编码" min-width="180">
+              <template #default="{ row }"><span class="mono">{{ row.permissionCode }}</span></template>
+            </ElTableColumn>
+            <ElTableColumn prop="permissionName" label="权限名称" min-width="140" />
+            <ElTableColumn label="类型" width="90">
+              <template #default="{ row }">
+                <ElTag :type="typeTagOf(row.permissionType)" effect="plain">{{ row.permissionType }}</ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="状态" width="120">
+              <template #default="{ row }">
+                <ElTag v-if="row.status === 1" type="success" effect="plain">启用</ElTag>
+                <ElTag v-else-if="assignRemovedDisabled.some((item) => String(item.id) === String(row.id))" type="danger" effect="plain">
+                  停用·保存后移除
+                </ElTag>
+                <ElTag v-else type="danger" effect="plain">停用</ElTag>
+              </template>
+            </ElTableColumn>
+            <template #empty><ElEmpty :description="assignDialog.catalog.length ? '无匹配的权限项' : '暂无权限项目录'" /></template>
+          </ElTable>
+        </template>
       </div>
       <p v-if="assignReadOnlyView" class="dialog-note">只读视图：以上为该角色当前已分配的权限，不加载编辑目录、不可修改。</p>
       <p v-else class="dialog-note">已选 {{ assignSelectedIds.length }} 项；全量替换以本次勾选为准，空选表示清空该角色全部权限。</p>
@@ -1340,6 +1412,8 @@ onUnmounted(() => {
   border-top: 1px solid #ebf0e6; background: var(--surface);
 }
 .assign-alert { margin-bottom: 12px; }
+.assign-filter-bar { display: flex; gap: 10px; margin-bottom: 10px; }
+.assign-filter-type { width: 130px; flex-shrink: 0; }
 .assign-wrap { min-height: 160px; }
 .dialog-note { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
 .muted-text { color: var(--muted); font-size: 12.5px; }

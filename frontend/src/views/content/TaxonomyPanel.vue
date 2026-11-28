@@ -12,13 +12,6 @@ import { useSessionStore } from '../../stores/session.js'
 import ContentState from './ContentState.vue'
 import { categoryOptions, displayTime } from './contentModel.js'
 import { useContentQuery } from './useContentQuery.js'
-import 'element-plus/es/components/dialog/style/css.mjs'
-import 'element-plus/es/components/form/style/css.mjs'
-import 'element-plus/es/components/form-item/style/css.mjs'
-import 'element-plus/es/components/input-number/style/css.mjs'
-import 'element-plus/es/components/message-box/style/css.mjs'
-import 'element-plus/es/components/pagination/style/css.mjs'
-import 'element-plus/es/components/table/style/css.mjs'
 
 const props = defineProps({ kind: { type: String, required: true } })
 const isCategory = props.kind === 'category'

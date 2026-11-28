@@ -10,9 +10,6 @@ import ContentTagSelect from './ContentTagSelect.vue'
 import { articleStatuses, categoryOptions, displayTime, isContentId, isEditableArticle } from './contentModel.js'
 import { useArticleActions } from './useArticleActions.js'
 import { useContentQuery } from './useContentQuery.js'
-import 'element-plus/es/components/input/style/css.mjs'
-import 'element-plus/es/components/pagination/style/css.mjs'
-import 'element-plus/es/components/table/style/css.mjs'
 import './content.css'
 
 const props = defineProps({ portal: Boolean })

@@ -114,12 +114,78 @@ export function shouldRefreshOnSamePageClick(targetPath, currentPath) {
  * @param {(code: string) => boolean} state.hasPermission 会话权限判定
  * @returns {'allow' | 'login' | 'forbidden'}
  */
-export function resolveMenuAccess({ requiredPermissions, isAuthenticated, permissionStatus, hasPermission }) {
+export function resolveMenuAccess({
+  requiredPermissions, requireAll = false, isAuthenticated, permissionStatus, hasPermission,
+}) {
   const codes = requiredCodes({ requiredPermissions })
   if (codes.length === 0) return 'allow'
   if (isAuthenticated !== true) return 'login'
   if (permissionStatus !== 'loaded') return 'allow'
-  return typeof hasPermission === 'function' && codes.some((code) => hasPermission(code) === true)
-    ? 'allow'
-    : 'forbidden'
+  if (typeof hasPermission !== 'function') return 'forbidden'
+  const allowed = requireAll
+    ? codes.every((code) => hasPermission(code) === true)
+    : codes.some((code) => hasPermission(code) === true)
+  return allowed ? 'allow' : 'forbidden'
+}
+
+/**
+ * 工作空间快捷入口的权限过滤（复用 navigation.js 的 requiredPermissions 权威定义）：
+ *  - 未登录或权限加载失败（unavailable）时展示全部概览入口（点击由守卫或页面自身门控兜底）；
+ *  - 权限已加载（loaded）时严格按有效权限过滤，隐藏无权访问的链接及空卡片；
+ *  - 权限尚在首次加载（idle/loading）时暂不展示需权限的链接，避免闪现无权入口。
+ */
+export function filterWorkspaceAreas(areas, navGroups, { isAuthenticated, permissionStatus, hasPermission }) {
+  if (!Array.isArray(areas)) return []
+  const byPath = new Map(
+    (Array.isArray(navGroups) ? navGroups : [])
+      .flatMap((group) => (Array.isArray(group?.items) ? group.items : []))
+      .map((item) => [item.path, item]),
+  )
+  const canSeePath = (path) => {
+    const entry = byPath.get(path)
+    if (!entry) return false
+    if (isAuthenticated !== true || permissionStatus === 'unavailable') return true
+    if (permissionStatus !== 'loaded') return false
+    return canSeeMenuItem(entry, hasPermission)
+  }
+  return areas
+    .map((area) => ({
+      ...area,
+      links: (Array.isArray(area?.links) ? area.links : []).filter((link) => canSeePath(link.path)),
+    }))
+    .filter((area) => area.links.length > 0)
+}
+
+/**
+ * 业务页面权限就绪态：区分「首次加载中」「加载失败」「已就绪」。
+ *
+ * <p>路由守卫在导航离开前或同页点击菜单时会触发 {@code session.refreshPermissions()}，
+ * 使 {@code permissionStatus} 短暂从 {@code loaded} 切到 {@code loading} 再回到
+ * {@code loaded}（期间 {@code permissionCodes} 仍保留本令牌最近一次快照）。
+ * 若页面在已有快照时因 {@code loading} 立即把权限视作未就绪，会导致切页卸载前
+ * 闪白、清空已选筛选条件并重发无效列表请求。</p>
+ *
+ * @param {object} state
+ * @param {string} state.permissionStatus idle / loading / loaded / unavailable
+ * @param {boolean} state.hasSnapshot 当前令牌是否已成功加载过至少一次权限快照
+ * @returns {'ready' | 'loading' | 'unavailable'}
+ */
+export function resolvePagePermissionState({ permissionStatus, hasSnapshot }) {
+  if (permissionStatus === 'loaded') return 'ready'
+  if (permissionStatus === 'unavailable') return 'unavailable'
+  if (hasSnapshot === true && permissionStatus === 'loading') return 'ready'
+  return 'loading'
+}
+
+/**
+ * 校验登录后回跳地址：只允许站内相对路径（以单斜杠开头、非 // 协议相对地址、
+ * 不含反斜杠且不回跳到 /login 或 /forbidden），其余一律回落 /workspace。
+ */
+export function safeRedirectPath(raw) {
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (typeof value !== 'string') return '/workspace'
+  if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return '/workspace'
+  const pathname = value.split(/[?#]/)[0]
+  if (pathname === '/login' || pathname === '/forbidden') return '/workspace'
+  return value
 }

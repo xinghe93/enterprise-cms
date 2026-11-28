@@ -1,7 +1,6 @@
 import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { deleteArticle, submitArticle } from '../../api/content.js'
-import 'element-plus/es/components/message-box/style/css.mjs'
 
 export function useArticleActions() {
   const busy = ref(false)

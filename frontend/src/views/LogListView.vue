@@ -1,7 +1,7 @@
 <script setup>
-// 权限：B 交付 @RequirePermission 与后端权限校验后，登录接口会下发 permissionCodes；
-// 在此之前 permissionCodes 为空，页面按"未下发即放行"的渐进策略可正常联调。
-import { computed, onMounted, ref } from 'vue'
+// 操作日志查询页（D 模块）：按会话有效权限（log:list / log:read）严格门控，
+// 区分权限加载中 / 加载失败 / 已加载无权，不在未确认权限或空权限时误放行查询。
+import { computed, onUnmounted, ref, watch } from 'vue'
 import {
   ElAlert,
   ElButton,
@@ -10,6 +10,7 @@ import {
   ElEmpty,
   ElInput,
   ElLoading,
+  ElMessage,
   ElOption,
   ElPagination,
   ElSelect,
@@ -17,18 +18,39 @@ import {
   ElTableColumn,
   ElTag,
 } from 'element-plus'
-import { createLatestRequestGuard, formatLogTime, getLog, isValidLogId, listLogs, normalizeTotal } from '../api/log.js'
+import {
+  createLatestRequestGuard, formatLogTime, getLog, isValidLogId, listLogs, normalizeTotal, validateLogFilters,
+} from '../api/log.js'
 import { useSessionStore } from '../stores/session.js'
+import { resolvePagePermissionState } from '../utils/menuPermission.js'
 
 const vLoading = ElLoading.directive
 
 const session = useSessionStore()
-
-const permissionsKnown = computed(() => Array.isArray(session.permissionCodes) && session.permissionCodes.length > 0)
-const canListLogs = computed(() => !permissionsKnown.value || session.hasPermission('log:list'))
-const canReadLog = computed(() => !permissionsKnown.value || session.hasPermission('log:read'))
+const hasPermissionSnapshot = ref(session.permissionStatus === 'loaded')
+watch([() => session.accessToken, () => session.permissionStatus], ([token, status], previous) => {
+  if (!token || (previous && token !== previous[0])) {
+    hasPermissionSnapshot.value = status === 'loaded'
+  } else if (status === 'loaded') {
+    hasPermissionSnapshot.value = true
+  } else if (status === 'unavailable') {
+    hasPermissionSnapshot.value = false
+  }
+})
+const pagePermissionState = computed(() => resolvePagePermissionState({
+  permissionStatus: session.permissionStatus,
+  hasSnapshot: hasPermissionSnapshot.value,
+}))
+const permissionsReady = computed(() => pagePermissionState.value === 'ready')
+const permissionsLoading = computed(() => pagePermissionState.value === 'loading')
+const permissionsUnavailable = computed(() => pagePermissionState.value === 'unavailable')
+const canListLogs = computed(() => permissionsReady.value && session.hasPermission('log:list'))
+const canReadLog = computed(() => permissionsReady.value && session.hasPermission('log:read'))
 
 const filters = ref({ userId: '', operation: '', result: '', timeRange: null })
+// 已通过校验并生效的筛选条件：翻页/改页大小/重新加载均沿用它，
+// 避免改了输入框未点查询时被翻页带走，或把非法 ID 静默忽略。
+const appliedFilters = ref({ userId: '', operation: '', result: '', timeRange: null })
 const rows = ref([])
 const total = ref(0)
 const current = ref(1)
@@ -43,6 +65,8 @@ const detail = ref(null)
 const detailError = ref('')
 let detailRequestSeq = 0
 const listRequestGuard = createLatestRequestGuard()
+let listAbortController = null
+let detailAbortController = null
 
 const detailItems = computed(() => {
   if (!detail.value) return []
@@ -70,26 +94,36 @@ function onUserIdInput(value) {
   filters.value.userId = String(value ?? '').replace(/\D/g, '').slice(0, 19)
 }
 
+async function retryPermissions() {
+  await session.refreshPermissions()
+}
+
 async function fetchLogs() {
   const requestSeq = listRequestGuard.next()
+  listAbortController?.abort()
   if (!canListLogs.value) {
     rows.value = []
     total.value = 0
-    loadError.value = '当前账号没有日志查询权限（log:list），请联系管理员。'
+    loadError.value = ''
     loading.value = false
     return
   }
+  const controller = new AbortController()
+  listAbortController = controller
   loading.value = true
   loadError.value = ''
   try {
-    const data = await listLogs({ ...filters.value, current: current.value, size: size.value })
+    const data = await listLogs(
+      { ...appliedFilters.value, current: current.value, size: size.value },
+      { signal: controller.signal },
+    )
     // 只允许最新一次请求写回页面状态，避免快速翻页时旧响应覆盖新结果。
-    if (!listRequestGuard.isLatest(requestSeq)) return
+    if (!listRequestGuard.isLatest(requestSeq) || controller.signal.aborted) return
     rows.value = Array.isArray(data?.records) ? data.records : []
     total.value = normalizeTotal(data?.total)
     lastLoadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   } catch (error) {
-    if (!listRequestGuard.isLatest(requestSeq)) return
+    if (!listRequestGuard.isLatest(requestSeq) || controller.signal.aborted) return
     // 全局 ElMessage 已提示一次错误；页面再给出可重试的显式状态，并清理旧数据避免误导。
     rows.value = []
     total.value = 0
@@ -100,47 +134,61 @@ async function fetchLogs() {
 }
 
 function handleSearch() {
+  if (!canListLogs.value) return
+  const errors = validateLogFilters(filters.value)
+  if (errors.length > 0) {
+    ElMessage.warning({ message: errors[0], grouping: true })
+    return
+  }
+  appliedFilters.value = {
+    userId: filters.value.userId.trim(),
+    operation: filters.value.operation.trim(),
+    result: filters.value.result,
+    timeRange: Array.isArray(filters.value.timeRange) ? [...filters.value.timeRange] : null,
+  }
   current.value = 1
-  fetchLogs()
+  void fetchLogs()
 }
 
 function handleReset() {
+  if (!canListLogs.value) return
   filters.value = { userId: '', operation: '', result: '', timeRange: null }
+  appliedFilters.value = { userId: '', operation: '', result: '', timeRange: null }
   current.value = 1
-  fetchLogs()
+  void fetchLogs()
 }
 
 function handlePageChange(page) {
   current.value = page
-  fetchLogs()
+  void fetchLogs()
 }
 
 function handleSizeChange(newSize) {
   size.value = newSize
   current.value = 1
-  fetchLogs()
+  void fetchLogs()
 }
 
 async function openDetail(row) {
-  if (!canReadLog.value) {
-    detailError.value = '当前账号没有日志详情权限（log:read）。'
-    return
-  }
+  if (!canReadLog.value) return
   if (!isValidLogId(row?.id)) {
-    detailError.value = '日志 ID 无效，无法查看详情。'
+    ElMessage.warning({ message: '日志 ID 无效，无法查看详情。', grouping: true })
     return
   }
   const requestSeq = ++detailRequestSeq
+  detailAbortController?.abort()
+  const controller = new AbortController()
+  detailAbortController = controller
   detail.value = row
   detailError.value = ''
   drawerVisible.value = true
   detailLoading.value = true
   try {
-    const data = await getLog(row.id)
+    const data = await getLog(row.id, { signal: controller.signal })
     // 只接受最后一次点击的响应，避免快速切换行时旧响应覆盖新详情。
-    if (requestSeq === detailRequestSeq && data) detail.value = data
+    if (requestSeq === detailRequestSeq && !controller.signal.aborted && data) detail.value = data
   } catch (error) {
-    if (requestSeq === detailRequestSeq) {
+    if (requestSeq === detailRequestSeq && !controller.signal.aborted) {
       detailError.value = error?.message ? `日志详情加载失败：${error.message}` : '日志详情加载失败，请稍后重试。'
     }
   } finally {
@@ -148,7 +196,23 @@ async function openDetail(row) {
   }
 }
 
-onMounted(fetchLogs)
+watch(canListLogs, (allowed) => {
+  if (allowed) {
+    void fetchLogs()
+  } else {
+    listRequestGuard.next()
+    listAbortController?.abort()
+    rows.value = []
+    total.value = 0
+    loadError.value = ''
+    loading.value = false
+  }
+}, { immediate: true })
+
+onUnmounted(() => {
+  listAbortController?.abort()
+  detailAbortController?.abort()
+})
 </script>
 
 <template>
@@ -162,7 +226,25 @@ onMounted(fetchLogs)
     </header>
 
     <ElAlert
-      v-if="!canListLogs"
+      v-if="permissionsLoading"
+      type="info"
+      :closable="false"
+      show-icon
+      title="正在加载当前账号权限…"
+    />
+    <ElAlert
+      v-else-if="permissionsUnavailable"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="权限列表加载失败，无法确认日志查询权限；请重试。"
+    >
+      <template #default>
+        <ElButton size="small" @click="retryPermissions">重试加载权限</ElButton>
+      </template>
+    </ElAlert>
+    <ElAlert
+      v-else-if="!canListLogs"
       type="warning"
       :closable="false"
       show-icon

@@ -102,14 +102,8 @@ async function apiClient() {
   return api
 }
 
-/** 当前账号有效权限编码（OpenAPI GET /api/auth/permissions，x-owner B；返回 string[]）。 */
-export async function fetchMyPermissions({ signal } = {}) {
-  const api = await apiClient()
-  // 该接口 x-owner 为 B，dev 尚未实现时返回 404；这属于"权限状态未知"而非页面错误，
-  // 用 silent 关闭全局错误提示，由页面按 unavailable 状态显式提示。
-  // signal 供页面在卸载/请求被替代时取消旧请求，避免旧响应覆盖当前会话权限。
-  return api.get('/auth/permissions', { silent: true, ...(signal ? { signal } : {}) })
-}
+/** 当前账号有效权限编码（复用 permission.js 的单一实现，保留导出兼容既有调用方）。 */
+export { fetchMyPermissions } from './permission.js'
 
 export async function listPendingReviews(query, config = {}) {
   const api = await apiClient()

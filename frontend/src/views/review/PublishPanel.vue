@@ -217,7 +217,7 @@ async function changePublication(records, batch = false) {
           <ElTableColumn label="标题" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
               <RouterLink v-if="session.hasPermission('article:read')"
-                :to="{ name: 'article-detail', params: { id: row.id } }" class="cms-inline-link">{{ row.title }}</RouterLink>
+                :to="{ name: 'article-detail', params: { id: row.id }, query: { from: 'reviews' } }" class="cms-inline-link">{{ row.title }}</RouterLink>
               <span v-else>{{ row.title }}</span>
             </template>
           </ElTableColumn>

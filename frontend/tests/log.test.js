@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createLatestRequestGuard, isValidLogId, normalizeTotal } from '../src/api/log.js'
+import { readFileSync } from 'node:fs'
+import { createLatestRequestGuard, isValidLogId, normalizeTotal, validateLogFilters } from '../src/api/log.js'
 import { buildLogQuery, formatLocalDateTime, formatLogTime } from '../src/api/log.js'
 
 test('默认分页参数为第一页、每页 10 条，空筛选项不传给后端', () => {
@@ -93,4 +94,35 @@ test('列表请求守卫只允许最新一次请求回写页面状态（乱序�
   if (guard.isLatest(page3)) applied.push('page-3')
   if (guard.isLatest(page2)) applied.push('page-2')
   assert.deepEqual(applied, ['page-3'])
+})
+
+test('validateLogFilters 拦截非法操作人 ID 与非递增时间区间，避免静默丢弃误导查询', () => {
+  assert.deepEqual(validateLogFilters({}), [])
+  assert.deepEqual(validateLogFilters({ userId: '', timeRange: null }), [])
+  assert.deepEqual(validateLogFilters({
+    userId: '9223372036854775807',
+    timeRange: ['2026-11-08T10:00:00', '2026-11-08T10:00:01'],
+  }), [])
+
+  for (const badId of ['0', '001', '9223372036854775808', 'abc']) {
+    const errors = validateLogFilters({ userId: badId })
+    assert.equal(errors.length, 1, `非法 ID ${badId} 应返回校验错误`)
+    assert.match(errors[0], /操作人 ID 无效/)
+  }
+
+  const sameTime = validateLogFilters({ timeRange: ['2026-11-08T10:00:00', '2026-11-08T10:00:00'] })
+  assert.equal(sameTime.length, 1)
+  assert.match(sameTime[0], /起始时间必须早于结束时间/)
+
+  const reversed = validateLogFilters({ timeRange: ['2026-11-08T12:00:00', '2026-11-08T10:00:00'] })
+  assert.equal(reversed.length, 1)
+  assert.match(reversed[0], /起始时间必须早于结束时间/)
+})
+
+test('LogListView 按 session.permissionStatus 严格门控，并在查询前调用 validateLogFilters', () => {
+  const source = readFileSync(new URL('../src/views/LogListView.vue', import.meta.url), 'utf8')
+  assert.match(source, /session\.permissionStatus === 'loaded'/)
+  assert.doesNotMatch(source, /session\.permissionCodes\.length > 0/)
+  assert.match(source, /validateLogFilters\(/)
+  assert.match(source, /appliedFilters/)
 })

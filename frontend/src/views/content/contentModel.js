@@ -42,7 +42,7 @@ export function isContentId(id) {
 export function articlePayload(form, version) {
   return {
     title: form.title.trim(),
-    summary: form.summary || null,
+    summary: typeof form.summary === 'string' && form.summary.trim() ? form.summary : null,
     content: form.content,
     categoryId: form.categoryId,
     tagIds: [...form.tagIds],

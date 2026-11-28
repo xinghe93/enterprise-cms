@@ -16,6 +16,7 @@ import {
   listReviewHistory, rejectArticle, validatePendingFilters,
 } from '../api/review.js'
 import { useSessionStore } from '../stores/session.js'
+import { countCodePoints } from '../utils/text.js'
 import PublishPanel from './review/PublishPanel.vue'
 
 const session = useSessionStore()
@@ -37,6 +38,28 @@ const activeTab = ref('review')
 watch([showReview, showPublish], ([review, publish]) => {
   if (activeTab.value === 'review' && !review && publish) activeTab.value = 'publish'
   if (activeTab.value === 'publish' && !publish && review) activeTab.value = 'review'
+}, { immediate: true })
+
+// 外部（侧栏同页点击菜单或侧栏重试）触发 session.refreshPermissions() 完成后，
+// 同步本页权限态；仅在状态恢复或 article:review-list 权限发生变化时重查/清空待审队列。
+watch(() => session.permissionStatus, (status) => {
+  if (!initialized || loadingPermissionsLocally || status !== 'loaded') return
+  const wasReady = permissionStatus.value === 'loaded'
+  permissionStatus.value = 'loaded'
+  const nextCanList = canListReviews.value
+  if (!wasReady || nextCanList !== syncedCanListReviews) {
+    syncedCanListReviews = nextCanList
+    if (nextCanList) {
+      void fetchPending()
+    } else {
+      pendingRequestSeq += 1
+      pendingAbortController?.abort()
+      rows.value = []
+      total.value = 0
+      loadError.value = ''
+      loading.value = false
+    }
+  }
 })
 // 正文入口按 article:read 控制：自定义角色可能只有待审列表权限，没有 article:read。
 const canReadArticle = computed(() => permissionsKnown.value && session.hasPermission('article:read'))
@@ -47,6 +70,9 @@ const vLoading = ElLoading.directive
 let permissionRequestSeq = 0
 let permissionAbortController = null
 let disposed = false
+let initialized = false
+let loadingPermissionsLocally = false
+let syncedCanListReviews = false
 
 async function loadPermissions() {
   // 每次进入页面都向后端取一次有效权限：管理员可能已增删该账号的权限，
@@ -57,15 +83,19 @@ async function loadPermissions() {
   permissionAbortController = new AbortController()
   permissionStatus.value = 'loading'
   try {
+    loadingPermissionsLocally = true
     const codes = await fetchMyPermissions({ signal: permissionAbortController.signal })
     if (disposed || requestSeq !== permissionRequestSeq || tokenAtStart !== session.accessToken) return
     session.setPermissions(Array.isArray(codes) ? codes : [])
     permissionStatus.value = 'loaded'
+    syncedCanListReviews = canListReviews.value
   } catch {
     // 请求被取消（页面卸载/被新请求替代）不算加载失败，直接忽略。
     if (disposed || requestSeq !== permissionRequestSeq || tokenAtStart !== session.accessToken) return
     if (permissionAbortController?.signal.aborted) return
     permissionStatus.value = 'unavailable'
+  } finally {
+    loadingPermissionsLocally = false
   }
 }
 
@@ -186,6 +216,12 @@ async function fetchPending() {
     total.value = Number.isFinite(Number(page?.total)) ? Number(page.total) : 0
     current.value = Number(page?.current) > 0 ? Number(page.current) : current.value
     size.value = Number(page?.size) > 0 ? Number(page.size) : size.value
+    const lastPage = Math.max(1, Math.ceil(total.value / size.value))
+    if (current.value > lastPage) {
+      current.value = lastPage
+      void fetchPending()
+      return
+    }
     lastLoadedAt.value = formatLocalDateTime(new Date())
   } catch {
     if (requestSeq !== pendingRequestSeq) return
@@ -314,6 +350,7 @@ function closeDecision() {
 }
 
 async function submitDecision() {
+  if (decisionDialog.submitting) return
   const row = decisionDialog.row
   if (!row) return
   const comment = decisionDialog.comment.trim()
@@ -321,7 +358,7 @@ async function submitDecision() {
     ElMessage.warning({ message: '驳回意见不能为空', grouping: true })
     return
   }
-  if (comment.length > 1000) {
+  if (countCodePoints(comment) > 1000) {
     ElMessage.warning({ message: '审核意见不能超过 1000 字', grouping: true })
     return
   }
@@ -403,7 +440,14 @@ function handleHistoryCurrentChange(nextPage) {
 }
 
 onMounted(async () => {
-  await loadPermissions()
+  if (session.permissionStatus === 'loaded') {
+    permissionStatus.value = 'loaded'
+  } else {
+    await loadPermissions()
+  }
+  if (disposed) return
+  syncedCanListReviews = canListReviews.value
+  initialized = true
   if (canListReviews.value) void fetchPending()
 })
 </script>
@@ -473,7 +517,7 @@ onMounted(async () => {
               </ElTableColumn>
               <ElTableColumn label="标题" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <RouterLink v-if="canReadArticle" class="cms-inline-link" :to="{ name: 'article-detail', params: { id: row.id } }">{{ row.title }}</RouterLink>
+                  <RouterLink v-if="canReadArticle" class="cms-inline-link" :to="{ name: 'article-detail', params: { id: row.id }, query: { from: 'reviews' } }">{{ row.title }}</RouterLink>
                   <span v-else>{{ row.title }}</span>
                 </template>
               </ElTableColumn>
@@ -543,7 +587,8 @@ onMounted(async () => {
         </template>
       </div>
       <ElInput
-        v-model="decisionDialog.comment" type="textarea" :rows="4" maxlength="1000" show-word-limit
+        v-model="decisionDialog.comment" type="textarea" :rows="4" :maxlength="1000"
+        :count-graphemes="countCodePoints" show-word-limit
         :placeholder="decisionDialog.mode === 'reject' ? '驳回意见（必填）' : '审核意见（可选）'"
       />
       <template #footer>

@@ -14,6 +14,9 @@ test('完整保存保留正文和字符串 ID，并显式表达清空摘要与�
   assert.deepEqual(articlePayload(form, 0), {
     title: '更新', summary: null, content: '  保留缩进\n', categoryId: activeId, tagIds: [], version: 0,
   })
+  assert.deepEqual(articlePayload({ ...form, summary: '   \n\t ' }, 1), {
+    title: '更新', summary: null, content: '  保留缩进\n', categoryId: activeId, tagIds: [], version: 1,
+  })
   assert.deepEqual(articlePayload({ ...form, summary: ' 保留摘要空格 ', tagIds: [childId] }), {
     title: '更新', summary: ' 保留摘要空格 ', content: '  保留缩进\n', categoryId: activeId, tagIds: [childId],
   })

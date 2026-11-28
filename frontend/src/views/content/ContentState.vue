@@ -1,9 +1,6 @@
 <script setup>
 import { ElAlert, ElButton, ElEmpty, ElSkeleton } from 'element-plus'
 import { useSessionStore } from '../../stores/session.js'
-import 'element-plus/es/components/alert/style/css.mjs'
-import 'element-plus/es/components/empty/style/css.mjs'
-import 'element-plus/es/components/skeleton/style/css.mjs'
 
 defineProps({
   allowed: Boolean,

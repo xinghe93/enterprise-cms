@@ -2,17 +2,10 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import { router } from './router/index.js'
 import { pinia } from './stores/index.js'
-// 统一在应用入口先加载 Element Plus 完整样式，确保 main.css 中的森林绿主题变量稳定生效，
-// 避免各业务页懒加载 element-plus/dist/index.css 时将主色覆盖回默认蓝色。
+// 统一在应用入口先加载 Element Plus 完整样式（包含 Dialog/Overlay 等全部组件样式），
+// 确保 main.css 中的森林绿主题变量与组件覆写稳定生效；业务页面不再按需重复引入
+// theme-chalk/*.css，避免懒加载块晚于 main.css 注入并覆盖主题。
 import 'element-plus/dist/index.css'
-import 'element-plus/theme-chalk/base.css'
-import 'element-plus/theme-chalk/el-button.css'
-import 'element-plus/theme-chalk/el-tag.css'
-import 'element-plus/theme-chalk/el-message.css'
-// ElDialog 由组织管理页直接使用，按需引入时必须同时带上对话框与遮罩样式，
-// 否则弹窗无定位/无遮罩、背景仍可点击（PR #41 审查 P2）。
-import 'element-plus/theme-chalk/el-dialog.css'
-import 'element-plus/theme-chalk/el-overlay.css'
 import './styles/main.css'
 import './styles/organization.css'
 

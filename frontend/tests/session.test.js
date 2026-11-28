@@ -12,6 +12,11 @@ test('会话默认无身份，清理后令牌、用户、有效权限全部移�
   session.setPermissions(['article:list'])
   assert.equal(session.isAuthenticated, true)
   assert.equal(session.hasPermission('article:list'), true)
+  // 切换新令牌时清空上一账号资料与权限，避免残留串号
+  session.setToken('next-opaque-token')
+  assert.equal(session.user, null)
+  assert.deepEqual(session.permissionCodes, [])
+  assert.equal(session.permissionStatus, 'idle')
   session.clear()
   assert.equal(session.accessToken, '')
   assert.equal(session.user, null)

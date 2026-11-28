@@ -9,23 +9,47 @@
  *    已有的停用项应在下一次替换时移除，管理回显的 roles 含停用项但不能当作有效角色；
  *  - 新选部门时目标及祖先必须启用，原引用不变可保留停用引用。
  * 员工账号的新建 / 编辑 / 启停属于功能① 的账号管理页面，不在本页重复实现。
- * 权限由后端 AOP 校验，界面不做权限隐藏。
+ * 前端按会话有效权限控制请求与按钮显隐（后端仍独立强制 AOP 鉴权）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElButton, ElDialog, ElTag } from 'element-plus'
-// 弹窗样式不能依赖其他页面的懒加载组件顺带加载（老师审查 #4）。
-import 'element-plus/es/components/dialog/style/css.mjs'
+import { ElButton, ElDialog, ElMessage, ElTag } from 'element-plus'
 import { api } from '../../api/index.js'
 import { createUserApi } from '../../api/user.js'
 import { createRoleApi } from '../../api/role.js'
+import { useSessionStore } from '../../stores/session.js'
+import { resolvePagePermissionState } from '../../utils/menuPermission.js'
 import { flattenDepartments, isValidId, normalizeRoleIds, parentOptions, partitionAssignedRoles, roleSaveBlocked, sortDepartmentTree } from '../../utils/organization.js'
-import { syncClampedInput, trimOnBlur } from '../../utils/text.js'
+import { clampCodePoints, syncClampedInput, trimOnBlur } from '../../utils/text.js'
 
 const route = useRoute()
+const session = useSessionStore()
 
 const userApi = createUserApi(api)
 const roleApi = createRoleApi(api)
+
+const hasPermissionSnapshot = ref(session.permissionStatus === 'loaded')
+watch([() => session.accessToken, () => session.permissionStatus], ([token, status], previous) => {
+  if (!token || (previous && token !== previous[0])) {
+    hasPermissionSnapshot.value = status === 'loaded'
+  } else if (status === 'loaded') {
+    hasPermissionSnapshot.value = true
+  } else if (status === 'unavailable') {
+    hasPermissionSnapshot.value = false
+  }
+})
+const pagePermissionState = computed(() => resolvePagePermissionState({
+  permissionStatus: session.permissionStatus,
+  hasSnapshot: hasPermissionSnapshot.value,
+}))
+const permissionsReady = computed(() => pagePermissionState.value === 'ready')
+const permissionsLoading = computed(() => pagePermissionState.value === 'loading')
+const permissionsUnavailable = computed(() => pagePermissionState.value === 'unavailable')
+const can = (code) => permissionsReady.value && session.hasPermission(code)
+const canListUsers = computed(() => can('user:list'))
+const canListDepartments = computed(() => can('department:tree'))
+const canAssignDepartment = computed(() => can('user:read') && can('user:update'))
+const canAssignRoles = computed(() => can('user:read') && can('user:assign-role') && can('role:list'))
 const departments = ref([])
 const assignableRoles = ref([])
 const rolesLoadFailed = ref(false)
@@ -63,6 +87,16 @@ const assignmentOptions = computed(() => parentOptions(departments.value, {
 let usersRequestId = 0
 
 async function loadDepartments() {
+  if (!canListDepartments.value) {
+    departments.value = []
+    departmentsLoadFailed.value = false
+    if (filters.value.departmentId) {
+      filters.value.departmentId = ''
+      filters.value.current = 1
+      if (canListUsers.value) void loadUsers()
+    }
+    return
+  }
   if (departmentsLoading.value) return
   departmentsLoading.value = true
   try {
@@ -78,8 +112,12 @@ async function loadDepartments() {
 
 /** 老师复审 P2：刷新同时重试部门树，否则树首次失败后只能离开页面再进来才能恢复。 */
 function refresh() {
-  void loadDepartments()
-  void loadUsers()
+  if (canListDepartments.value) void loadDepartments()
+  if (canListUsers.value) void loadUsers()
+}
+
+async function retryPermissions() {
+  await session.refreshPermissions()
 }
 
 /**
@@ -102,13 +140,20 @@ async function ensureRoles() {
 
 async function loadUsers() {
   const requestId = ++usersRequestId
+  if (!canListUsers.value) {
+    users.value = []
+    total.value = 0
+    loadFailed.value = false
+    loading.value = false
+    return
+  }
   loading.value = true
   loadFailed.value = false
   try {
     const page = await userApi.listUsers({
       keyword: filters.value.keyword,
       // 部门下拉只提供树里的合法 ID，但防御性校验：异常值不发给后端，按无部门筛选查询。
-      departmentId: filters.value.departmentId && isValidId(String(filters.value.departmentId))
+      departmentId: canListDepartments.value && filters.value.departmentId && isValidId(String(filters.value.departmentId))
         ? filters.value.departmentId
         : '',
       status: filters.value.status === '' ? '' : Number(filters.value.status),
@@ -159,7 +204,7 @@ function closeDialog() {
 }
 
 async function openDepartmentDialog(user) {
-  if (submitting.value) return
+  if (!canAssignDepartment.value || submitting.value) return
   submitting.value = true
   formError.value = ''
   try {
@@ -195,7 +240,7 @@ async function openDepartmentDialog(user) {
 }
 
 async function openRoleDialog(user) {
-  if (submitting.value) return
+  if (!canAssignRoles.value || submitting.value) return
   submitting.value = true
   formError.value = ''
   roleDetailFailed.value = false
@@ -321,7 +366,7 @@ async function saveDepartment() {
     }
     // 完整 PUT 必带 realName：提交前重读详情，用最新姓名而不是开窗时的快照；
     // 同时校验部门是否已被他人修改，避免静默覆盖对方的调整（老师审查 #3）。
-    const latest = await userApi.getUser(user.id)
+    const latest = await userApi.getUser(user.id, { silent: true })
     const latestDepartment = latest?.departmentId == null ? null : String(latest.departmentId)
     if (latestDepartment !== original) {
       formError.value = '该员工的部门已被其他管理员修改，请关闭后重新打开再操作'
@@ -331,13 +376,13 @@ async function saveDepartment() {
       formError.value = '员工详情已变化，请关闭后重试'
       return
     }
-    await userApi.updateUser(user.id, { realName: latest.realName, departmentId: target })
+    await userApi.updateUser(user.id, { realName: latest.realName, departmentId: target }, { silent: true })
     dialog.value = null
     await loadUsers()
   } catch (error) {
     if (error?.code === 404 || error?.status === 404) {
-      // 重读详情或提交时员工已被并发删除：公共层已提示，弹窗保留只会让管理员
-      // 对失效数据继续操作（DeepSeek 审查）。
+      // 重读详情或提交时员工已被并发删除：关闭弹窗并刷新列表，避免对失效数据继续操作。
+      ElMessage.error({ message: error?.message || '员工不存在，已刷新列表', grouping: true })
       dialog.value = null
       await loadUsers()
       return
@@ -369,7 +414,7 @@ async function saveRoles() {
   try {
     // 并发校验：重读详情比对开窗时的角色快照，被其他管理员调整过就拒绝提交，
     // 避免用旧勾选静默覆盖对方的分配（与 saveDepartment 的部门并发校验同一策略）。
-    const latest = await userApi.getUser(dialog.value.user.id)
+    const latest = await userApi.getUser(dialog.value.user.id, { silent: true })
     const latestIds = (latest?.roles ?? []).map((role) => String(role?.id ?? role)).sort()
     const snapshot = dialog.value.roleSnapshot ?? []
     if (latestIds.length !== snapshot.length || latestIds.some((id, index) => id !== snapshot[index])) {
@@ -378,13 +423,13 @@ async function saveRoles() {
     }
     // 全量替换：空数组即清空；先在本地归一化，超限/非法 ID 不发请求。
     const roleIds = normalizeRoleIds(selectedRoleIds.value)
-    await userApi.setUserRoles(dialog.value.user.id, roleIds)
+    await userApi.setUserRoles(dialog.value.user.id, roleIds, { silent: true })
     dialog.value = null
     await loadUsers()
   } catch (error) {
     if (error?.code === 404 || error?.status === 404) {
-      // 重读详情或提交时员工已被并发删除：公共层已提示，弹窗保留只会让管理员
-      // 对失效数据继续操作（与 saveDepartment 同一处理）。
+      // 重读详情或提交时员工已被并发删除：关闭弹窗并刷新列表，避免对失效数据继续操作。
+      ElMessage.error({ message: error?.message || '员工不存在，已刷新列表', grouping: true })
       dialog.value = null
       await loadUsers()
       return
@@ -395,19 +440,23 @@ async function saveRoles() {
   }
 }
 
-onMounted(() => {
-  // 员工页跳转带 ?keyword=<username>：首次请求前读取，避免目标员工不在第一页时
-  // 管理员还要手动重新搜索（老师审查 #5）；长度与契约 keyword 上限一致。
-  // 重复参数会解析成数组：取第一个值而不是静默忽略（DeepSeek 审查）。
-  const rawKeyword = Array.isArray(route.query.keyword) ? route.query.keyword[0] : route.query.keyword
-  const keyword = typeof rawKeyword === 'string' ? rawKeyword.trim() : ''
-  if (keyword) {
-    filters.value.keyword = keyword.slice(0, 100)
-    filters.value.current = 1
-  }
+// 员工页跳转带 ?keyword=<username>：首次请求前读取，避免目标员工不在第一页时
+// 管理员还要手动重新搜索（老师审查 #5）；按 Unicode 代码点截断与契约 keyword 上限一致。
+// 重复参数会解析成数组：取第一个值而不是静默忽略（DeepSeek 审查）。
+const rawKeyword = Array.isArray(route.query.keyword) ? route.query.keyword[0] : route.query.keyword
+const initialKeyword = typeof rawKeyword === 'string' ? rawKeyword.trim() : ''
+if (initialKeyword) {
+  filters.value.keyword = clampCodePoints(initialKeyword, 100)
+  filters.value.current = 1
+}
+
+watch(canListDepartments, () => {
   void loadDepartments()
+}, { immediate: true })
+
+watch(canListUsers, () => {
   void loadUsers()
-})
+}, { immediate: true })
 </script>
 
 <template>
@@ -419,18 +468,25 @@ onMounted(() => {
         <p>按部门（含全部后代）筛选员工，调整所属部门或全量替换已分配角色；停用角色将在保存后移除。</p>
       </div>
       <div class="cms-page-header-actions">
-        <ElButton :disabled="loading" @click="refresh">刷新</ElButton>
+        <ElButton :disabled="loading || !canListUsers" @click="refresh">刷新</ElButton>
       </div>
     </header>
 
-    <div class="org-toolbar org-toolbar-wrap">
+    <p v-if="permissionsLoading" class="org-alert" role="status">正在加载当前账号权限…</p>
+    <p v-else-if="permissionsUnavailable" class="org-alert" role="alert">
+      权限列表加载失败，无法确认岗位分配权限；
+      <ElButton link type="primary" @click="retryPermissions">点击重试</ElButton>
+    </p>
+    <p v-else-if="!canListUsers" class="org-alert" role="alert">当前账号缺少 user:list 权限，无法查询员工列表。</p>
+
+    <div v-if="canListUsers" class="org-toolbar org-toolbar-wrap">
       <label class="org-inline-field">
         <span>关键字</span>
         <!-- syncClampedInput 逐代码点截断并同步回 DOM：后端 keyword 同口径，
              完整姓名可搜索，且显示值与提交值始终一致。 -->
         <input :value="filters.keyword" @input="filters.keyword = syncClampedInput($event, 100)" @blur="filters.keyword = trimOnBlur($event)" placeholder="账号或姓名" @keyup.enter="search" />
       </label>
-      <label class="org-inline-field">
+      <label v-if="canListDepartments" class="org-inline-field">
         <span>部门（含后代）</span>
         <select v-model="filters.departmentId" @change="search">
           <option value="">全部部门</option>
@@ -451,11 +507,11 @@ onMounted(() => {
     </div>
 
     <p v-if="loadFailed" class="org-alert" role="alert">员工列表未加载，请确认服务与登录态后重试。</p>
-    <p v-if="departmentsLoadFailed" class="org-alert" role="alert">
+    <p v-if="canListDepartments && departmentsLoadFailed" class="org-alert" role="alert">
       部门树未加载：部门筛选与「新选部门」暂不可用，分配部门弹窗仅保留员工当前部门；点击「刷新」重试。
     </p>
 
-    <div class="org-card">
+    <div v-if="canListUsers" class="org-card">
       <div class="cms-card-meta">
         <span>共 {{ total }} 名员工</span>
         <span>第 {{ filters.current }} / {{ totalPages }} 页</span>
@@ -485,8 +541,9 @@ onMounted(() => {
             </td>
             <td>
               <div class="org-actions">
-                <button type="button" :disabled="submitting" @click="openDepartmentDialog(user)">分配部门</button>
-                <button type="button" :disabled="submitting" @click="openRoleDialog(user)">分配角色</button>
+                <button v-if="canAssignDepartment" type="button" :disabled="submitting" @click="openDepartmentDialog(user)">分配部门</button>
+                <button v-if="canAssignRoles" type="button" :disabled="submitting" @click="openRoleDialog(user)">分配角色</button>
+                <span v-if="!canAssignDepartment && !canAssignRoles" class="org-muted">无权限</span>
               </div>
             </td>
           </tr>
